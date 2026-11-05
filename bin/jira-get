@@ -1,0 +1,20 @@
+#!/bin/sh
+# jira-get PATH: GET one Jira REST path, such as /rest/api/3/issue/CIAM-79, and print the
+# response body. Read only: it sends GET and nothing else. Mirrors gh-plan's redmine-get.
+#
+# Auth is ~/.netrc, machine cryoport.atlassian.net (login = email, password = API token); curl
+# reads it directly, so the token is never in an argument, the process list, or this script's
+# output.
+set -eu
+
+[ $# -eq 1 ] || { echo "usage: jira-get /rest/api/3/path[?query]" >&2; exit 2; }
+case $1 in
+  /*) ;;
+  *) echo "jira-get: the path starts with /, as /rest/api/3/issue/CIAM-79" >&2; exit 2 ;;
+esac
+
+site=${JIRA_SITE:-cryoport.atlassian.net}
+
+# -f: an HTTP error exits non-zero with the status on stderr, not an HTML page on stdout.
+curl -sS -f --netrc "https://$site$1"
+echo
