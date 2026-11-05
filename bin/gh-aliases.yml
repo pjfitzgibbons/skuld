@@ -1,0 +1,10 @@
+co: pr checkout
+pb: '!~/.claude/skills/jira-issues/scripts/ghbody.sh pr-edit "$@"'
+pc: '!~/.claude/skills/jira-issues/scripts/ghbody.sh pr-create "$@"'
+squash: |-
+    !f=$(mktemp) &&
+    gh pr view "$1" --json title,number,body --template "{{.title}} (#{{.number}})
+
+    {{.body}}" > "$f" &&
+    ${GH_EDITOR:-vim} "$f" &&
+    gh pr merge "$1" --squash --delete-branch --subject "$(head -n1 "$f")" --body "$(tail -n +3 "$f")"
