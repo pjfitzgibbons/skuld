@@ -252,6 +252,31 @@ class TermTests(unittest.TestCase):
         self.assertIn(["tmux", "has-session", "-t", "=CIAM-1"], calls)
         self.assertIn(["aerospace", "workspace", "3"], calls)
 
+    def test_openIssueWorkspace_sends_custom_claude_prompt_quoted(self):
+        # JP-3 (2026-11-05): "Work on Jira JP-3" sent the new Claude to Jira for a file issue.
+        calls = []
+        list_windows_calls = {"n": 0}
+
+        def fake_run(command, args, cwd):
+            calls.append([command, *args])
+            if command == "tmux" and args[0] == "has-session":
+                raise RuntimeError("no session")
+            if command == "aerospace" and args[0] == "list-workspaces" and "--all" in args:
+                return "3\n"
+            if command == "aerospace" and args[0] == "list-windows" and "--workspace" in args:
+                return ""
+            if command == "aerospace" and args[0] == "list-windows":
+                list_windows_calls["n"] += 1
+                return "[]" if list_windows_calls["n"] == 1 else json.dumps([{"window-id": 1}])
+            return ""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            slots = os.path.join(tmp, "workspaces")
+            with mock.patch.object(term, "run", side_effect=fake_run):
+                term.openIssueWorkspace("JP-3", "/tmp/jp-3", "Ghostty", "/no/such/aerospace.toml", slots, "Work on JP-3: read /x/JP-3.md")
+        send = next(c for c in calls if c[:2] == ["tmux", "send-keys"])
+        self.assertEqual(send[4], "claude 'Work on JP-3: read /x/JP-3.md'")
+
     def test_openIssueWorkspace_reattaches_ghostty_when_session_has_no_window(self):
         # JP-1: CIAM-163's session outlived a failed Ghostty launch; the workspace held only the
         # Brave tab, and Open switched to it without opening a terminal.

@@ -326,7 +326,7 @@ def triggerSketchybar():
 # found by the same string. The Claude window is named "claude", the shell "shell" (tmux
 # new-window -n); names, not positions, since a dead window closed by hand shouldn't shift what
 # "the Claude window" means to a later command.
-def openIssueWorkspace(key, dir, ghosttyApp=None, aerospaceConfig=None, slotsFile=None):
+def openIssueWorkspace(key, dir, ghosttyApp=None, aerospaceConfig=None, slotsFile=None, prompt=None):
     workspace = lookupSlot(key, slotsFile)
     if not workspace or not windowsIn(workspace):
         workspace = freeWorkspace(aerospaceConfig)
@@ -350,7 +350,11 @@ def openIssueWorkspace(key, dir, ghosttyApp=None, aerospaceConfig=None, slotsFil
     # simply attaching to the now-fully-set-up session.
     run("tmux", ["new-session", "-d", "-s", key, "-c", dir, "-n", "shell"], os.getcwd())
     run("tmux", ["new-window", "-t", exact(key), "-n", "claude", "-c", dir], os.getcwd())
-    run("tmux", ["send-keys", "-t", exact(f"{key}:claude"), f'claude "Work on Jira {key}"', "Enter"], os.getcwd())
+    # prompt: what the new Claude is asked to do. A file-backed issue (JP-*) passes its own, naming
+    # the issue file -- "Work on Jira JP-3" sent Claude looking for a Jira ticket (2026-11-05).
+    # shlex.quote, since send-keys types this into a shell.
+    claudePrompt = prompt or f"Work on Jira {key}"
+    run("tmux", ["send-keys", "-t", exact(f"{key}:claude"), f"claude {shlex.quote(claudePrompt)}", "Enter"], os.getcwd())
     run("tmux", ["select-window", "-t", exact(f"{key}:claude")], os.getcwd())
     # open -na Ghostty.app --args -e <argv...> launches a fresh window running <argv>.
     # N5: missed the M3 exact-match fix at this call site -- a bare {key} here prefix-matches, so
