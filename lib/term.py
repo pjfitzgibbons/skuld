@@ -17,6 +17,7 @@ import json
 import os
 import shlex
 import shutil
+import sys
 import time
 
 from .start import expandHome, run
@@ -376,10 +377,12 @@ def attachGhosttyWindow(key, workspace, ghosttyApp=None):
 # has already done its work, so a missing aerospace/tmux, an empty listing, or a session whose
 # claude window was closed by hand just leaves focus where it is.
 def focusIssueWorkspace(workspace, key):
+    debug = os.environ.get("PLAN_DEBUG") == "1"
     try:
         run("tmux", ["select-window", "-t", exact(f"{key}:claude")], os.getcwd())
-    except (RuntimeError, OSError):
-        pass
+    except (RuntimeError, OSError) as error:
+        if debug:
+            print(f"[PLAN_DEBUG] focusIssueWorkspace: select-window swallowed: {error}", file=sys.stderr)
     try:
         run("aerospace", ["workspace", workspace], os.getcwd())
         out = run(
@@ -388,10 +391,13 @@ def focusIssueWorkspace(workspace, key):
             os.getcwd(),
         )
         ids = [w["window-id"] for w in json.loads(out or "[]")]
+        if debug and not ids:
+            print(f"[PLAN_DEBUG] focusIssueWorkspace: no Ghostty window found in workspace {workspace}", file=sys.stderr)
         if ids:
             run("aerospace", ["focus", "--window-id", str(ids[0])], os.getcwd())
-    except (RuntimeError, OSError, ValueError):
-        pass
+    except (RuntimeError, OSError, ValueError) as error:
+        if debug:
+            print(f"[PLAN_DEBUG] focusIssueWorkspace: aerospace focus swallowed: {error}", file=sys.stderr)
 
 
 # Ship's terminal: `pr <key>` in a visible tmux window of the issue's session, so Peter watches it

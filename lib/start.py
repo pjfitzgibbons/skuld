@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -129,15 +130,34 @@ def expandHome(dir):
     return re.sub(r"^~(?=$|/)", str(Path.home()), dir)
 
 
+# Opt-in debug tracing (env PLAN_DEBUG=1): every run() call -- every aerospace/tmux/git/etc
+# invocation in the whole tool goes through here -- prints its argv to stderr before running, and
+# its outcome (returned stdout, or the raised RuntimeError) after. Added to trace a focus-after-
+# Start/Open race (term.focusIssueWorkspace() swallows RuntimeError/OSError/ValueError with no
+# logging at all -- lib/term.py's own try/except), where static reading of the code couldn't say
+# which call (if any) was failing versus the window/workspace simply not being focusable yet.
+def _debugEnabled():
+    return os.environ.get("PLAN_DEBUG") == "1"
+
+
 def run(command, args, cwd):
+    if _debugEnabled():
+        print(f"[PLAN_DEBUG] run: {command} {' '.join(args)} (cwd={cwd})", file=sys.stderr)
     try:
         result = subprocess.run([command, *args], cwd=cwd, capture_output=True, text=True)
     except OSError as error:
+        if _debugEnabled():
+            print(f"[PLAN_DEBUG]   -> OSError: {error}", file=sys.stderr)
         raise RuntimeError(f'{command} {" ".join(args)}: {error}') from error
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
         message = stderr or (result.stdout or "").strip() or f"exited with code {result.returncode}"
+        if _debugEnabled():
+            print(f"[PLAN_DEBUG]   -> exit {result.returncode}: {message}", file=sys.stderr)
         raise RuntimeError(f'{command} {" ".join(args)}: {message}')
+    if _debugEnabled():
+        out = (result.stdout or "").strip()
+        print(f"[PLAN_DEBUG]   -> ok: {out[:200]!r}", file=sys.stderr)
     return result.stdout
 
 
