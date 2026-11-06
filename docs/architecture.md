@@ -457,6 +457,11 @@ before `focusIssueWorkspace()`: create-if-missing, a `"ticket"` tmux window in t
 applies to its `claude`/`shell` windows. The file path still prints either way, exactly as
 `openUrl()` always prints its URL first.
 
+The `claude` window's prompt changes too: a JP key's Claude is asked to work on "a local
+file-backed issue, not a Jira ticket" and given the issue file's `issuesDir` path, instead of
+`Work on Jira <KEY>` (`openIssueWorkspace(..., prompt)`; 2026-11-05, after the Jira prompt sent
+JP-3's Claude looking for a Jira ticket).
+
 **OPEN (not solved here):** `projectMarkers` (`lib/config.py`) is documented as a picker/list
 marker per project but has no reader anywhere in `lib/` -- it was never wired up for any project,
 Jira or file-backed; `JP` rows get no special marker beyond printing `"JP"` as `project`, same as

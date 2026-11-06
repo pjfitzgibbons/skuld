@@ -181,7 +181,15 @@ def cmdStart(cfg, key):
         return
     for note in result["notes"]:
         print(note)
-    outcome = term_mod.openIssueWorkspace(key, result["dir"], cfg.get("ghosttyApp"), cfg.get("aerospaceConfig"), cfg.get("slotsFile"))
+    prompt = None
+    if fileissues_mod.isFileBacked(key):
+        prompt = (
+            f"Work on {key}. It is a local file-backed issue, not a Jira ticket: read "
+            f"{jira.browseUrl(key)} first. Its status and log live in that file."
+        )
+    outcome = term_mod.openIssueWorkspace(
+        key, result["dir"], cfg.get("ghosttyApp"), cfg.get("aerospaceConfig"), cfg.get("slotsFile"), prompt
+    )
     print(f'Workspace {outcome["workspace"]} ready.')
     if fileissues_mod.isFileBacked(key):
         # User decision 2026-11-05: a file-backed issue has no browse URL to open in a browser --

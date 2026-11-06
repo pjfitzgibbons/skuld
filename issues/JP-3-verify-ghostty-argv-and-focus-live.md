@@ -1,5 +1,5 @@
 ---
-status: open
+status: in-progress
 type: task
 guide: §4.4
 opened: 2026-11-05
@@ -17,3 +17,6 @@ Two 2026-11-05 changes are covered by unit tests only:
 
 Done when `plan start` and `plan open` on a real issue open an attached window and finish
 focused on its claude tmux window.
+
+## Log
+- 2026-11-05: Started on `feat/JP-3-verify-start-open-s-ghostty`, in /Users/pfitzgibbons/programming/jira-plan.worktrees/JP-3.

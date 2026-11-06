@@ -248,7 +248,7 @@ it has something to do:
    and after the `open` call — never by matching the window's title text alone (see
    [`docs/failure-modes.md`](docs/failure-modes.md), *Open* under Start). It's then moved to the
    workspace resolved above with `aerospace move-node-to-workspace --window-id <id> <workspace>`.
-   Inside the tmux session, a window runs `claude "Work on Jira CIAM-123"` and a second window is a
+   Inside the tmux session, a window runs `claude "Work on Jira CIAM-123"` (for a JP issue, a prompt naming its file instead) and a second window is a
    plain shell. If the tmux session already exists (`tmux has-session -t CIAM-123`), Open just
    focuses the resolved workspace instead of creating anything — `tmux new-session -A` makes
    create-or-attach safe by construction (confirmed via `man tmux`).
