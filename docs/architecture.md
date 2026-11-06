@@ -377,9 +377,9 @@ tmux session whose window has since lost Aerospace focus.
 
 Once a target workspace is resolved: if it already has a `browserBundleId` (`com.brave.Browser`)
 window, `openUrl()` focuses that window (`aerospace focus --window-id`) and opens the URL as a new
-tab in it (`open -a "Brave Browser" <url>`) — **UNVERIFIED**: that a plain `open -a` opens a new
-tab in Chromium's already-running, frontmost window rather than a new window, since this was never
-run live against a real Brave process. Otherwise it opens a new window
+tab in it (`open -a "Brave Browser" <url>`). Verified live 2026-11-05 (JP-4): `plan open CIAM-163`
+with Brave already running opened the ticket as the active tab of the focused workspace's Brave
+window, not a new window. Otherwise it opens a new window
 (`open -na "Brave Browser" --args --new-window <url>`, matching `~/.local/bin/plan-open`'s
 mechanism exactly) and moves it to the target workspace by a before/after window-id diff on
 `browserBundleId`, the same diffing `appWindowIds()`/`newAppWindowId()` already do for Ghostty
