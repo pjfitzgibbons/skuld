@@ -118,20 +118,71 @@ def adfToText(doc):
     return "".join(adfText(node) for node in doc.get("content") or []).strip()
 
 
-# Jira's JQL results plus every JP file whose status is open or in-progress (decision #3,
-# 2026-11-05) -- `plan list` and the picker show one merged list, not two.
+# Jira's JQL results (kept in their JQL `ORDER BY Rank` order -- never re-sorted here) plus
+# every JP file whose status is open or in-progress, interleaved by `after:` (issues/README.md,
+# 2026-11-06). jpRows is assumed already in JP sort order -- rank, then issue number
+# (lib/fileissues.py's FileIssues.list() guarantees that) -- so a group of JP issues sharing one
+# `after:` anchor comes out in that same order (Python's sort/list ops below are stable).
+#
+# A JP row goes right after the Jira row whose id matches its `after:` value. A JP row falls to
+# the end, in JP sort order, when: it has no `after:`; its anchor isn't one of jiraRows' ids
+# (closed/unassigned/filtered-out of the current JQL); or its anchor is a JP key -- which can
+# never be a jiraRows id anyway, since jiraRows only ever holds what Jira's list() returned, so
+# that case is covered by the same "not in jiraRows' ids" check, not a separate one. This also
+# means an `after:` chain can never cycle: only a Jira id anchors a placement, and Jira issues are
+# never reordered or reinserted by this function.
+def mergeRows(jiraRows, jpRows):
+    jiraIds = {row["id"] for row in jiraRows}
+    anchored = {}
+    leftover = []
+    for row in jpRows:
+        anchor = row.get("after")
+        if anchor and anchor in jiraIds:
+            anchored.setdefault(anchor, []).append(row)
+        else:
+            leftover.append(row)
+    merged = []
+    for jiraRow in jiraRows:
+        merged.append(jiraRow)
+        merged.extend(anchored.get(jiraRow["id"], []))
+    merged.extend(leftover)
+    return merged
+
+
+# `plan list`/the picker's rows: Jira's JQL results and every open/in-progress JP file, merged by
+# mergeRows() (decision #3, 2026-11-05; `after:` interleaving, 2026-11-06).
+#
+# Column alignment (2026-11-06): a plain `f'{id}\t{status}\t{subject}'` left every row's tab
+# stops wherever the terminal happened to put them, so columns drifted out of line as soon as ids
+# or statuses had different lengths (e.g. CIAM-163 vs CIAM-94). `line` is now one pre-padded
+# string -- id, then status, each left-justified to the widest id/status across ALL rows (Jira
+# and JP together) with `str.ljust`, with exactly two literal spaces between columns -- so it
+# lines up the same way in `plan list`'s plain stdout and in the fzf picker, with no tab
+# character left for a terminal's own tab stops to misplace.
+#
+# `line` has no tab (or other delimiter) in it at all now, which also keeps cmdPicker's `{1}` key
+# extraction working with no extra plumbing: fzf's field splitting defaults to AWK-style (runs of
+# whitespace) when `--delimiter` isn't given, so `{1}` already resolves to the first
+# whitespace-delimited token -- the bare id, which never itself contains whitespace -- the same
+# way it did under the old tab-delimited `--delimiter \t`/`--with-nth 1,2,3` setup. cmdPicker
+# below no longer passes either option: it isn't needed to extract `{1}`, and dropping it avoids
+# re-introducing a tab-joined display when fzf re-renders the (now space-padded) fields.
 def issueRows(cfg):
-    issues = jiraFrom(cfg).list(cfg.get("jql"))
-    issues = issues + fileissues_mod.FileIssues({"dir": cfg.get("issuesDir")}).list()
+    jiraRows = jiraFrom(cfg).list(cfg.get("jql"))
+    jpRows = fileissues_mod.FileIssues({"dir": cfg.get("issuesDir")}).list()
+    issues = mergeRows(jiraRows, jpRows)
+    idWidth = max((len(issue["id"]) for issue in issues), default=0)
+    statusWidth = max((len(issue["status"]) for issue in issues), default=0)
     rows = []
     for issue in issues:
         row = dict(issue)
-        row["line"] = f'{issue["id"]}\t{issue["status"]}\t{issue["subject"]}'
+        row["key"] = issue["id"]
+        row["line"] = f'{issue["id"].ljust(idWidth)}  {issue["status"].ljust(statusWidth)}  {issue["subject"]}'
         rows.append(row)
     return rows
 
 
-# `plan list`: the picker's rows, printed plainly.
+# `plan list`: the picker's rows, printed plainly -- already column-aligned (issueRows()).
 def cmdList(cfg):
     term_mod.sweepSlots(cfg.get("slotsFile"))
     rows = issueRows(cfg)
@@ -265,7 +316,9 @@ def cmdDone(cfg, key):
 # ctrl-s ships it (check, then pr, in one step -- Go's old ctrl-g bind is removed), ctrl-d marks
 # it done, ctrl-r reloads the list. Each bind shells back out to `plan <subcommand> {1}` (the
 # row's first field, the Jira key) rather than duplicating any of cmdStart/cmdShip/cmdDone's logic
-# inside the fzf process.
+# inside the fzf process. `{1}` is fzf's default AWK-style (whitespace-run) field splitting --
+# no `--delimiter`/`--with-nth` needed (2026-11-06): issueRows()'s `line` is already one padded,
+# tab-free string, so the first whitespace-delimited token is the bare id.
 # L5: fzf runs execute()/reload()/preview's string through a shell, so sys.argv[0] (plan's own
 # path) needs POSIX single-quoting there -- unquoted, a path with a space or shell metacharacter
 # (an install under "Application Support", say) would break the command or, worse, let a crafted
@@ -283,10 +336,6 @@ def cmdPicker(cfg, argv0=None):
         return f"{keys}:execute({self_} {action} {{1}} > /dev/tty 2>&1)+reload({self_} list)"
 
     args = [
-        "--delimiter",
-        "\t",
-        "--with-nth",
-        "1,2,3",
         "--preview",
         f"{self_} view {{1}}",
         "--bind",

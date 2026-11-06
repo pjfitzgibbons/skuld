@@ -4,6 +4,7 @@ type: bug
 guide: §4.4
 opened: 2026-11-05
 closed: 2026-11-05
+rank:
 ---
 
 # Open assumes a live tmux session means a visible Ghostty window

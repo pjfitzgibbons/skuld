@@ -4,6 +4,7 @@ type: task
 guide: §10
 opened: 2026-11-05
 closed:
+rank: 400
 ---
 
 # Verify the live "In Progress" transition from a real CIAM issue's `/transitions`
@@ -20,3 +21,8 @@ hardcoded, so this is a check, not a fix.
 Done when a human-run GET of `/rest/api/3/issue/<KEY>/transitions` on a To Do CIAM issue (Task
 and any other type Start handles) shows a transition whose `to.name` is exactly "In Progress",
 and GUIDE §10's bullet is updated or removed.
+
+## Rank
+
+A human-run GET of one To Do CIAM issue's `/transitions`. Quick, and it confirms Start's only
+Jira write before the next real Start.

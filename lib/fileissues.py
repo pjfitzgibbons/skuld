@@ -168,9 +168,15 @@ class FileIssues:
     # Every JP file whose status is open or in-progress, in the shape lib/jira.py's Jira.list()
     # returns, so lib/cli.py's issueRows() can concatenate the two lists untouched (decision #3).
     # jql is accepted and ignored: a file has no JQL to run.
+    #
+    # Sort order (2026-11-06, issues/README.md's `rank:` field -- the work order; each issue's
+    # file carries its own reason in a `## Rank` section): ranked issues first, by `rank:` ascending;
+    # unranked issues after them, by issue NUMBER ascending (numeric, not the lexical glob/filename
+    # order, so JP-10 doesn't sort before JP-2). Glob order is irrelevant here -- every candidate
+    # is parsed first, then the whole batch is sorted by (hasRank, rank, number) below.
     def list(self, jql=None):
-        rows = []
-        for path in sorted(self.dir.glob(f"{PROJECT}-*.md")):
+        candidates = []
+        for path in self.dir.glob(f"{PROJECT}-*.md"):
             key = _keyFromFilename(path.name)
             if not key:
                 continue
@@ -178,6 +184,14 @@ class FileIssues:
             status = front.get("status", "open")
             if status not in ("open", "in-progress"):
                 continue
+            number = int(key.split("-", 1)[1])
+            rankValue = front.get("rank")
+            rank = int(rankValue) if rankValue else None
+            candidates.append((rank, number, key, title, status, front))
+        candidates.sort(key=lambda c: (c[0] is None, c[0] if c[0] is not None else 0, c[1]))
+
+        rows = []
+        for rank, number, key, title, status, front in candidates:
             statusName, categoryKey = STATUS_MAP.get(status, STATUS_MAP["open"])
             issuetypeName = TYPE_NAME_MAP.get(front.get("type", "task"), "Task")
             rows.append(
@@ -189,6 +203,11 @@ class FileIssues:
                     "issueType": issuetypeName,
                     "project": PROJECT,
                     "parent": None,
+                    # Optional interleaving anchor (issues/README.md's `after:` field, 2026-11-06):
+                    # a Jira key this JP issue should sort right after in issueRows()'s merge
+                    # (lib/cli.py). None when absent -- lib/cli.py's mergeRows() decides the
+                    # fallback-to-end cases (missing, a JP key, or not in the current Jira list).
+                    "after": front.get("after") or None,
                 }
             )
         return rows

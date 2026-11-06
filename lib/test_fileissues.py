@@ -183,6 +183,16 @@ class FileIssuesTests(unittest.TestCase):
         self.assertEqual(row1["statusCategory"], "new")
         self.assertEqual(row1["project"], "JP")
         self.assertEqual(row1["subject"], "Something is wrong")
+        self.assertIsNone(row1["after"])  # OPEN_BUG has no `after:` field
+
+    def test_list_exposes_the_after_field(self):
+        writeIssue(
+            self.dir,
+            "JP-1-something-is-wrong.md",
+            OPEN_BUG.replace("closed:\n---", "closed:\nafter: CIAM-163\n---"),
+        )
+        row = self.fi.list()[0]
+        self.assertEqual(row["after"], "CIAM-163")
 
     # --- browseUrl / closeNote -----------------------------------------------------------------
 
@@ -198,6 +208,55 @@ class FileIssuesTests(unittest.TestCase):
         self.assertNotIn("atlassian", note)
 
 
+    # --- list(): rank order (2026-11-06) ------------------------------------------------------
+
+    def test_list_puts_ranked_issues_first_in_rank_order(self):
+        # JP-2 ranked after JP-1, even though JP-1's filename/number would otherwise sort first.
+        writeIssue(
+            self.dir,
+            "JP-1-something-is-wrong.md",
+            OPEN_BUG.replace("closed:\n---", "closed:\nrank: 2\n---"),
+        )
+        writeIssue(
+            self.dir,
+            "JP-2-a-task-already-underway.md",
+            IN_PROGRESS_TASK.replace("closed:\n---", "closed:\nrank: 1\n---"),
+        )
+        ids = [r["id"] for r in self.fi.list()]
+        self.assertEqual(ids, ["JP-2", "JP-1"])
+
+    def test_list_sorts_unranked_issues_by_issue_number_not_filename(self):
+        # No rank: field on either file. JP-10 must still come after JP-2 (numeric, not lexical
+        # filename order, where "JP-10" < "JP-2").
+        writeIssue(self.dir, "JP-10-tenth-issue.md", OPEN_BUG)
+        writeIssue(self.dir, "JP-2-a-task-already-underway.md", IN_PROGRESS_TASK)
+        ids = [r["id"] for r in self.fi.list()]
+        self.assertEqual(ids, ["JP-2", "JP-10"])
+
+    def test_list_puts_ranked_issues_before_unranked_regardless_of_number(self):
+        # JP-9 (high number, ranked) sorts ahead of JP-1 (low number, no rank: field at all).
+        writeIssue(self.dir, "JP-1-something-is-wrong.md", OPEN_BUG)
+        writeIssue(
+            self.dir,
+            "JP-9-a-task-already-underway.md",
+            IN_PROGRESS_TASK.replace("closed:\n---", "closed:\nrank: 1\n---"),
+        )
+        ids = [r["id"] for r in self.fi.list()]
+        self.assertEqual(ids, ["JP-9", "JP-1"])
+
+    def test_list_treats_a_missing_rank_field_as_unranked(self):
+        # OPEN_BUG's frontmatter has no `rank:` line at all (not even an empty one) -- list()
+        # must not raise and must sort it after any ranked issue.
+        writeIssue(self.dir, "JP-1-something-is-wrong.md", OPEN_BUG)
+        writeIssue(
+            self.dir,
+            "JP-2-a-task-already-underway.md",
+            IN_PROGRESS_TASK.replace("closed:\n---", "closed:\nrank: 1\n---"),
+        )
+        ids = [r["id"] for r in self.fi.list()]
+        self.assertEqual(ids, ["JP-2", "JP-1"])
+
+
 class DispatchTests(unittest.TestCase):
     def test_isFileBacked_routes_JP_only(self):
         self.assertTrue(isFileBacked("JP-1"))
@@ -207,8 +266,9 @@ class DispatchTests(unittest.TestCase):
 
 class MergedListTests(unittest.TestCase):
     # Decision #3: `plan list`/the picker merge Jira's JQL results with every open/in-progress
-    # JP file. lib/cli.py's issueRows() does the concatenation; this exercises the same shape
-    # directly against FileIssues, without needing a live Jira.
+    # JP file. lib/cli.py's mergeRows() does the actual interleaving (lib/test_cli.py's
+    # MergeRowsTests covers that in full); this exercises the same shape directly against
+    # FileIssues, without needing a live Jira.
     def test_file_rows_and_jira_rows_concatenate_by_shape(self):
         dir = tempfile.mkdtemp(prefix="jira-plan-jp-merge-")
         self.addCleanup(shutil.rmtree, dir, ignore_errors=True)
@@ -229,9 +289,17 @@ class MergedListTests(unittest.TestCase):
         merged = jiraRows + fi.list()
         ids = sorted(r["id"] for r in merged)
         self.assertEqual(ids, ["CIAM-9", "JP-1"])
-        # Every row has the same keys, whichever backend it came from.
-        keys = {frozenset(r.keys()) for r in merged}
-        self.assertEqual(len(keys), 1)
+        # Every row shares the core keys Jira's own rows carry, whichever backend it came from.
+        # A JP row also carries `after:` (the interleaving anchor, issues/README.md, 2026-11-06) --
+        # Jira rows don't need one, since lib/cli.py's mergeRows() reads it with a plain .get(),
+        # defaulting to None, rather than requiring every row to share one identical key set.
+        coreKeys = {"id", "subject", "status", "statusCategory", "issueType", "project", "parent"}
+        for row in merged:
+            self.assertTrue(coreKeys <= row.keys())
+        jpRow = next(r for r in merged if r["id"] == "JP-1")
+        self.assertIn("after", jpRow)
+        self.assertIsNone(jpRow["after"])
+        self.assertNotIn("after", jiraRows[0])
 
 
 if __name__ == "__main__":

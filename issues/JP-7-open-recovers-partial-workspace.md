@@ -4,6 +4,7 @@ type: task
 guide: §4.4
 opened: 2026-11-05
 closed:
+rank: 300
 ---
 
 # Open finds a partially provisioned issue workspace and fills in what's missing
@@ -20,6 +21,12 @@ workspace via the slot lookup above, recreating either independently if the othe
 missing `claude`/`shell` window, or a window outside its
 workspace is never repaired. JP-1 (done) fixed one case: a session with no Ghostty window
 in the workspace now gets one.
+
+## Rank
+
+Open recovers any missing piece of a partial setup. Its tests and design build on what JP-3
+(lower rank) shows about the real Ghostty/tmux/Aerospace behavior, including the open question of
+how to tell which Ghostty window belongs to the session.
 
 ## Pieces to check, in setup order
 
