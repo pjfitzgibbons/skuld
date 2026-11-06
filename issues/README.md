@@ -16,8 +16,9 @@ closed:             # YYYY-MM-DD when status leaves open
 ---
 ```
 
-then a `# Title`, what's wrong or wanted, and where it lives (`file:line`). When an issue is done,
-set `status`/`closed` and add a line saying what fixed it (commit or file). List the open ones:
+then a `# Title`, what's wrong or wanted, and where it lives (`file:line`).
+When an issue is done, set `status`/`closed` and add a line saying what fixed
+it (commit or file). List the open ones:
 
 ```
 grep -l '^status: open' issues/JP-*.md
@@ -29,12 +30,13 @@ Issues for one GUIDE section:
 grep -l '^guide:.*§4\.4' issues/JP-*.md
 ```
 
-**User decision 2026-11-05:** `plan` treats `JP-<n>` as issues too (`lib/fileissues.py`), so this
-file format is also what `start`/`ship`/`done`/`view`/the picker read and write. Start sets
-`status: in-progress` itself; `done`/`wontfix` is always set by a human, never by `plan`. Every
-dated note Start or Done would otherwise post as a Jira comment is appended instead as a
-`- YYYY-MM-DD: <text>` line under a `## Log` heading at the end of the file (added once, if not
-already there):
+**User decision 2026-11-05:** `plan` treats `JP-<n>` as issues too
+(`lib/fileissues.py`), so this file format is also what
+`start`/`ship`/`done`/`view`/the picker read and write. Start sets `status:
+in-progress` itself; `done`/`wontfix` is always set by a human, never by
+`plan`. Every dated note Start or Done would otherwise post as a Jira comment
+is appended instead as a `- YYYY-MM-DD: <text>` line under a `## Log` heading
+at the end of the file (added once, if not already there):
 
 ```
 ## Log
