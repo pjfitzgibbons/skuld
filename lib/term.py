@@ -410,18 +410,25 @@ def shipWindow(key, dir, prPath):
     run("tmux", ["select-window", "-t", windowId], os.getcwd())
 
 
-# Start/Open on a file-backed (JP-<n>) issue, user decision 2026-11-05: besides printing the
-# issue's file path (in place of the Jira browse URL openUrl() would open), a "ticket" tmux window
-# in the issue's session, cwd the worktree, runs `nvim <issuePath>` -- issuePath is the issues/
-# copy FileIssues itself reads and writes, not whatever the worktree happens to hold. Create-if-
-# missing: a second Open on the same issue reuses the window rather than opening a duplicate, the
-# same rule openIssueWorkspace() already applies to the session and its claude/shell windows.
-# Called before focusIssueWorkspace(), so focus still ends on the claude window, not this one.
-def openTicketWindow(key, dir, issuePath):
-    if not hasSession(key):
-        run("tmux", ["new-session", "-d", "-s", key, "-c", dir, "-n", "shell"], os.getcwd())
-    names = run("tmux", ["list-windows", "-t", exact(key), "-F", "#{window_name}"], os.getcwd()).split("\n")
-    if "ticket" in names:
+# Start/Open on a file-backed (JP-<n>) issue, user decision 2026-11-05 (revised 2026-11-05): a
+# ticket opens as nvim in a tmux PANE, split side-by-side off the issue's own "claude" window
+# (=KEY:claude, §7.1's session), not a separate "ticket" window -- so Peter sees the ticket and
+# Claude at once without switching windows. issuePath is the issues/ copy FileIssues itself reads
+# and writes, not whatever the worktree happens to hold. `-d` on split-window keeps the claude pane
+# active rather than switching focus to the new one. Create-if-missing: the new pane is tagged with
+# a pane user option (`@plan_ticket=<key>`, set via `-p` on set-option, scoped to that one pane) so
+# a second Open on the same issue reuses it rather than splitting a duplicate -- list-panes reads
+# that option back off every pane in the window before splitting. Called before
+# focusIssueWorkspace(), so focus still ends on the claude window, with its claude pane active, not
+# this one.
+def openTicketPane(key, dir, issuePath):
+    window = exact(f"{key}:claude")
+    tags = run("tmux", ["list-panes", "-t", window, "-F", "#{@plan_ticket}"], os.getcwd()).split("\n")
+    if key in tags:
         return
-    run("tmux", ["new-window", "-t", exact(key), "-n", "ticket", "-c", dir], os.getcwd())
-    run("tmux", ["send-keys", "-t", exact(f"{key}:ticket"), f"nvim {shlex.quote(issuePath)}", "Enter"], os.getcwd())
+    paneId = run(
+        "tmux",
+        ["split-window", "-h", "-d", "-P", "-F", "#{pane_id}", "-t", window, "-c", dir, "nvim", issuePath],
+        os.getcwd(),
+    ).strip()
+    run("tmux", ["set-option", "-p", "-t", paneId, "@plan_ticket", key], os.getcwd())

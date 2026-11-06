@@ -330,40 +330,43 @@ class TermTests(unittest.TestCase):
         self.assertFalse(any("nvim" in c or "lazygit" in c for c in calls))
         self.assertFalse(any(c[1] == "split-window" for c in calls))
 
-    def test_openTicketWindow_creates_the_ticket_window_once(self):
+    def test_openTicketPane_creates_a_split_when_no_tagged_pane_exists(self):
         calls = []
 
         def fake_run(command, args, cwd):
             calls.append([command, *args])
-            if command == "tmux" and args[0] == "has-session":
-                return ""
-            if command == "tmux" and args[0] == "list-windows":
-                return "shell\nclaude\n"
+            if command == "tmux" and args[0] == "list-panes":
+                return "\n"  # one pane, no @plan_ticket option set yet
+            if command == "tmux" and args[0] == "split-window":
+                return "%7\n"
             return ""
 
         with mock.patch.object(term, "run", side_effect=fake_run):
-            term.openTicketWindow("JP-1", "/repo.worktrees/JP-1", "/repo/issues/JP-1-slug.md")
-        newWindow = next(c for c in calls if c[1] == "new-window")
-        sendKeys = next(c for c in calls if c[1] == "send-keys")
-        self.assertEqual(newWindow, ["tmux", "new-window", "-t", "=JP-1", "-n", "ticket", "-c", "/repo.worktrees/JP-1"])
-        self.assertEqual(sendKeys, ["tmux", "send-keys", "-t", "=JP-1:ticket", "nvim /repo/issues/JP-1-slug.md", "Enter"])
-        self.assertFalse(any(c[1] == "new-session" for c in calls))
-
-    def test_openTicketWindow_reuses_an_existing_ticket_window(self):
-        calls = []
-
-        def fake_run(command, args, cwd):
-            calls.append([command, *args])
-            if command == "tmux" and args[0] == "has-session":
-                return ""
-            if command == "tmux" and args[0] == "list-windows":
-                return "shell\nclaude\nticket\n"
-            return ""
-
-        with mock.patch.object(term, "run", side_effect=fake_run):
-            term.openTicketWindow("JP-1", "/repo.worktrees/JP-1", "/repo/issues/JP-1-slug.md")
+            term.openTicketPane("JP-1", "/repo.worktrees/JP-1", "/repo/issues/JP-1-slug.md")
+        listPanes = next(c for c in calls if c[1] == "list-panes")
+        splitWindow = next(c for c in calls if c[1] == "split-window")
+        setOption = next(c for c in calls if c[1] == "set-option")
+        self.assertEqual(listPanes, ["tmux", "list-panes", "-t", "=JP-1:claude", "-F", "#{@plan_ticket}"])
+        self.assertEqual(
+            splitWindow,
+            ["tmux", "split-window", "-h", "-d", "-P", "-F", "#{pane_id}", "-t", "=JP-1:claude", "-c", "/repo.worktrees/JP-1", "nvim", "/repo/issues/JP-1-slug.md"],
+        )
+        self.assertEqual(setOption, ["tmux", "set-option", "-p", "-t", "%7", "@plan_ticket", "JP-1"])
         self.assertFalse(any(c[1] == "new-window" for c in calls))
-        self.assertFalse(any(c[1] == "send-keys" for c in calls))
+
+    def test_openTicketPane_skips_when_a_tagged_pane_already_exists(self):
+        calls = []
+
+        def fake_run(command, args, cwd):
+            calls.append([command, *args])
+            if command == "tmux" and args[0] == "list-panes":
+                return "\nJP-1\n"  # the claude pane has no tag, the split one is already tagged
+            return ""
+
+        with mock.patch.object(term, "run", side_effect=fake_run):
+            term.openTicketPane("JP-1", "/repo.worktrees/JP-1", "/repo/issues/JP-1-slug.md")
+        self.assertFalse(any(c[1] == "split-window" for c in calls))
+        self.assertFalse(any(c[1] == "set-option" for c in calls))
 
     # openUrl: always prints, then acts on a Brave window (never a bare `open <url>`), in
     # the SAME workspace the caller (or an explicit workspace, as Start passes) names.
