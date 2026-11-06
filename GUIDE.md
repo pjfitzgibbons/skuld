@@ -260,9 +260,12 @@ unchanged — `JP`'s issues live in this repo's own `issues/` folder (`lib/filei
 Start/Open find it via `checkouts.JP`, which defaults to this repo. Step 6's transition writes
 `status: in-progress` into the issue file's frontmatter and reads it back the same way; its
 "Started" note is appended under the file's `## Log` heading instead of posted as a Jira comment.
-Step 8 does not open a browser — there's no browse URL — but instead opens (or reuses) a `"ticket"`
-tmux window in the issue's session, running `nvim` on the issue file, and still prints the file
-path. Full detail: [`docs/architecture.md` §7.7](docs/architecture.md#file-backed-issues).
+Step 8 does not open a browser — there's no browse URL — but instead opens (or reuses) a tmux
+**pane**, split side-by-side off the issue's `claude` window, running `nvim` on the issue file, and
+still prints the file path; the split is tagged (a pane user option) so Open run again on the same
+issue reuses it instead of splitting a second one. Open on a JP key is the same code path as Start
+(`cmdStart` serves both), so this already covers "run Open again on an issue that's already
+started." Full detail: [`docs/architecture.md` §7.7](docs/architecture.md#file-backed-issues).
 
 ### 4.5 Ship
 

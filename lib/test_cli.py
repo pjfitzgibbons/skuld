@@ -23,6 +23,39 @@ from lib import term as term_mod
 from lib.cli import main, resolveDir, shellQuote
 
 
+# `start` and `open` are the same command (main() routes both to cmdStart -- a second Open on an
+# issue that already has a worktree is just Start finding "nothing to do" and reusing it), so
+# there is no separate cmdOpen to give its own file-backed branch: cmdStart's is the only one, and
+# it already runs on an Open. This test proves exactly that "Open on a JP key opens the ticket
+# pane" case, calling cmdStart through main(["open", ...]) rather than main(["start", ...]), on a
+# key fileissues.isFileBacked() reports True for, with term.openIssueWorkspace() already reporting
+# an existing session/workspace (created: False) -- the idempotent case a second Open on the same
+# issue hits.
+class CmdOpenFileBackedTests(unittest.TestCase):
+    def test_open_on_a_jp_key_opens_the_ticket_pane(self):
+        class FakeJira:
+            def browseUrl(self, key):
+                return "/repo/issues/JP-1-slug.md"
+
+        with mock.patch.object(cli, "jiraFrom", return_value=FakeJira()), mock.patch.object(
+            term_mod, "sweepSlots"
+        ), mock.patch.object(
+            startLib, "start", return_value={"dir": "/repo.worktrees/JP-1", "notes": []}
+        ), mock.patch.object(
+            term_mod, "openIssueWorkspace", return_value={"created": False, "workspace": "3"}
+        ) as openIssueWorkspace, mock.patch.object(
+            term_mod, "openTicketPane"
+        ) as openTicketPane, mock.patch.object(
+            term_mod, "openUrl"
+        ) as openUrl, mock.patch.object(
+            term_mod, "focusIssueWorkspace"
+        ):
+            main(["open", "JP-1"])
+        openIssueWorkspace.assert_called_once()
+        openTicketPane.assert_called_once_with("JP-1", "/repo.worktrees/JP-1", "/repo/issues/JP-1-slug.md")
+        openUrl.assert_not_called()  # a JP key has no browse URL to open in a browser
+
+
 class ResolveDirTests(unittest.TestCase):
     def test_keeps_cwd_when_already_on_branch_for_key(self):
         def fake_git(cwd, *args):

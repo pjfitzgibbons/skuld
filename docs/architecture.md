@@ -446,15 +446,20 @@ Three decisions this implements:
 
 **Opening a JP issue (Start/Open).** A file-backed issue has no Jira browse URL to put in a
 browser (§7.6.1 doesn't apply to it). Instead `cmdStart` checks `isFileBacked(key)` and, for a JP
-key, calls `term.openTicketWindow(key, dir, jira.browseUrl(key))` (user decision 2026-11-05)
-before `focusIssueWorkspace()`: create-if-missing, a `"ticket"` tmux window in the issue's own
-`=<KEY>` session (§7.1's session, reused if Start already made it), `cwd` the worktree, running
-`nvim <issuePath>` where `issuePath` is `FileIssues.browseUrl(key)` -- the absolute path under
-`issuesDir` that `FileIssues` itself reads and writes, never the worktree's own copy of the file
-(the worktree may not even have one, since `issues/` lives in this repo, not necessarily the repo
-`plan start` makes the JP issue's branch in). A second Open on the same issue reuses the existing
-`"ticket"` window rather than opening a duplicate, the same rule `openIssueWorkspace()` already
-applies to its `claude`/`shell` windows. The file path still prints either way, exactly as
+key, calls `term.openTicketPane(key, dir, jira.browseUrl(key))` (user decision 2026-11-05, revised
+2026-11-05) before `focusIssueWorkspace()`: create-if-missing, a tmux **pane**, split side-by-side
+(`tmux split-window -h`) off the issue's `=<KEY>:claude` window (§7.1's session, reused if Start
+already made it) -- not a separate `"ticket"` window -- `-d` so the claude pane keeps focus, `cwd`
+the worktree, running `nvim <issuePath>` where `issuePath` is `FileIssues.browseUrl(key)` -- the
+absolute path under `issuesDir` that `FileIssues` itself reads and writes, never the worktree's own
+copy of the file (the worktree may not even have one, since `issues/` lives in this repo, not
+necessarily the repo `plan start` makes the JP issue's branch in). The new pane is tagged with a
+pane user option (`set-option -p -t <pane> @plan_ticket <key>`, the pane id captured off
+split-window's own `-P -F '#{pane_id}'`); `openTicketPane()` checks `list-panes -t =<KEY>:claude -F
+'#{@plan_ticket}'` for that tag before splitting, so a second Open on the same issue -- `start` and
+`open` are the same command (`cmdStart`), so this already covers Open on a session Start already
+built -- reuses the existing pane rather than splitting a duplicate. `cmdStart`'s file-backed branch
+is the only one; there is no separate `cmdOpen`. The file path still prints either way, exactly as
 `openUrl()` always prints its URL first.
 
 The `claude` window's prompt changes too: a JP key's Claude is asked to work on "a local

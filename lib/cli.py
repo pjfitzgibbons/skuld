@@ -192,10 +192,13 @@ def cmdStart(cfg, key):
     )
     print(f'Workspace {outcome["workspace"]} ready.')
     if fileissues_mod.isFileBacked(key):
-        # User decision 2026-11-05: a file-backed issue has no browse URL to open in a browser --
-        # instead a "ticket" tmux window opens the issue's own file (the issues/ copy
-        # FileIssues reads and writes, not the worktree's) in nvim, and the path still prints.
-        term_mod.openTicketWindow(key, result["dir"], jira.browseUrl(key))
+        # User decision 2026-11-05 (revised 2026-11-05): a file-backed issue has no browse URL to
+        # open in a browser -- instead a tmux pane split off the issue's "claude" window opens the
+        # issue's own file (the issues/ copy FileIssues reads and writes, not the worktree's) in
+        # nvim, and the path still prints. Start and Open share this same call (both run cmdStart),
+        # so a second Open on an issue already started reuses the pane rather than splitting
+        # another one -- openTicketPane()'s own tagged-pane check.
+        term_mod.openTicketPane(key, result["dir"], jira.browseUrl(key))
         print(jira.browseUrl(key))
     else:
         # Start runs in whatever terminal invoked `plan start`, not the new issue's own
