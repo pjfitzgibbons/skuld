@@ -10,15 +10,19 @@ blocked_by:
 relates:
 ---
 
-### Task
+## Task
+
 What to create or solve, and why, in one to three sentences. Link the design section by anchor.
+
 - In scope: … (bullets, where the Task needs them)
 
-### Guardrails
+## Guardrails
+
 - A condition the work must hold: a constraint, an invariant, what must not change.
 - Out of scope: … (only when someone might assume it's in)
 
-### Lenses
+## Lenses
+
 - [ ] L1 Security
 - [ ] L2 Privacy and data
 - [ ] L3 Reliability and failure
@@ -32,7 +36,8 @@ What to create or solve, and why, in one to three sentences. Link the design sec
 - [ ] L11 Invariants
 - [ ] L12 Offline and concurrency
 
-### Done
+## Done
+
 - [ ] A pass/fail condition: a reader can check it and say yes or no.
 - [ ] Another, until every part of the Task has one.
 

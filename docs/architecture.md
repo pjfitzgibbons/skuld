@@ -81,7 +81,7 @@ tool's control. Its GitHub integration links commits and pull requests to an iss
 name or PR title contains the key, and shows them in the issue's development panel; this tool
 writes no field for that.
 
-The machine config, `~/.config/jira-plan/config.json`, holds what differs per Mac: `issueStore`,
+The machine config, `~/.config/skuld/config.json`, holds what differs per Mac: `issueStore`,
 `checkouts` (this Mac's main checkouts) and the Jira projects with their repo remotes.
 
 The Jira API token lives only in `~/.netrc` (machine `cryoport.atlassian.net`), read fresh by
@@ -159,7 +159,7 @@ lists, `Jira` for any other.
 The clients:
 
 - **`plan`** (`bin/plan`, `lib/cli.py`) shows Next up in an fzf picker, and runs `new`, `set`,
-  `view`, Start, Open, Ship and Done ([GUIDE.md §4](../GUIDE.md#4-the-terminal-frontend)).
+  `view`, Start, Open, Ship and Done ([GUIDE.md §3](../GUIDE.md#3-commands)).
 - **`pr`** commits, pushes, opens or updates the PR, posts review replies, and cleans up after a
   merge.
 - **`issue-check`** runs the checker over the store or the files named (§7.7).
@@ -321,7 +321,7 @@ trigger.
 A round is written into `<store>/reviews/<KEY>/`: `commit.txt` when the tree has changes,
 `pr-body.md`, and a reply to each review thread in `replies/<comment id>.md`. For a Jira issue it
 also holds `issue.md`, the issue's description with Done boxes ticked; a store issue's Done boxes
-are ticked in the ticket's own `### Done` section.
+are ticked in the ticket's own `## Done` section.
 
 Ship runs `ship.check()` and refuses by name a missing PR body, a missing commit message while the
 tree has changes, or a branch that isn't the issue's. On success it runs `pr <KEY>` visibly in a

@@ -142,7 +142,7 @@ skuld/                         the code and the definitions
     SK-12/                     one issue's review rounds: PR body, findings, replies
 ```
 
-`<store>` comes from `~/.config/jira-plan/config.json`'s `issueStore` key (today's `issuesDir`, renamed). The review
+`<store>` comes from `~/.config/skuld/config.json`'s `issueStore` key (today's `issuesDir`, renamed). The review
 files `pr` reads from `<repo>/.tmp/<KEY>/` today move to `<store>/reviews/<KEY>/`, so a round's PR body, findings and
 replies are committed with the ticket they belong to. Their format is specified with the `ReviewStore` port in phase 4;
 until then the checker only requires that `<KEY>` names an issue in the store or another configured tracker. A store holds
@@ -171,7 +171,7 @@ debounceSeconds: 5
 ```
 
 ```json
-// ~/.config/jira-plan/config.json: this machine only
+// ~/.config/skuld/config.json: this machine only
 {
   "issueStore": "~/issues",
   "checkouts": ["~/programming/skuld", "~/work/cryo-gitops-github"],
@@ -302,19 +302,19 @@ blocked_by: [] # keys, flow list; see Blockers
 points: # optional: 1 2 3 5 8 13
 ---
 
-### Task
+## Task
 
 …
 
-### Guardrails
+## Guardrails
 
 …
 
-### Lenses
+## Lenses
 
 - [ ] L1 Security: …
 
-### Done
+## Done
 
 - [ ] …
 
@@ -489,7 +489,7 @@ tempotag ([#75](http://127.0.0.1:3010/issues/75), [#76](http://127.0.0.1:3010/is
 | #37   | plan.py: duration, lane heads, next/ready/why, schedule                  | `next` and `ready` in plan order ([§4.4](#milestones)); duration later                                |
 | #36   | Design 0001: next/ready without lane heads; repo scope                   | Its repo-scope rule answers open question 4                                                           |
 | #114  | Show Next up in plan order, by milestone and with blockers first         | Plan order over the store: milestone `ordinal`, blockers first, issue `ordinal` ([§4.4](#milestones)) |
-| #111  | Keep each issue's Done ticks in Redmine and render them into the PR body | Simpler with files: the ticks live in the issue's `### Done`, and `pr` renders them into the PR body  |
+| #111  | Keep each issue's Done ticks in Redmine and render them into the PR body | Simpler with files: the ticks live in the issue's `## Done`, and `pr` renders them into the PR body  |
 | #21   | Reality checks in the Redmine plugin                                     | Checker rules ([§4.6](#checker))                                                                      |
 | #173  | Reference Redmine issues as gh-plan#n                                    | Settled by `PREFIX-number` keys; close once the store's keys are in use                               |
 | #61   | Post-merge hook reports closes                                           | Open question 5: `plan done` closes a file-store issue after a confirmed merge                        |

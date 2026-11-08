@@ -26,21 +26,21 @@ from lib.cli import main, mergeRows, resolveDir, shellQuote
 # `start` and `open` are the same command (main() routes both to cmdStart -- a second Open on an
 # issue that already has a worktree is just Start finding "nothing to do" and reusing it), so
 # there is no separate cmdOpen to give its own file-backed branch: cmdStart's is the only one, and
-# it already runs on an Open. This test proves exactly that "Open on a JP key opens the ticket
+# it already runs on an Open. This test proves exactly that "Open on a SK key opens the ticket
 # pane" case, calling cmdStart through main(["open", ...]) rather than main(["start", ...]), on a
 # key fileissues.isFileBacked() reports True for, with term.openIssueWorkspace() already reporting
 # an existing session/workspace (created: False) -- the idempotent case a second Open on the same
 # issue hits.
 class CmdOpenFileBackedTests(unittest.TestCase):
-    def test_open_on_a_jp_key_opens_the_ticket_pane(self):
+    def test_open_on_a_sk_key_opens_the_ticket_pane(self):
         class FakeJira:
             def browseUrl(self, key):
-                return "/repo/issues/JP-1-slug.md"
+                return "/repo/issues/SK-1-slug.md"
 
         with mock.patch.object(cli, "jiraFrom", return_value=FakeJira()), mock.patch.object(
             term_mod, "sweepSlots"
         ), mock.patch.object(
-            startLib, "start", return_value={"dir": "/repo.worktrees/JP-1", "notes": []}
+            startLib, "start", return_value={"dir": "/repo.worktrees/SK-1", "notes": []}
         ), mock.patch.object(
             term_mod, "openIssueWorkspace", return_value={"created": False, "workspace": "3"}
         ) as openIssueWorkspace, mock.patch.object(
@@ -50,10 +50,10 @@ class CmdOpenFileBackedTests(unittest.TestCase):
         ) as openUrl, mock.patch.object(
             term_mod, "focusIssueWorkspace"
         ):
-            main(["open", "JP-1"])
+            main(["open", "SK-1"])
         openIssueWorkspace.assert_called_once()
-        openTicketPane.assert_called_once_with("JP-1", "/repo.worktrees/JP-1", "/repo/issues/JP-1-slug.md")
-        openUrl.assert_not_called()  # a JP key has no browse URL to open in a browser
+        openTicketPane.assert_called_once_with("SK-1", "/repo.worktrees/SK-1", "/repo/issues/SK-1-slug.md")
+        openUrl.assert_not_called()  # a SK key has no browse URL to open in a browser
 
 
 class ResolveDirTests(unittest.TestCase):
@@ -230,25 +230,25 @@ class ShellQuoteTests(unittest.TestCase):
 
 
 # `after:` interleaving (2026-11-06, issues/README.md): issueRows() factored mergeRows(jiraRows,
-# jpRows) out as a pure function so this can be tested without a real Jira or FileIssues. jpRows
-# below is handed in already in JP sort order (rank, then number) -- the same guarantee
+# skRows) out as a pure function so this can be tested without a real Jira or FileIssues. skRows
+# below is handed in already in SK sort order (ordinal, then number) -- the same guarantee
 # lib/fileissues.py's FileIssues.list() makes -- since mergeRows() relies on that, not on sorting
 # it itself.
 def jiraRow(id):
     return {"id": id, "subject": f"Jira issue {id}", "status": "In Progress", "statusCategory": "indeterminate", "issueType": "Story", "project": id.split("-")[0], "parent": None}
 
 
-def jpRow(id, after=None):
-    return {"id": id, "subject": f"JP issue {id}", "status": "To Do", "statusCategory": "new", "issueType": "Task", "project": "JP", "parent": None, "after": after}
+def skRow(id, after=None):
+    return {"id": id, "subject": f"SK issue {id}", "status": "To Do", "statusCategory": "new", "issueType": "Task", "project": "SK", "parent": None, "after": after}
 
 
 # Column alignment (2026-11-06): issueRows() used to build `f'{id}\t{status}\t{subject}'`,
 # whose tab stops drifted whenever ids/statuses had different lengths (the user's screenshot:
 # CIAM-163/CIAM-94/CIAM-80 lining up differently). These mock jiraFrom()/FileIssues so issueRows()
-# runs against a controlled mix of Jira and JP rows with different id/status lengths, without a
+# runs against a controlled mix of Jira and SK rows with different id/status lengths, without a
 # real Jira or issues/ dir.
 class IssueRowsAlignmentTests(unittest.TestCase):
-    def _run(self, jiraRows, jpRows):
+    def _run(self, jiraRows, skRows):
         class FakeJira:
             def list(self, jql=None):
                 return jiraRows
@@ -258,7 +258,7 @@ class IssueRowsAlignmentTests(unittest.TestCase):
                 pass
 
             def list(self, jql=None):
-                return jpRows
+                return skRows
 
         with mock.patch.object(cli, "jiraFrom", return_value=FakeJira()), mock.patch.object(
             cli.fileissues_mod, "FileIssues", FakeFileIssues
@@ -292,7 +292,7 @@ class IssueRowsAlignmentTests(unittest.TestCase):
 
     def test_key_is_still_the_bare_id_for_fzfs_default_field_splitting(self):
         jira = [{"id": "CIAM-163", "subject": "Doc registry DR-1: a longer subject with spaces", "status": "In Progress", "statusCategory": "indeterminate", "issueType": "Story", "project": "CIAM", "parent": None}]
-        jp = [{"id": "JP-2", "subject": "short", "status": "To Do", "statusCategory": "new", "issueType": "Bug", "project": "JP", "parent": None, "after": None}]
+        jp = [{"id": "SK-2", "subject": "short", "status": "To Do", "statusCategory": "new", "issueType": "Bug", "project": "SK", "parent": None, "after": None}]
         rows = self._run(jira, jp)
         for row in rows:
             self.assertEqual(row["key"], row["id"])
@@ -308,7 +308,7 @@ class IssueRowsAlignmentTests(unittest.TestCase):
         # line, exercised directly as the field-index-expression contract fzf's own docs specify
         # (default delimiter = runs of whitespace).
         jira = [{"id": "CIAM-163", "subject": "Doc registry DR-1", "status": "In Progress", "statusCategory": "indeterminate", "issueType": "Story", "project": "CIAM", "parent": None}]
-        jp = [{"id": "JP-9", "subject": "Point failure-modes.md", "status": "To Do", "statusCategory": "new", "issueType": "Task", "project": "JP", "parent": None, "after": None}]
+        jp = [{"id": "SK-9", "subject": "Point failure-modes.md", "status": "To Do", "statusCategory": "new", "issueType": "Task", "project": "SK", "parent": None, "after": None}]
         rows = self._run(jira, jp)
         for row in rows:
             # awk's default field splitting (FS unset) is the same "runs of whitespace" rule fzf
@@ -322,45 +322,45 @@ class IssueRowsAlignmentTests(unittest.TestCase):
 class MergeRowsTests(unittest.TestCase):
     def test_anchored_issue_sorts_right_after_its_jira_issue(self):
         jira = [jiraRow("CIAM-1"), jiraRow("CIAM-2")]
-        jp = [jpRow("JP-1", after="CIAM-1")]
+        jp = [skRow("SK-1", after="CIAM-1")]
         ids = [r["id"] for r in mergeRows(jira, jp)]
-        self.assertEqual(ids, ["CIAM-1", "JP-1", "CIAM-2"])
+        self.assertEqual(ids, ["CIAM-1", "SK-1", "CIAM-2"])
 
-    def test_two_jp_issues_sharing_one_anchor_keep_their_jp_sort_order(self):
+    def test_two_sk_issues_sharing_one_anchor_keep_their_sk_sort_order(self):
         jira = [jiraRow("CIAM-1")]
-        # jp is handed in already in JP sort order (as FileIssues.list() would return it) --
-        # JP-3 (lower rank) before JP-9, both anchored to the same Jira issue.
-        jp = [jpRow("JP-3", after="CIAM-1"), jpRow("JP-9", after="CIAM-1")]
+        # jp is handed in already in SK sort order (as FileIssues.list() would return it) --
+        # SK-3 (lower ordinal) before SK-9, both anchored to the same Jira issue.
+        jp = [skRow("SK-3", after="CIAM-1"), skRow("SK-9", after="CIAM-1")]
         ids = [r["id"] for r in mergeRows(jira, jp)]
-        self.assertEqual(ids, ["CIAM-1", "JP-3", "JP-9"])
+        self.assertEqual(ids, ["CIAM-1", "SK-3", "SK-9"])
 
     def test_anchor_missing_from_the_jira_list_falls_to_the_end(self):
-        # CIAM-9 isn't in jira (closed/unassigned/filtered out of the JQL) -- JP-1 falls to the
+        # CIAM-9 isn't in jira (closed/unassigned/filtered out of the JQL) -- SK-1 falls to the
         # end instead of vanishing or raising.
         jira = [jiraRow("CIAM-1")]
-        jp = [jpRow("JP-1", after="CIAM-9")]
+        jp = [skRow("SK-1", after="CIAM-9")]
         ids = [r["id"] for r in mergeRows(jira, jp)]
-        self.assertEqual(ids, ["CIAM-1", "JP-1"])
+        self.assertEqual(ids, ["CIAM-1", "SK-1"])
 
-    def test_a_jp_key_anchor_falls_to_the_end(self):
-        # Only a Jira key can anchor a placement -- a JP key can never appear in jiraRows' ids,
+    def test_a_sk_key_anchor_falls_to_the_end(self):
+        # Only a Jira key can anchor a placement -- a SK key can never appear in jiraRows' ids,
         # so this is covered by the same "anchor not in jiraRows" path, with no special case.
         jira = [jiraRow("CIAM-1")]
-        jp = [jpRow("JP-2", after="JP-1")]
+        jp = [skRow("SK-2", after="SK-1")]
         ids = [r["id"] for r in mergeRows(jira, jp)]
-        self.assertEqual(ids, ["CIAM-1", "JP-2"])
+        self.assertEqual(ids, ["CIAM-1", "SK-2"])
 
     def test_no_after_at_all_gives_todays_plain_concatenation(self):
         jira = [jiraRow("CIAM-1"), jiraRow("CIAM-2")]
-        jp = [jpRow("JP-1"), jpRow("JP-2")]
+        jp = [skRow("SK-1"), skRow("SK-2")]
         ids = [r["id"] for r in mergeRows(jira, jp)]
-        self.assertEqual(ids, ["CIAM-1", "CIAM-2", "JP-1", "JP-2"])
+        self.assertEqual(ids, ["CIAM-1", "CIAM-2", "SK-1", "SK-2"])
 
     def test_jira_rows_are_never_reordered(self):
         jira = [jiraRow("CIAM-2"), jiraRow("CIAM-1")]  # deliberately not key order -- JQL's own
-        jp = [jpRow("JP-1", after="CIAM-1")]
+        jp = [skRow("SK-1", after="CIAM-1")]
         ids = [r["id"] for r in mergeRows(jira, jp)]
-        self.assertEqual(ids, ["CIAM-2", "CIAM-1", "JP-1"])
+        self.assertEqual(ids, ["CIAM-2", "CIAM-1", "SK-1"])
 
 
 if __name__ == "__main__":

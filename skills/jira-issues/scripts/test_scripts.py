@@ -29,17 +29,17 @@ SCRIPTS = Path(__file__).parent
 # outline.py
 # ---------------------------------------------------------------------------
 
-GOOD = """### Task
+GOOD = """## Task
 Do the thing.
 
-### Guardrails
+## Guardrails
 Don't do the other thing.
 
-### Lenses
+## Lenses
 - [x] L1: applies because the thing touches X
 - [ ] L2
 
-### Done
+## Done
 - [x] L1: covered by the X check
 - [ ] tests pass
 """
@@ -50,16 +50,25 @@ class Outline(unittest.TestCase):
         self.assertEqual(outline.check(GOOD, ["L1", "L2"], []), [])
 
     def test_missing_section(self):
-        body = GOOD.replace("### Guardrails\nDon't do the other thing.\n\n", "")
+        body = GOOD.replace("## Guardrails\nDon't do the other thing.\n\n", "")
         findings = outline.check(body, ["L1", "L2"], [])
-        self.assertIn("missing section: ### Guardrails", findings)
+        self.assertIn("missing section: ## Guardrails", findings)
 
-    def test_old_style_heading_flagged(self):
-        findings = outline.check("## Summary\nhi\n" + GOOD, ["L1", "L2"], [])
-        self.assertTrue(any("old-style heading" in f for f in findings))
+    def test_outline_section_one_level_deep_flagged(self):
+        body = GOOD.replace("## Guardrails", "### Guardrails")
+        findings = outline.check(body, ["L1", "L2"], [])
+        self.assertIn("heading level: 'Guardrails' is an outline section; write it as ## Guardrails", findings)
+
+    def test_other_subsection_allowed(self):
+        body = GOOD.replace("Do the thing.\n", "Do the thing.\n\n### Background\nWhy.\n")
+        self.assertEqual(outline.check(body, ["L1", "L2"], []), [])
+
+    def test_log_section_allowed(self):
+        body = GOOD + "\n## Log\n- 2026-11-08: Started.\n"
+        self.assertEqual(outline.check(body, ["L1", "L2"], []), [])
 
     def test_old_outline_sections_flagged(self):
-        body = GOOD + "\n### Summary\nold stuff\n"
+        body = GOOD + "\n## Summary\nold stuff\n"
         findings = outline.check(body, ["L1", "L2"], [])
         self.assertTrue(any("old outline" in f for f in findings))
 
@@ -84,11 +93,11 @@ class Outline(unittest.TestCase):
 
     def test_extra_section_required(self):
         findings = outline.check(GOOD, ["L1", "L2"], ["Risks"])
-        self.assertIn("missing section: ### Risks", findings)
+        self.assertIn("missing section: ## Risks", findings)
 
     def test_expected_extracts_lenses_and_sections(self):
         global_text = "| L1 Security | ... |\n| L2 Performance | ... |\n"
-        repo_text = "Also required: `### Rollout`\n| L3 Repo-only | ... |\n"
+        repo_text = "Also required: `## Rollout`\n| L3 Repo-only | ... |\n"
         lenses, extra = outline.expected(global_text, repo_text)
         self.assertEqual(lenses, ["L1", "L2", "L3"])
         self.assertEqual(extra, ["Rollout"])
@@ -607,7 +616,7 @@ class LinkDirection(unittest.TestCase):
 
 def new_issue_file(d, **fields):
     front = "\n".join(f"{k}: {v}" for k, v in fields.items())
-    body = "### Task\nDo it.\n\n### Guardrails\nNone.\n\n### Lenses\n\n### Done\n- [ ] a\n- [ ] b\n"
+    body = "## Task\nDo it.\n\n## Guardrails\nNone.\n\n## Lenses\n\n## Done\n- [ ] a\n- [ ] b\n"
     f = Path(d) / "issue.md"
     f.write_text(f"---\n{front}\n---\n{body}")
     return f
@@ -622,7 +631,7 @@ class NewIssue(unittest.TestCase):
             f = new_issue_file(d, project="CIAM", type="Task", summary="Retire src")
             fields, body = new_issue.parse(f.read_text())
         self.assertEqual(fields, {"project": "CIAM", "type": "Task", "summary": "Retire src"})
-        self.assertTrue(body.startswith("### Task"))
+        self.assertTrue(body.startswith("## Task"))
 
     def test_parse_refuses_unknown_field(self):
         with self.assertRaises(checklist.Refused):

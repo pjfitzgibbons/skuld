@@ -1,19 +1,19 @@
-# JP-<n> issues: Jira Plan's own backlog (issues/README.md), stored as files in this repo instead
+# SK-<n> issues: Jira Plan's own backlog (issues/README.md), stored as files in this repo instead
 # of Jira. FileIssues implements the same surface lib/jira.py's Jira class does -- list(jql),
 # issue(key), blockers(issue), statusTransitionId(key, name), transition(key, name),
 # textComment(text), addComment(key, doc) -- returning dicts shaped the way callers (lib/cli.py,
-# lib/start.py, lib/done.py) already read Jira's, so none of them need a JP-specific branch.
+# lib/start.py, lib/done.py) already read Jira's, so none of them need a SK-specific branch.
 # isFileBacked(key) is the dispatch: lib/cli.py's jiraFrom(cfg, key) calls it to decide whether a
 # key's commands go to Jira or to a FileIssues instance -- user decision 2026-11-05.
 #
 # Three decisions this implements (2026-11-05):
-#  1. Every plan command (list/picker, view, start/open, ship, done) works on a JP key.
+#  1. Every plan command (list/picker, view, start/open, ship, done) works on a SK key.
 #  2. Writes edit the file: Start's transition sets frontmatter `status: in-progress`, then reads
 #     it back (transition()), the same refuse-if-it-didn't-take guard Jira's own transition()
 #     uses. Every addComment call appends a dated `- YYYY-MM-DD: <text>` line under a `## Log`
 #     heading at the end of the file (created if absent). Done never changes status -- same hard
 #     rule as Jira (docs/architecture.md §7.3); the human sets `status: done` by hand.
-#  3. `plan list`/the picker merge Jira's JQL results with every JP file whose status is `open` or
+#  3. `plan list`/the picker merge Jira's JQL results with every SK file whose status is `open` or
 #     `in-progress` (lib/cli.py's issueRows()).
 import re
 from datetime import date
@@ -21,9 +21,9 @@ from pathlib import Path
 
 from .jira import projectOf, textComment as _adfTextComment
 
-# The one project this module serves. projectOf("JP-3") == PROJECT routes a key here instead of
+# The one project this module serves. projectOf("SK-3") == PROJECT routes a key here instead of
 # to Jira.
-PROJECT = "JP"
+PROJECT = "SK"
 
 # issues/README.md's status enum -> the Jira-shaped (status name, statusCategory key) pair a
 # caller reads off issue["fields"]["status"]. done/wontfix both read as Jira's "done" category --
@@ -143,6 +143,13 @@ def _keyFromFilename(name):
     return m.group(1) if m else None
 
 
+# A list() candidate's place in the work order: issues with an ordinal first, by ordinal, then the
+# rest; the issue number breaks ties.
+def workOrder(candidate):
+    ordinal, number = candidate[0], candidate[1]
+    return (ordinal is None, ordinal or 0, number)
+
+
 class FileIssues:
     # settings: { dir }. dir defaults to this repo's issues/ folder (lib/config.py's issuesDir).
     def __init__(self, settings=None):
@@ -165,15 +172,14 @@ class FileIssues:
             raise RuntimeError(f"more than one issue file matches {key} in {self.dir}: {names}")
         return matches[0]
 
-    # Every JP file whose status is open or in-progress, in the shape lib/jira.py's Jira.list()
+    # Every SK file whose status is open or in-progress, in the shape lib/jira.py's Jira.list()
     # returns, so lib/cli.py's issueRows() can concatenate the two lists untouched (decision #3).
     # jql is accepted and ignored: a file has no JQL to run.
     #
-    # Sort order (2026-11-06, issues/README.md's `rank:` field -- the work order; each issue's
-    # file carries its own reason in a `## Rank` section): ranked issues first, by `rank:` ascending;
-    # unranked issues after them, by issue NUMBER ascending (numeric, not the lexical glob/filename
-    # order, so JP-10 doesn't sort before JP-2). Glob order is irrelevant here -- every candidate
-    # is parsed first, then the whole batch is sorted by (hasRank, rank, number) below.
+    # Sort order (issues/README.md's `ordinal:` field, the work order): issues with an ordinal first,
+    # by `ordinal:` ascending; the rest after them, by issue NUMBER ascending (numeric, not the
+    # lexical glob/filename order, so SK-10 doesn't sort before SK-2). Glob order is irrelevant
+    # here -- every candidate is parsed first, then the whole batch is sorted by workOrder().
     def list(self, jql=None):
         candidates = []
         for path in self.dir.glob(f"{PROJECT}-*.md"):
@@ -185,13 +191,13 @@ class FileIssues:
             if status not in ("open", "in-progress"):
                 continue
             number = int(key.split("-", 1)[1])
-            rankValue = front.get("rank")
-            rank = int(rankValue) if rankValue else None
-            candidates.append((rank, number, key, title, status, front))
-        candidates.sort(key=lambda c: (c[0] is None, c[0] if c[0] is not None else 0, c[1]))
+            ordinalValue = front.get("ordinal")
+            ordinal = int(ordinalValue) if ordinalValue else None
+            candidates.append((ordinal, number, key, title, status, front))
+        candidates.sort(key=workOrder)
 
         rows = []
-        for rank, number, key, title, status, front in candidates:
+        for _ordinal, number, key, title, status, front in candidates:
             statusName, categoryKey = STATUS_MAP.get(status, STATUS_MAP["open"])
             issuetypeName = TYPE_NAME_MAP.get(front.get("type", "task"), "Task")
             rows.append(
@@ -204,9 +210,9 @@ class FileIssues:
                     "project": PROJECT,
                     "parent": None,
                     # Optional interleaving anchor (issues/README.md's `after:` field, 2026-11-06):
-                    # a Jira key this JP issue should sort right after in issueRows()'s merge
+                    # a Jira key this SK issue should sort right after in issueRows()'s merge
                     # (lib/cli.py). None when absent -- lib/cli.py's mergeRows() decides the
-                    # fallback-to-end cases (missing, a JP key, or not in the current Jira list).
+                    # fallback-to-end cases (missing, a SK key, or not in the current Jira list).
                     "after": front.get("after") or None,
                 }
             )
@@ -236,7 +242,7 @@ class FileIssues:
             },
         }
 
-    # Files carry no issue links, so nothing ever blocks a JP issue.
+    # Files carry no issue links, so nothing ever blocks a SK issue.
     def blockers(self, issue):
         return []
 

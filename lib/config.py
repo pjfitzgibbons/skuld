@@ -11,8 +11,8 @@ from .done import DISPOSABLE
 
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".config", "jira-plan", "config.json")
 
-# This repo's own root (lib/'s parent) -- where JP-<n> issues live (issues/) and the repo
-# checkouts.JP falls back to, so Start/Open/Ship/Done find it regardless of where `plan` runs
+# This repo's own root (lib/'s parent) -- where SK-<n> issues live (issues/) and the repo
+# checkouts.SK falls back to, so Start/Open/Ship/Done find it regardless of where `plan` runs
 # from. See issuesDir/checkouts below.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -32,11 +32,11 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #                  found in some other listed repo (start.py's mainCheckout()) and cwd isn't inside
 #                  a git repo at all. One listed repo is used outright; more than one asks (fzf) for
 #                  a pick; none listed is a refusal naming both ways to fix it. Default: {} for
-#                  every project but JP, which defaults to this repo's own root (JP issues are
+#                  every project but SK, which defaults to this repo's own root (SK issues are
 #                  this repo's own backlog, lib/fileissues.py) -- a config that sets its OWN
-#                  `checkouts` dict without a "JP" entry loses this default (the merge below is
+#                  `checkouts` dict without a "SK" entry loses this default (the merge below is
 #                  shallow, same caveat as typeMap's); add one back by hand if that happens:
-#                  "JP": "~/programming/jira-plan".
+#                  "SK": "~/programming/jira-plan".
 #   projectMarkers { <Jira project key>: <short marker string shown in the picker/list>, e.g.
 #                  { "CIAM": "C" } }. Cosmetic only; falls back to the project key itself.
 #                  Default: {}.
@@ -78,14 +78,14 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #   browserBundleId The launched browser's bundle id, used both to find an existing window on the
 #                  target workspace to reuse as a tab, and for the before/after window-id diff that
 #                  finds a newly-opened window. Default: "com.brave.Browser" (Brave's bundle id).
-#   issuesDir      Where JP-<n> issue files live (lib/fileissues.py's FileIssues), per
+#   issuesDir      Where SK-<n> issue files live (lib/fileissues.py's FileIssues), per
 #                  issues/README.md's format. Default: this repo's own issues/ folder, derived
 #                  from lib/config.py's own location -- never a path a user has to set, since
-#                  JP issues are this tool's own backlog, not a configurable tracker.
+#                  SK issues are this tool's own backlog, not a configurable tracker.
 def defaults():
     return {
         "jql": DEFAULT_JQL,
-        "checkouts": {"JP": [_REPO_ROOT]},
+        "checkouts": {"SK": [_REPO_ROOT]},
         "projectMarkers": {},
         "disposable": DISPOSABLE,
         "pr": "~/.local/bin/pr",

@@ -16,8 +16,8 @@ from . import term as term_mod
 from .jira import KEY_RE, Jira
 
 
-# The client key's commands go through: FileIssues for a JP-<n> key (lib/fileissues.py, user
-# decision 2026-11-05 -- JP issues are this repo's own backlog, stored as files, not Jira), Jira
+# The client key's commands go through: FileIssues for a SK-<n> key (lib/fileissues.py, user
+# decision 2026-11-05 -- SK issues are this repo's own backlog, stored as files, not Jira), Jira
 # for every other project. Every call site below already knows its key before it needs a client
 # (checkId() runs first), so dispatch is a plain "which class for this key", not a wrapping
 # router object: each returned client implements the same surface (list/issue/blockers/
@@ -119,23 +119,23 @@ def adfToText(doc):
 
 
 # Jira's JQL results (kept in their JQL `ORDER BY Rank` order -- never re-sorted here) plus
-# every JP file whose status is open or in-progress, interleaved by `after:` (issues/README.md,
-# 2026-11-06). jpRows is assumed already in JP sort order -- rank, then issue number
-# (lib/fileissues.py's FileIssues.list() guarantees that) -- so a group of JP issues sharing one
+# every SK file whose status is open or in-progress, interleaved by `after:` (issues/README.md).
+# skRows is assumed already in SK sort order -- ordinal, then issue number
+# (lib/fileissues.py's FileIssues.list() guarantees that) -- so a group of SK issues sharing one
 # `after:` anchor comes out in that same order (Python's sort/list ops below are stable).
 #
-# A JP row goes right after the Jira row whose id matches its `after:` value. A JP row falls to
-# the end, in JP sort order, when: it has no `after:`; its anchor isn't one of jiraRows' ids
-# (closed/unassigned/filtered-out of the current JQL); or its anchor is a JP key -- which can
+# A SK row goes right after the Jira row whose id matches its `after:` value. A SK row falls to
+# the end, in SK sort order, when: it has no `after:`; its anchor isn't one of jiraRows' ids
+# (closed/unassigned/filtered-out of the current JQL); or its anchor is a SK key -- which can
 # never be a jiraRows id anyway, since jiraRows only ever holds what Jira's list() returned, so
 # that case is covered by the same "not in jiraRows' ids" check, not a separate one. This also
 # means an `after:` chain can never cycle: only a Jira id anchors a placement, and Jira issues are
 # never reordered or reinserted by this function.
-def mergeRows(jiraRows, jpRows):
+def mergeRows(jiraRows, skRows):
     jiraIds = {row["id"] for row in jiraRows}
     anchored = {}
     leftover = []
-    for row in jpRows:
+    for row in skRows:
         anchor = row.get("after")
         if anchor and anchor in jiraIds:
             anchored.setdefault(anchor, []).append(row)
@@ -149,14 +149,14 @@ def mergeRows(jiraRows, jpRows):
     return merged
 
 
-# `plan list`/the picker's rows: Jira's JQL results and every open/in-progress JP file, merged by
+# `plan list`/the picker's rows: Jira's JQL results and every open/in-progress SK file, merged by
 # mergeRows() (decision #3, 2026-11-05; `after:` interleaving, 2026-11-06).
 #
 # Column alignment (2026-11-06): a plain `f'{id}\t{status}\t{subject}'` left every row's tab
 # stops wherever the terminal happened to put them, so columns drifted out of line as soon as ids
 # or statuses had different lengths (e.g. CIAM-163 vs CIAM-94). `line` is now one pre-padded
 # string -- id, then status, each left-justified to the widest id/status across ALL rows (Jira
-# and JP together) with `str.ljust`, with exactly two literal spaces between columns -- so it
+# and SK together) with `str.ljust`, with exactly two literal spaces between columns -- so it
 # lines up the same way in `plan list`'s plain stdout and in the fzf picker, with no tab
 # character left for a terminal's own tab stops to misplace.
 #
@@ -169,8 +169,8 @@ def mergeRows(jiraRows, jpRows):
 # re-introducing a tab-joined display when fzf re-renders the (now space-padded) fields.
 def issueRows(cfg):
     jiraRows = jiraFrom(cfg).list(cfg.get("jql"))
-    jpRows = fileissues_mod.FileIssues({"dir": cfg.get("issuesDir")}).list()
-    issues = mergeRows(jiraRows, jpRows)
+    skRows = fileissues_mod.FileIssues({"dir": cfg.get("issuesDir")}).list()
+    issues = mergeRows(jiraRows, skRows)
     idWidth = max((len(issue["id"]) for issue in issues), default=0)
     statusWidth = max((len(issue["status"]) for issue in issues), default=0)
     rows = []
