@@ -47,7 +47,7 @@ GitHub's, and they are the one GitHub integration; GitHub Issues is not used.
 
 | Term | Definition |
 | --- | --- |
-| Issue | The unit of planned work, named by its key, `PREFIX-n`: a project prefix and a per-project number. It lives in the ticket store or in Jira |
+| Issue | The unit of planned work, named by its key, `PREFIX-n`: a project prefix and a per-project number, zero-padded to four digits in the store (`SK-0012`). It lives in the ticket store or in Jira |
 | Project | A key prefix and the repos its work happens in. Store projects are listed in skuld's `store.yml`, Jira projects in the machine config |
 | Ticket store | A git repo, outside every development repo, holding ticket files, milestones and review files, with its own remote (§3, §7.7) |
 | Configured repo | A development repo some project lists by its `origin` remote, checked out on this Mac at a path in `checkouts` (§7.0) |
@@ -124,9 +124,10 @@ Story/Task/Bug → Sub-task), which this tool reads and doesn't model.
 
 ## 5. Identity
 
-An issue is its key, unique within its project: `SK-12` in the store, `CIAM-123` in Jira. A store
+An issue is its key, unique within its project: `SK-0012` in the store, `CIAM-123` in Jira. A store
 issue's number is one above the highest found in `active/` and `archive/` together, and is never
-reused. Its file is `<KEY>-<slug>.md`, the slug fixed when the file is made, so a retitle doesn't
+reused. It is zero-padded to four digits, so a listing of the store sorts in number order, and
+`plan` pads a key typed without the zeros (`SK-12` is `SK-0012`). Its file is `<KEY>-<slug>.md`, the slug fixed when the file is made, so a retitle doesn't
 rename it.
 
 Its branch is `<type>/<KEY>-<slug>`, with the prefix chosen from the issue's type: a Jira
@@ -476,7 +477,7 @@ Ship and Done have no store-specific branch.
 and `reviews/`. After a quiet period (`debounceSeconds` in `store.yml`), so a mass edit lands as one
 commit, it runs the checker. On failure it commits nothing, posts a macOS notification naming the
 file and rule, and logs the same. On success it commits every change with a generated message
-(`SK-12: status in-progress`, `12 issues: ordinal`) and pushes, retrying a failed push after
+(`SK-0012: status in-progress`, `12 issues: ordinal`) and pushes, retrying a failed push after
 `pull --rebase`. A store checked out as a submodule of another repo is the same store at another
 path; the watcher watches whatever `issueStore` names.
 

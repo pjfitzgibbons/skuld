@@ -21,7 +21,7 @@ ALLOW = [
     ("a pdf", "open report.pdf"),
     ("an app", 'open -a "Brave Browser"'),
     ("plan browse", "plan browse CIAM-123"),
-    ("plan browse a url", "plan browse https://example.com SK-12"),
+    ("plan browse a url", "plan browse https://example.com SK-0012"),
     ("open in prose", 'echo "run open https://example.com yourself"'),
     ("grep for open", "grep -n 'open https://' lib/term.py"),
     ("html not opened", "cat page.html"),
@@ -30,9 +30,9 @@ ALLOW = [
 
 BLOCK = [
     ("bare url", "open https://example.com"),
-    ("http url", "open http://127.0.0.1:8000/issues/SK-12/report"),
+    ("http url", "open http://127.0.0.1:8000/issues/SK-0012/report"),
     ("file url", "open file:///tmp/report.html"),
-    ("html file", "open .tmp/SK-12/report.html"),
+    ("html file", "open .tmp/SK-0012/report.html"),
     ("htm file", "open index.HTM"),
     ("html with fragment", "open page.html#top"),
     ("named browser", 'open -a "Brave Browser" https://example.com'),

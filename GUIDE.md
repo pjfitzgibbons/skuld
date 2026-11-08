@@ -158,7 +158,7 @@ decides the repo (§4).
 | `plan list` | Print Next up in plan order, both trackers merged ([architecture §7.6](docs/architecture.md#ready-file)) |
 | `plan view <KEY>` | Print one issue; reads only |
 | `plan new <PREFIX> "<title>"` | Make a store ticket from the template, check it and open it in `$EDITOR` |
-| `plan set <KEY> field=value…` | Change a ticket's front matter, all or nothing, checked first; `blocked_by+=SK-4` and `blocked_by-=SK-4` add and remove one blocker |
+| `plan set <KEY> field=value…` | Change a ticket's front matter, all or nothing, checked first; `blocked_by+=SK-0004` and `blocked_by-=SK-0004` add and remove one blocker |
 | `plan milestone new\|set\|list` | Manage milestones, through the checker |
 | `plan start <KEY>`, `plan open <KEY>` | Start or Open (§4); one command, one code path |
 | `plan ship [KEY]` | Ship (§5); the key defaults to the current worktree's branch |

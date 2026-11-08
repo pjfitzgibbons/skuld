@@ -30,7 +30,7 @@ Issues not in Jira are Markdown files with YAML front matter, in a ticket store:
 - **`store.yml` lives in skuld,** versioned with the code that reads it.
 - **A watcher commits the store.** `issue-watch` waits for edits to settle, runs the checker, and commits and pushes only a tree that passes. `plan` writes files and never commits.
 - **The front matter is a restricted YAML subset,** read by a hand parser that the checker defines. The repo stays stdlib-only.
-- **Numbers never repeat.** The next number is one above the highest in `active/` and `archive/` together. `plan new` pulls first, and the checker's duplicate-key rule catches two machines that took the same number offline; the second file is renumbered by hand.
+- **Numbers never repeat.** The next number is one above the highest in `active/` and `archive/` together, zero-padded to four digits (`SK-0029`) so a file listing sorts in number order. `plan new` pulls first, and the checker's duplicate-key rule catches two machines that took the same number offline; the second file is renumbered by hand.
 - **One issue's work stays in one repo.** Existing work found in more than one of a project's repos is refused ([architecture §7.0](../architecture.md#repo-resolution)).
 - **Done never changes an issue's status,** in either tracker. For a ticket it prints the file to set `status: done` in ([architecture §7.3](../architecture.md#finish)).
 - **A round's review files live in the store,** under `reviews/<KEY>/`, so they outlive the worktree and are committed with the ticket they belong to.
