@@ -3,13 +3,14 @@
 
     outline.py .tmp/88/description.md
 
-The front matter is skipped: only the `###` sections after it are checked. The body is Task,
+The front matter is skipped: only the `##` sections after it are checked. The body is Task,
 Guardrails, Lenses and Done. Lenses is the lens checklist, every lens listed, and Done is a set of
 pass/fail checkboxes, at least two of them. Every [x] lens has a Done condition that names it
-(`- [ ] L6: …`), so the review topic is checked before the item is finished.
+(`- [ ] L6: …`), so the review topic is checked before the item is finished. An outline section
+written as a `###` heading is flagged, so an issue written to the older heading level is rewritten.
 
 The outline is ~/.claude/agents/technical-writer.md (*Outlines*) plus the repo's
-docs/agents/technical-writer.md: its lens table adds lenses, and any `### Name` it mentions
+docs/agents/technical-writer.md: its lens table adds lenses, and any `## Name` it mentions
 becomes a required section. Exit 0 when the body conforms, 1 with findings.
 """
 
@@ -26,6 +27,8 @@ OLD = ["Summary", "Scope", "Acceptance", "Tests", "Steps", "Expected", "Actual",
 MIN_DONE = 2
 LENS_LINE = re.compile(r"^- \[(.)\] (L\d+)\b(.*)$")
 DONE_LINE = re.compile(r"^- \[(.)\] (.*)$")
+SECTION = re.compile(r"^## (.+?)\s*$")
+SUBSECTION = re.compile(r"^### (.+?)\s*$")
 
 
 def repo_writer() -> Path | None:
@@ -40,14 +43,14 @@ def expected(global_text: str, repo_text: str) -> tuple[list[str], list[str]]:
     """Lens ids, and the extra sections the repo names."""
     lenses = [m[0] for m in LENS_ROW.findall(global_text + "\n" + repo_text)]
     lenses = sorted(set(lenses), key=lambda l: int(l[1:]))
-    extra = re.findall(r"`### ([A-Z][\w ]*?)`", repo_text)
+    extra = re.findall(r"`## ([A-Z][\w ]*?)`", repo_text)
     return lenses, list(dict.fromkeys(extra))
 
 
 def sections(body: str) -> dict[str, str]:
     out, name = {}, None
     for line in body.splitlines():
-        if m := re.match(r"^### (.+?)\s*$", line):
+        if m := SECTION.match(line):
             name = m[1]
             out[name] = ""
         elif name:
@@ -55,11 +58,18 @@ def sections(body: str) -> dict[str, str]:
     return out
 
 
+def outline_subsections(body: str, required: list[str]) -> list[str]:
+    """Outline sections written one level too deep, as `### Name`."""
+    outline_names = set(required) | set(OLD)
+    return [m[1] for line in body.splitlines() if (m := SUBSECTION.match(line)) and m[1] in outline_names]
+
+
 def check(body: str, lenses: list[str], extra: list[str]) -> list[str]:
     found = sections(body)
     required = TASK + [s for s in extra if s not in TASK]
-    findings = [f"missing section: ### {s}" for s in required if s not in found]
-    findings += [f"old-style heading: {l}" for l in body.splitlines() if re.match(r"^## \w", l)]
+    findings = [f"missing section: ## {s}" for s in required if s not in found]
+    findings += [f"heading level: {s!r} is an outline section; write it as ## {s}"
+                 for s in outline_subsections(body, required)]
     old = [s for s in OLD if s in found and s not in required]
     if old:
         findings.append(f"old outline ({', '.join(old)}): rewrite to Task, Guardrails, Lenses and Done")
@@ -75,7 +85,7 @@ def check(body: str, lenses: list[str], extra: list[str]) -> list[str]:
 
     strays = [m[2] for l in found.get("Guardrails", "").splitlines() if (m := LENS_LINE.match(l.strip()))]
     if strays:
-        findings.append(f"Guardrails: lens lines ({', '.join(strays)}) belong under ### Lenses")
+        findings.append(f"Guardrails: lens lines ({', '.join(strays)}) belong under ## Lenses")
     seen, ticked = {}, []
     for line in found.get("Lenses", "").splitlines():
         if m := LENS_LINE.match(line.strip()):

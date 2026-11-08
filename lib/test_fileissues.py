@@ -1,4 +1,4 @@
-# lib/fileissues.py: JP-<n> issues stored as files (issues/README.md's format), implementing the
+# lib/fileissues.py: SK-<n> issues stored as files (issues/README.md's format), implementing the
 # same surface lib/jira.py's Jira class does. Covers parsing, status mapping, the transition +
 # read-back guard, the ## Log comment append, list() filtering, and the per-key dispatch
 # (isFileBacked()) plus the merged list lib/cli.py's issueRows() builds from Jira + FileIssues.
@@ -42,7 +42,7 @@ closed:
 Body text here.
 
 ## Log
-- 2026-11-02: Started on `feat/JP-2-a-task-already`, in /repo.worktrees/JP-2.
+- 2026-11-02: Started on `feat/SK-2-a-task-already`, in /repo.worktrees/SK-2.
 """
 
 DONE_QUESTION = """---
@@ -68,9 +68,9 @@ class FileIssuesTests(unittest.TestCase):
     # --- parsing + status/type mapping -----------------------------------------------------
 
     def test_issue_parses_frontmatter_title_and_body(self):
-        writeIssue(self.dir, "JP-1-something-is-wrong.md", OPEN_BUG)
-        issue = self.fi.issue("JP-1")
-        self.assertEqual(issue["key"], "JP-1")
+        writeIssue(self.dir, "SK-1-something-is-wrong.md", OPEN_BUG)
+        issue = self.fi.issue("SK-1")
+        self.assertEqual(issue["key"], "SK-1")
         f = issue["fields"]
         self.assertEqual(f["summary"], "Something is wrong")
         self.assertEqual(f["status"], {"name": "To Do", "statusCategory": {"key": "new"}})
@@ -81,8 +81,8 @@ class FileIssuesTests(unittest.TestCase):
         self.assertEqual(f["comment"]["comments"], [])
 
     def test_issue_maps_in_progress_task_and_reads_its_log(self):
-        writeIssue(self.dir, "JP-2-a-task-already-underway.md", IN_PROGRESS_TASK)
-        issue = self.fi.issue("JP-2")
+        writeIssue(self.dir, "SK-2-a-task-already-underway.md", IN_PROGRESS_TASK)
+        issue = self.fi.issue("SK-2")
         f = issue["fields"]
         self.assertEqual(f["status"], {"name": "In Progress", "statusCategory": {"key": "indeterminate"}})
         self.assertEqual(f["issuetype"], {"name": "Task"})
@@ -90,49 +90,49 @@ class FileIssuesTests(unittest.TestCase):
         self.assertEqual(len(comments), 1)
         self.assertEqual(comments[0]["author"]["displayName"], "plan")
         text = comments[0]["body"]["content"][0]["content"][0]["text"]
-        self.assertIn("Started on `feat/JP-2-a-task-already`", text)
+        self.assertIn("Started on `feat/SK-2-a-task-already`", text)
 
     def test_issue_maps_done_and_wontfix_to_done_category(self):
-        writeIssue(self.dir, "JP-3-already-finished.md", DONE_QUESTION)
-        issue = self.fi.issue("JP-3")
+        writeIssue(self.dir, "SK-3-already-finished.md", DONE_QUESTION)
+        issue = self.fi.issue("SK-3")
         self.assertEqual(issue["fields"]["status"], {"name": "Done", "statusCategory": {"key": "done"}})
         self.assertEqual(issue["fields"]["issuetype"], {"name": "Task"})  # question -> Task
 
     def test_issue_refuses_an_unknown_key(self):
         with self.assertRaises(RuntimeError):
-            self.fi.issue("JP-99")
+            self.fi.issue("SK-99")
 
     def test_blockers_is_always_empty(self):
-        writeIssue(self.dir, "JP-1-something-is-wrong.md", OPEN_BUG)
-        issue = self.fi.issue("JP-1")
+        writeIssue(self.dir, "SK-1-something-is-wrong.md", OPEN_BUG)
+        issue = self.fi.issue("SK-1")
         self.assertEqual(self.fi.blockers(issue), [])
 
     # --- transition + read-back -------------------------------------------------------------
 
     def test_transition_to_in_progress_sets_status_and_reads_it_back(self):
-        path = writeIssue(self.dir, "JP-1-something-is-wrong.md", OPEN_BUG)
-        issue = self.fi.transition("JP-1", "In Progress")
+        path = writeIssue(self.dir, "SK-1-something-is-wrong.md", OPEN_BUG)
+        issue = self.fi.transition("SK-1", "In Progress")
         self.assertEqual(issue["fields"]["status"]["name"], "In Progress")
         self.assertIn("status: in-progress", path.read_text(encoding="utf8"))
         # Nothing else in the file changed shape.
         self.assertIn("type: bug", path.read_text(encoding="utf8"))
 
     def test_statusTransitionId_refuses_a_target_other_than_in_progress(self):
-        writeIssue(self.dir, "JP-1-something-is-wrong.md", OPEN_BUG)
+        writeIssue(self.dir, "SK-1-something-is-wrong.md", OPEN_BUG)
         with self.assertRaises(RuntimeError):
-            self.fi.statusTransitionId("JP-1", "Done")
+            self.fi.statusTransitionId("SK-1", "Done")
 
     def test_statusTransitionId_refuses_from_a_non_open_status(self):
-        writeIssue(self.dir, "JP-2-a-task-already-underway.md", IN_PROGRESS_TASK)
+        writeIssue(self.dir, "SK-2-a-task-already-underway.md", IN_PROGRESS_TASK)
         with self.assertRaises(RuntimeError):
-            self.fi.statusTransitionId("JP-2", "In Progress")
+            self.fi.statusTransitionId("SK-2", "In Progress")
 
     def test_transition_refuses_when_the_read_back_does_not_match(self):
         # The same guard Jira.transition() applies after its POST (lib/jira.py): read the issue
         # back and refuse if it didn't actually move. Simulated here by a subclass whose issue()
         # keeps reporting "To Do" regardless of what the file says, standing in for whatever
         # would make a real write not take.
-        writeIssue(self.dir, "JP-1-something-is-wrong.md", OPEN_BUG)
+        writeIssue(self.dir, "SK-1-something-is-wrong.md", OPEN_BUG)
 
         class StubbornFileIssues(FileIssues):
             def issue(self, key):
@@ -142,53 +142,53 @@ class FileIssuesTests(unittest.TestCase):
 
         fi = StubbornFileIssues({"dir": self.dir})
         with self.assertRaises(RuntimeError):
-            fi.transition("JP-1", "In Progress")
+            fi.transition("SK-1", "In Progress")
 
     # --- comments: the ## Log heading ---------------------------------------------------------
 
     def test_addComment_creates_the_log_heading_once(self):
-        path = writeIssue(self.dir, "JP-1-something-is-wrong.md", OPEN_BUG)
-        self.fi.addComment("JP-1", self.fi.textComment("Started on `feat/JP-1-x`, in /tmp/JP-1."))
+        path = writeIssue(self.dir, "SK-1-something-is-wrong.md", OPEN_BUG)
+        self.fi.addComment("SK-1", self.fi.textComment("Started on `feat/SK-1-x`, in /tmp/SK-1."))
         text = path.read_text(encoding="utf8")
         self.assertEqual(text.count("## Log"), 1)
-        self.assertIn("Started on `feat/JP-1-x`, in /tmp/JP-1.", text)
+        self.assertIn("Started on `feat/SK-1-x`, in /tmp/SK-1.", text)
         self.assertRegex(text, r"- \d{4}-\d{2}-\d{2}: Started on")
 
     def test_addComment_appends_a_second_line_under_the_existing_heading(self):
-        path = writeIssue(self.dir, "JP-2-a-task-already-underway.md", IN_PROGRESS_TASK)
-        self.fi.addComment("JP-2", self.fi.textComment("Done: merged."))
+        path = writeIssue(self.dir, "SK-2-a-task-already-underway.md", IN_PROGRESS_TASK)
+        self.fi.addComment("SK-2", self.fi.textComment("Done: merged."))
         text = path.read_text(encoding="utf8")
         self.assertEqual(text.count("## Log"), 1)
-        self.assertIn("Started on `feat/JP-2-a-task-already`", text)  # the original line stays
+        self.assertIn("Started on `feat/SK-2-a-task-already`", text)  # the original line stays
         self.assertIn("Done: merged.", text)
-        logEntries = self.fi.issue("JP-2")["fields"]["comment"]["comments"]
+        logEntries = self.fi.issue("SK-2")["fields"]["comment"]["comments"]
         self.assertEqual(len(logEntries), 2)
 
     def test_addComment_accepts_a_plain_string_too(self):
-        path = writeIssue(self.dir, "JP-1-something-is-wrong.md", OPEN_BUG)
-        self.fi.addComment("JP-1", "a plain note")
+        path = writeIssue(self.dir, "SK-1-something-is-wrong.md", OPEN_BUG)
+        self.fi.addComment("SK-1", "a plain note")
         self.assertIn("a plain note", path.read_text(encoding="utf8"))
 
     # --- list(): open/in-progress only, done/wontfix excluded --------------------------------
 
     def test_list_includes_only_open_and_in_progress(self):
-        writeIssue(self.dir, "JP-1-something-is-wrong.md", OPEN_BUG)
-        writeIssue(self.dir, "JP-2-a-task-already-underway.md", IN_PROGRESS_TASK)
-        writeIssue(self.dir, "JP-3-already-finished.md", DONE_QUESTION)
+        writeIssue(self.dir, "SK-1-something-is-wrong.md", OPEN_BUG)
+        writeIssue(self.dir, "SK-2-a-task-already-underway.md", IN_PROGRESS_TASK)
+        writeIssue(self.dir, "SK-3-already-finished.md", DONE_QUESTION)
         rows = self.fi.list()
         ids = sorted(r["id"] for r in rows)
-        self.assertEqual(ids, ["JP-1", "JP-2"])
-        row1 = next(r for r in rows if r["id"] == "JP-1")
+        self.assertEqual(ids, ["SK-1", "SK-2"])
+        row1 = next(r for r in rows if r["id"] == "SK-1")
         self.assertEqual(row1["status"], "To Do")
         self.assertEqual(row1["statusCategory"], "new")
-        self.assertEqual(row1["project"], "JP")
+        self.assertEqual(row1["project"], "SK")
         self.assertEqual(row1["subject"], "Something is wrong")
         self.assertIsNone(row1["after"])  # OPEN_BUG has no `after:` field
 
     def test_list_exposes_the_after_field(self):
         writeIssue(
             self.dir,
-            "JP-1-something-is-wrong.md",
+            "SK-1-something-is-wrong.md",
             OPEN_BUG.replace("closed:\n---", "closed:\nafter: CIAM-163\n---"),
         )
         row = self.fi.list()[0]
@@ -197,82 +197,82 @@ class FileIssuesTests(unittest.TestCase):
     # --- browseUrl / closeNote -----------------------------------------------------------------
 
     def test_browseUrl_is_the_absolute_file_path(self):
-        path = writeIssue(self.dir, "JP-1-something-is-wrong.md", OPEN_BUG)
-        self.assertEqual(self.fi.browseUrl("JP-1"), str(path.resolve()))
+        path = writeIssue(self.dir, "SK-1-something-is-wrong.md", OPEN_BUG)
+        self.assertEqual(self.fi.browseUrl("SK-1"), str(path.resolve()))
 
     def test_closeNote_names_the_file_not_a_jira_url(self):
-        writeIssue(self.dir, "JP-1-something-is-wrong.md", OPEN_BUG)
-        note = self.fi.closeNote("JP-1")
-        self.assertIn("JP-1", note)
+        writeIssue(self.dir, "SK-1-something-is-wrong.md", OPEN_BUG)
+        note = self.fi.closeNote("SK-1")
+        self.assertIn("SK-1", note)
         self.assertIn(self.dir, note)
         self.assertNotIn("atlassian", note)
 
 
-    # --- list(): rank order (2026-11-06) ------------------------------------------------------
+    # --- list(): ordinal order -------------------------------------------------------------------
 
-    def test_list_puts_ranked_issues_first_in_rank_order(self):
-        # JP-2 ranked after JP-1, even though JP-1's filename/number would otherwise sort first.
+    def test_list_puts_issues_with_an_ordinal_first_in_ordinal_order(self):
+        # SK-2 ordered after SK-1, even though SK-1's filename/number would otherwise sort first.
         writeIssue(
             self.dir,
-            "JP-1-something-is-wrong.md",
-            OPEN_BUG.replace("closed:\n---", "closed:\nrank: 2\n---"),
+            "SK-1-something-is-wrong.md",
+            OPEN_BUG.replace("closed:\n---", "closed:\nordinal: 2\n---"),
         )
         writeIssue(
             self.dir,
-            "JP-2-a-task-already-underway.md",
-            IN_PROGRESS_TASK.replace("closed:\n---", "closed:\nrank: 1\n---"),
+            "SK-2-a-task-already-underway.md",
+            IN_PROGRESS_TASK.replace("closed:\n---", "closed:\nordinal: 1\n---"),
         )
         ids = [r["id"] for r in self.fi.list()]
-        self.assertEqual(ids, ["JP-2", "JP-1"])
+        self.assertEqual(ids, ["SK-2", "SK-1"])
 
-    def test_list_sorts_unranked_issues_by_issue_number_not_filename(self):
-        # No rank: field on either file. JP-10 must still come after JP-2 (numeric, not lexical
-        # filename order, where "JP-10" < "JP-2").
-        writeIssue(self.dir, "JP-10-tenth-issue.md", OPEN_BUG)
-        writeIssue(self.dir, "JP-2-a-task-already-underway.md", IN_PROGRESS_TASK)
+    def test_list_sorts_issues_without_an_ordinal_by_issue_number_not_filename(self):
+        # No ordinal: field on either file. SK-10 must still come after SK-2 (numeric, not lexical
+        # filename order, where "SK-10" < "SK-2").
+        writeIssue(self.dir, "SK-10-tenth-issue.md", OPEN_BUG)
+        writeIssue(self.dir, "SK-2-a-task-already-underway.md", IN_PROGRESS_TASK)
         ids = [r["id"] for r in self.fi.list()]
-        self.assertEqual(ids, ["JP-2", "JP-10"])
+        self.assertEqual(ids, ["SK-2", "SK-10"])
 
-    def test_list_puts_ranked_issues_before_unranked_regardless_of_number(self):
-        # JP-9 (high number, ranked) sorts ahead of JP-1 (low number, no rank: field at all).
-        writeIssue(self.dir, "JP-1-something-is-wrong.md", OPEN_BUG)
+    def test_list_puts_ordered_issues_before_the_rest_regardless_of_number(self):
+        # SK-9 (high number, with an ordinal) sorts ahead of SK-1 (low number, no ordinal: field at all).
+        writeIssue(self.dir, "SK-1-something-is-wrong.md", OPEN_BUG)
         writeIssue(
             self.dir,
-            "JP-9-a-task-already-underway.md",
-            IN_PROGRESS_TASK.replace("closed:\n---", "closed:\nrank: 1\n---"),
+            "SK-9-a-task-already-underway.md",
+            IN_PROGRESS_TASK.replace("closed:\n---", "closed:\nordinal: 1\n---"),
         )
         ids = [r["id"] for r in self.fi.list()]
-        self.assertEqual(ids, ["JP-9", "JP-1"])
+        self.assertEqual(ids, ["SK-9", "SK-1"])
 
-    def test_list_treats_a_missing_rank_field_as_unranked(self):
-        # OPEN_BUG's frontmatter has no `rank:` line at all (not even an empty one) -- list()
-        # must not raise and must sort it after any ranked issue.
-        writeIssue(self.dir, "JP-1-something-is-wrong.md", OPEN_BUG)
+    def test_list_treats_a_missing_ordinal_field_as_unordered(self):
+        # OPEN_BUG's frontmatter has no `ordinal:` line at all (not even an empty one) -- list()
+        # must not raise and must sort it after any issue with an ordinal.
+        writeIssue(self.dir, "SK-1-something-is-wrong.md", OPEN_BUG)
         writeIssue(
             self.dir,
-            "JP-2-a-task-already-underway.md",
-            IN_PROGRESS_TASK.replace("closed:\n---", "closed:\nrank: 1\n---"),
+            "SK-2-a-task-already-underway.md",
+            IN_PROGRESS_TASK.replace("closed:\n---", "closed:\nordinal: 1\n---"),
         )
         ids = [r["id"] for r in self.fi.list()]
-        self.assertEqual(ids, ["JP-2", "JP-1"])
+        self.assertEqual(ids, ["SK-2", "SK-1"])
 
 
 class DispatchTests(unittest.TestCase):
-    def test_isFileBacked_routes_JP_only(self):
-        self.assertTrue(isFileBacked("JP-1"))
-        self.assertTrue(isFileBacked("JP-42"))
+    def test_isFileBacked_routes_SK_only(self):
+        self.assertTrue(isFileBacked("SK-1"))
+        self.assertTrue(isFileBacked("SK-42"))
         self.assertFalse(isFileBacked("CIAM-5"))
 
 
 class MergedListTests(unittest.TestCase):
     # Decision #3: `plan list`/the picker merge Jira's JQL results with every open/in-progress
-    # JP file. lib/cli.py's mergeRows() does the actual interleaving (lib/test_cli.py's
+    # SK file. lib/cli.py's mergeRows() does the actual interleaving (lib/test_cli.py's
     # MergeRowsTests covers that in full); this exercises the same shape directly against
     # FileIssues, without needing a live Jira.
     def test_file_rows_and_jira_rows_concatenate_by_shape(self):
         dir = tempfile.mkdtemp(prefix="jira-plan-jp-merge-")
         self.addCleanup(shutil.rmtree, dir, ignore_errors=True)
-        writeIssue(dir, "JP-1-something-is-wrong.md", OPEN_BUG)
+        writeIssue(dir, "SK-1-something-is-wrong.md", OPEN_BUG)
         fi = FileIssues({"dir": dir})
 
         jiraRows = [
@@ -288,17 +288,17 @@ class MergedListTests(unittest.TestCase):
         ]
         merged = jiraRows + fi.list()
         ids = sorted(r["id"] for r in merged)
-        self.assertEqual(ids, ["CIAM-9", "JP-1"])
+        self.assertEqual(ids, ["CIAM-9", "SK-1"])
         # Every row shares the core keys Jira's own rows carry, whichever backend it came from.
-        # A JP row also carries `after:` (the interleaving anchor, issues/README.md, 2026-11-06) --
+        # A SK row also carries `after:` (the interleaving anchor, issues/README.md, 2026-11-06) --
         # Jira rows don't need one, since lib/cli.py's mergeRows() reads it with a plain .get(),
         # defaulting to None, rather than requiring every row to share one identical key set.
         coreKeys = {"id", "subject", "status", "statusCategory", "issueType", "project", "parent"}
         for row in merged:
             self.assertTrue(coreKeys <= row.keys())
-        jpRow = next(r for r in merged if r["id"] == "JP-1")
-        self.assertIn("after", jpRow)
-        self.assertIsNone(jpRow["after"])
+        skRow = next(r for r in merged if r["id"] == "SK-1")
+        self.assertIn("after", skRow)
+        self.assertIsNone(skRow["after"])
         self.assertNotIn("after", jiraRows[0])
 
 

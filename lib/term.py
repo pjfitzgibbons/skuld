@@ -336,9 +336,9 @@ def openIssueWorkspace(key, dir, ghosttyApp=None, aerospaceConfig=None, slotsFil
         # (verified) aerospace workspace <name> focuses it, creating it if it doesn't exist (it
         # will, since the session already does).
         run("aerospace", ["workspace", workspace], os.getcwd())
-        # JP-1: a session can outlive its Ghostty window (a failed launch, a window closed by
+        # SK-1: a session can outlive its Ghostty window (a failed launch, a window closed by
         # hand), so a live session alone doesn't mean there's anything to see. No Ghostty window in
-        # the workspace -> attach a new one. JP-7 extends this to every other missing piece.
+        # the workspace -> attach a new one. SK-7 extends this to every other missing piece.
         if not windowsIn(workspace, GHOSTTY_BUNDLE_ID):
             attachGhosttyWindow(key, workspace, ghosttyApp)
         return {"created": False, "workspace": workspace}
@@ -351,8 +351,8 @@ def openIssueWorkspace(key, dir, ghosttyApp=None, aerospaceConfig=None, slotsFil
     # simply attaching to the now-fully-set-up session.
     run("tmux", ["new-session", "-d", "-s", key, "-c", dir, "-n", "shell"], os.getcwd())
     run("tmux", ["new-window", "-t", exact(key), "-n", "claude", "-c", dir], os.getcwd())
-    # prompt: what the new Claude is asked to do. A file-backed issue (JP-*) passes its own, naming
-    # the issue file -- "Work on Jira JP-3" sent Claude looking for a Jira ticket (2026-11-05).
+    # prompt: what the new Claude is asked to do. A file-backed issue (SK-*) passes its own, naming
+    # the issue file -- "Work on Jira SK-3" sent Claude looking for a Jira ticket (2026-11-05).
     # shlex.quote, since send-keys types this into a shell.
     claudePrompt = prompt or f"Work on Jira {key}"
     run("tmux", ["send-keys", "-t", exact(f"{key}:claude"), f"claude {shlex.quote(claudePrompt)}", "Enter"], os.getcwd())
@@ -416,7 +416,7 @@ def shipWindow(key, dir, prPath):
     run("tmux", ["select-window", "-t", windowId], os.getcwd())
 
 
-# Start/Open on a file-backed (JP-<n>) issue, user decision 2026-11-05 (revised 2026-11-05): a
+# Start/Open on a file-backed (SK-<n>) issue, user decision 2026-11-05 (revised 2026-11-05): a
 # ticket opens as nvim in a tmux PANE, split side-by-side off the issue's own "claude" window
 # (=KEY:claude, §7.1's session), not a separate "ticket" window -- so Peter sees the ticket and
 # Claude at once without switching windows. issuePath is the issues/ copy FileIssues itself reads

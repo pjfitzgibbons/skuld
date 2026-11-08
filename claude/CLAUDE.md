@@ -62,9 +62,9 @@ settings: what this repo needs is here or in `.claude/`.
 
 ## Boundaries
 
-- **Peter presses the buttons.** Every commit, push, `gh` write and Jira write happens on Start,
-  Ship or Done, or a `pr` he runs. Write `.tmp/<KEY>/commit.txt`, `pr-body.md`, `replies/` and
-  `issue.md` for him to review; reads, inspections, the test suite and cleaning up your own mess
+- **Claude stages the process; the human verifies and executes it.** Every commit, push, `gh` write and Jira write happens on Start,
+  Ship or Done, or a `pr` the human runs. Write `.tmp/<KEY>/commit.txt`, `pr-body.md`, `replies/` and
+  `issue.md` for review; reads, inspections, the test suite and cleaning up your own mess
   you run yourself.
 - **An agent commits only on its own issue branch,** and only when asked.
 - **Never commit secrets.** The tool authenticates to GitHub by shelling out to `gh`, and to Jira
