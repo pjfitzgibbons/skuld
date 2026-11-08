@@ -34,8 +34,8 @@
 
 Skuld plans and ships work from the terminal. It holds the library, the `plan` and `pr` commands,
 the helper scripts and the definitions they share. `plan` lists what's next, and starts, opens,
-ships and finishes an issue in Ghostty under Aerospace and tmux. `pr` commits, pushes, opens or
-updates the pull request and answers its review.
+ships and finishes an issue, each in its own VS Code window on an Aerospace workspace. `pr` commits,
+pushes, opens or updates the pull request and answers its review.
 
 Issues live in one of two trackers: the ticket store, a git repo of Markdown files that skuld
 defines and works, or Jira Cloud (`cryoport.atlassian.net`) for work projects. Pull requests are
@@ -54,6 +54,7 @@ GitHub's, and they are the one GitHub integration; GitHub Issues is not used.
 | Milestone | A store-wide group of issues with a status (`open`, `locked`, `closed`) and an `ordinal` (§4.1) |
 | Ordinal | An integer that orders milestones, and issues within a milestone; lower comes first (§7.6) |
 | Default branch | The branch GitHub has configured for the repo: `main`, or `develop` under git-flow. It carries the code |
+| Issue window | The VS Code window Start opens for an issue on its Aerospace workspace, on a multi-root workspace of the issue's worktree and the ticket store. Claude and a shell run in its integrated terminals, and the issue's pages open in its integrated browser (§7.1) |
 | Start | Moving an issue to "in progress" from `plan start`, which makes its branch and worktree and logs "Started" on the issue (§7.1) |
 | Round | One pass of review: the commit message, PR body and review replies in `<store>/reviews/<KEY>/` that `pr` sends (§7.2) |
 | Finish | The squash merge of the issue's PR, then Done, which notes the merge on the issue and leaves closing it to the human (§7.3) |
@@ -183,10 +184,10 @@ Each outside system is reached only through its port's adapter. Policy code name
 - The `GitRemote` and `PullRequests` adapters run `git` and `gh`: fetching, adding and removing
   worktrees, reading PRs, and pulling and deleting merged branches.
 
-The boundary is drawn around outside systems, not around processes. The terminal front end runs
-`ghostty`, `open`, `aerospace`, `tmux`, `fzf`, `nvim` and `lazygit` as part of its normal work; none
-of them touches a tracker or git state, so they need no port. A new call to Jira, a tracker write or
-a git remote operation always goes through its adapter.
+The boundary is drawn around outside systems, not around processes. The front end runs `code`,
+`aerospace` and `fzf` as part of its normal work; none of them touches a tracker or git state, so
+they need no port. A new call to Jira, a tracker write or a git remote operation always goes
+through its adapter.
 
 `gh` is already authenticated, so nothing holds a GitHub token.
 
@@ -199,8 +200,8 @@ a git remote operation always goes through its adapter.
 | Trackers | The ticket store (Markdown with YAML front matter, in a git repo); Jira Cloud, `cryoport.atlassian.net` |
 | Store commits | `issue-watch` under launchd: debounced, gated by the checker, commits and pushes |
 | Auth | `~/.netrc` for Jira, read per call; `gh`'s and git's own credentials for GitHub and the store's remote |
-| Terminal front end | Ghostty, Aerospace and tmux via `subprocess`; fzf for the picker; nvim for ticket files |
-| Browser | Brave, reached through Aerospace and AppleScript by `openUrl()`; never system `open`, and never the terminal's own link-click (§7.6.1). Browser automation and browser tests run in Chrome, so `Brave Browser` always names the human's own Brave |
+| Front end | VS Code, one issue window per issue, opened by the `code` CLI on a workspace file and placed by Aerospace, both via `subprocess`; fzf for the picker; ticket files in an editor tab |
+| Browser | The issue window's integrated browser, reached by `openUrl()` (§7.6.1); never system `open`. Browser automation and browser tests run in Chrome, never in an issue window |
 | Pages | One local Flask server on `127.0.0.1`, run by a LaunchAgent from login and controlled by `plan serve start\|stop\|restart\|status`, rendering an issue's pages from Jinja templates (§7.6.1) |
 | Pull requests | `gh`; Jira linkage through Jira's development panel, not a custom field |
 | Jira writes | `/rest/api/3/*`, ADF for descriptions and comments |
@@ -213,7 +214,7 @@ a git remote operation always goes through its adapter.
    Next up (plan order)       worktree <repo>.worktrees/<KEY>          the issue (store or Jira)
    ────────────────────       ───────────────────────────────          ─────────────────────────
    (1) START ───────────────▶ branch <type>/<KEY>-slug, off base ────▶ in progress, "Started" logged
-                              Ghostty+tmux window, Claude beside        (a store ticket opens in nvim)
+                              issue window, Claude in its terminal      (a store ticket opens in a tab)
                               Claude works · writes <store>/reviews/<KEY>/
    (2) SHIP ────────────────▶ pr <KEY>: commit, push, open/update PR ─▶ Done boxes ticked
                               review rounds: replies/                    (Jira: dev panel, native)
@@ -273,9 +274,14 @@ moves the issue to "in progress".
   file untouched.
 
 Either way, Start reads the issue back and refuses if its status isn't the target (§8). It then logs
-"Started" on the issue (an ADF comment in Jira, a `## Log` line in a ticket) and opens the worktree
-in a new Ghostty window, moved to an Aerospace workspace, running
-`tmux new-session -A -s <KEY> -c <worktree>` with a Claude window and a shell window.
+"Started" on the issue (an ADF comment in Jira, a `## Log` line in a ticket) and opens the issue
+window (§2). Start writes the workspace file `<repo>.worktrees/<KEY>.code-workspace`, beside the
+worktree and outside every repo, listing the worktree and the ticket store, and opens it in a new
+VS Code window with `code`. The window's Aerospace id comes from diffing VS Code's window ids before
+and after, never from its title, and the window moves to the issue's Aerospace workspace. Claude
+runs in one integrated terminal, started with a prompt naming the issue, and a shell in another.
+Both terminals carry the issue's key in their environment, so a command run in either knows its
+issue.
 
 **Workspaces are numbered, not named for the issue.** Aerospace workspaces keep the hotkeys
 `~/.aerospace.toml` binds them to (`ctrl-alt-1`..`9`, `ctrl-alt-a`..`z`, etc.); `plan` never renames
@@ -295,25 +301,21 @@ workspace and relabels it. Every command that touches workspaces (`start`, `open
 whose workspace has no windows.
 
 If the issue's branch already exists here or on `origin`, Start reuses it on its own base. On an
-issue in progress the command is Open, which reopens the worktree, and its tmux session and
-Aerospace workspace through the slot lookup, recreating either if missing
-([failure-modes.md, *Open*](failure-modes.md)). Start refuses a closed issue. A lock file per issue
-keeps two invocations from starting it at once ([failure-modes.md, *Start*](failure-modes.md)).
+issue in progress the command is Open, which reopens the worktree, its issue window and its
+Aerospace workspace through the slot lookup, recreating any that is missing ([failure-modes.md,
+*Open*](failure-modes.md)). An issue window that is already open is reused, never opened twice.
+Start refuses a closed issue. A lock file per issue keeps two invocations from starting it at once
+([failure-modes.md, *Start*](failure-modes.md)).
 
 **The issue beside Claude.** A Jira issue's browse URL opens through `openUrl()` (§7.6.1), with the
-workspace Start just resolved passed explicitly, since Start runs in the invoking terminal and not
-the new workspace. A store issue opens instead as a tmux pane split beside the `=<KEY>:claude`
-window (`term.openTicketPane()`, `tmux split-window -h -d`), running `nvim` on the ticket file in
-the store, never on a copy in a worktree. The pane is tagged with a pane option
-(`@plan_ticket <KEY>`), so a second Open reuses it rather than splitting again. The URL or file path
-is printed either way. Claude's prompt names the tracker: a Jira key, or the ticket file's path.
+issue's key passed explicitly, since Start runs in the invoking terminal and not in the issue
+window. A store issue opens instead in an editor tab of the issue window, on the ticket file in the
+store's folder, never on a copy in a worktree. The URL or file path is printed either way. Claude's
+prompt names the tracker: a Jira key, or the ticket file's path.
 
-Last, Start and Open switch to that workspace, focus its Ghostty window and select the session's
-`claude` window (`term.focusIssueWorkspace()`: `tmux select-window -t =<KEY>:claude`,
-`aerospace workspace <ws>`, then `aerospace focus --window-id` on the workspace's Ghostty window),
-so the command finishes with the human at the issue's Claude. This runs after `openUrl()`, and
-overrides its return of focus to the calling terminal. It is best-effort, like the SketchyBar
-trigger.
+Last, Start and Open switch to the issue's workspace and focus the issue window with Claude's
+terminal in front (`term.focusIssueWorkspace()`), so the command finishes with the human at the
+issue's Claude. This runs after `openUrl()`. It is best-effort, like the SketchyBar trigger.
 
 <a id="ship"></a>
 
@@ -325,12 +327,12 @@ also holds `issue.md`, the issue's description with Done boxes ticked; a store i
 are ticked in the ticket's own `## Done` section.
 
 Ship runs `ship.check()` and refuses by name a missing PR body, a missing commit message while the
-tree has changes, or a branch that isn't the issue's. On success it runs `pr <KEY>` visibly in a
-tmux window or pane. `pr` commits with `commit.txt`, pushes, and opens the PR or replaces its body.
-It then posts each reply to its thread and resolves the thread. For a Jira issue it applies the box
-changes in `issue.md` to the description, and refuses any other difference, so an edit made in Jira
-since is kept. Each file is deleted once sent, so a second `pr` sends nothing twice; the store's
-history keeps what was sent.
+tree has changes, or a branch that isn't the issue's. On success it runs `pr <KEY>` visibly in an
+integrated terminal of the issue window. `pr` commits with `commit.txt`, pushes, and opens the PR or
+replaces its body. It then posts each reply to its thread and resolves the thread. For a Jira issue
+it applies the box changes in `issue.md` to the description, and refuses any other difference, so an
+edit made in Jira since is kept. Each file is deleted once sent, so a second `pr` sends nothing
+twice; the store's history keeps what was sent.
 
 `pr` writes no tracker field to link the PR. Jira's GitHub integration reads the key in the branch
 name and PR title. `done.py` finds the PR the same way, with `gh pr view <branch>` or
@@ -345,9 +347,9 @@ again (§8).
 
 The finish is the squash merge. The PR's subject includes the key (e.g. `Add X (CIAM-123)`).
 
-Done shows once a PR for the issue's branch is found and merged. It removes the issue's worktree,
-brings the main checkout's base up to the merge, deletes the branch, and notes the PR and its merge
-commit on the issue: an ADF comment in Jira, a `## Log` line in a ticket.
+Done shows once a PR for the issue's branch is found and merged. It removes the issue's worktree and
+its workspace file, brings the main checkout's base up to the merge, deletes the branch, and notes
+the PR and its merge commit on the issue: an ADF comment in Jira, a `## Log` line in a ticket.
 
 **Done never changes an issue's status.** `lib/done.py` contains no call to a transition. The
 human's Claude Code `PreToolUse` hook also blocks any Bash command recognized as moving a Jira issue
@@ -401,33 +403,24 @@ with `after: <JIRA-KEY>` sorts directly after that Jira issue.
 
 ### 7.6.1 Opening a page
 
-`plan browse <KEY | pr#N | url> [KEY]`, Start and Open open a page through
-`term.openUrl(url, workspace=None, ...)`. It always prints the URL first, then adds the page as a
-tab to a Brave window (§6.3) in the same Aerospace workspace as the Ghostty and tmux window that ran
-the command. Nothing else opens a page. System `open` sends a page to whichever Brave window was
-used last, often on another workspace, so neither the code nor an agent's shell uses it for one
-(§10, rule 7).
+`plan browse <KEY | pr#N | url> [KEY]`, Start and Open open a page through `term.openUrl()`. It
+always prints the URL first, then opens the page in the integrated browser of the issue window (§2).
+A link clicked in one of that window's terminals opens there too. Nothing else opens a page. System
+`open` sends a page to the default browser, outside every issue window, so neither the code nor an
+agent's shell uses it for one (§10, rule 7).
 
 `plan browse` takes a key, which opens the issue's page: Jira's browse URL, or the local server's
 page for a store ticket. It also takes `pr#N`, which opens the pull request, or a URL. `[KEY]` names the
-issue whose workspace the page belongs in when neither the target nor the session names one.
+issue whose window the page belongs in when neither the target nor the terminal names one.
 
-Target workspace, in order: (1) an explicit `workspace` argument, which Start always passes (§7.1);
-(2) inside tmux, when the session name is a key in the slots file, that slot's workspace; (3)
-otherwise, the focused workspace (`aerospace list-workspaces --focused`). (2) comes before (3) for a
-command run from a tmux session whose window has lost Aerospace focus.
+The issue window, in order: (1) an explicit key, which Start always passes (§7.1); (2) the key in
+the environment of the terminal that ran the command; (3) otherwise, the issue window on the focused
+Aerospace workspace (`aerospace list-workspaces --focused`). (2) comes before (3) for a command run
+from an issue window that has lost Aerospace focus. With none of the three, the printed URL is all
+that happens.
 
-When the target workspace has a Brave (`com.brave.Browser`) window, `openUrl()` finds it by its
-title, which `aerospace list-windows` and Brave's AppleScript both report, and adds the tab to that
-window through AppleScript. Focus doesn't move, so a hidden workspace stays hidden and the screen
-doesn't switch. Two Brave windows on the workspace with the same title can't be told apart that
-way: `openUrl()` then focuses the one Aerospace names (`aerospace focus --window-id`), adds the tab
-to Brave's front window, and returns focus to the window focused before. When the workspace has no
-Brave window, `openUrl()` makes one through AppleScript and moves it to the target workspace by a
-before-and-after diff of `browserBundleId` window ids, the same diffing `appWindowIds()` and
-`newAppWindowId()` do for Ghostty (§7.1). Every Aerospace and AppleScript call in `openUrl()` is
-best-effort: a missing `aerospace`, a missing Brave or any other failure is swallowed, since the
-printed URL stands on its own.
+Every step of `openUrl()` is best-effort: a missing `aerospace` or `code`, a closed issue window or
+any other failure is swallowed, since the printed URL stands on its own.
 
 Pages for an issue, such as its report and its review, come from the local server, rendered from
 Jinja templates with the issue's data. A page's URL path keys (the issue key, the round, the page)
@@ -507,7 +500,7 @@ they share:
 | The Jira description is edited after `issue.md` is written | The ticks would overwrite the edit | `checklist.py` refuses any difference beyond box state, and keeps the file |
 | A round's files are still unsent at Done | Done would finish with review work unsent | Done refuses before it changes anything, and names them |
 | The key in a commit message or PR title | Jira's GitHub integration links it in the issue's development panel | None; this is the intended mechanism (§7.2) |
-| A tmux session for the issue exists but its slot's workspace has no windows left | Open could reuse a workspace with nothing on it | Workspace reuse is gated on `windowsIn()`, not just the slot; a stale slot is swept and a fresh workspace picked (§7.1) |
+| The issue's slot names a workspace with no windows left | Open could reuse a workspace with nothing on it | Workspace reuse is gated on `windowsIn()`, not just the slot; a stale slot is swept and a fresh workspace picked (§7.1) |
 
 <a id="views"></a>
 
@@ -517,7 +510,7 @@ they share:
 | --- | --- |
 | The picker and `plan list` | Next up in plan order, both trackers merged, with each issue's project name (§7.6) |
 | `plan view <KEY>` | One issue: fields, open blockers, what it blocks, and its body or description |
-| A ticket in nvim | The ticket file itself, opened beside Claude by Start and Open (§7.1) |
+| A ticket in an editor tab | The ticket file itself, opened in the issue window by Start and Open (§7.1) |
 | `git log` in the store | Every change to every ticket, milestone and review round |
 | Jira's issue list, board and issue page | Jira issues, their links, comments and development panel |
 
@@ -538,4 +531,4 @@ they share:
 6. Skuld holds code and definitions, the ticket store holds data, and neither holds the other's
    (§3).
 7. A page for an issue comes from the local server, links the issue and its pull request, and opens in
-   the issue's Aerospace workspace through `openUrl()`, never through system `open` (§7.6.1).
+   the issue window's integrated browser through `openUrl()`, never through system `open` (§7.6.1).
