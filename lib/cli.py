@@ -26,7 +26,7 @@ from .jira import KEY_RE, Jira
 # always gets Jira, since FileIssues.list() is merged in separately (issueRows(), below).
 def jiraFrom(cfg, key=None):
     if key is not None and fileissues_mod.isFileBacked(key):
-        return fileissues_mod.FileIssues({"dir": cfg.get("issuesDir")})
+        return fileissues_mod.FileIssues({"dir": config_mod.issueStoreFrom(cfg)})
     return Jira(
         {
             "baseUrl": cfg.get("baseUrl"),
@@ -169,7 +169,7 @@ def mergeRows(jiraRows, skRows):
 # re-introducing a tab-joined display when fzf re-renders the (now space-padded) fields.
 def issueRows(cfg):
     jiraRows = jiraFrom(cfg).list(cfg.get("jql"))
-    skRows = fileissues_mod.FileIssues({"dir": cfg.get("issuesDir")}).list()
+    skRows = fileissues_mod.FileIssues({"dir": config_mod.issueStoreFrom(cfg)}).list()
     issues = mergeRows(jiraRows, skRows)
     idWidth = max((len(issue["id"]) for issue in issues), default=0)
     statusWidth = max((len(issue["status"]) for issue in issues), default=0)

@@ -339,7 +339,7 @@ def mainCheckout(issue, checkouts, cwd, action="Start", typeMap=None, pickRepo=N
     if not listed:
         raise RuntimeError(
             f"Run plan from the repo the work belongs in "
-            f"(or set checkouts.{project} in ~/.config/jira-plan/config.json)"
+            f"(or set checkouts.{project} in ~/.config/skuld/config.json)"
         )
     named = listed[0] if len(listed) == 1 else pickRepo(listed)
     common = gitCommonDir(named)

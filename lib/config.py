@@ -1,4 +1,4 @@
-# plan's settings: ~/.config/jira-plan/config.json, merged over defaults. No vscode settings API
+# plan's settings: ~/.config/skuld/config.json, merged over defaults. No vscode settings API
 # here, so this is the one place every key the terminal tool reads is named and documented.
 #
 # Ported from lib/config.js. Faithful, behavior-preserving port: no change in logic.
@@ -9,11 +9,15 @@ from .jira import BASE_URL, DEFAULT_JQL, DEFAULT_PROJECT
 from .start import DEFAULT_TYPE_MAP
 from .done import DISPOSABLE
 
-CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".config", "jira-plan", "config.json")
+CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".config", "skuld", "config.json")
 
-# This repo's own root (lib/'s parent) -- where SK-<n> issues live (issues/) and the repo
-# checkouts.SK falls back to, so Start/Open/Ship/Done find it regardless of where `plan` runs
-# from. See issuesDir/checkouts below.
+# This repo's own root (lib/'s parent) -- the repo checkouts.SK falls back to, so
+# Start/Open/Ship/Done find it regardless of where `plan` runs from. See checkouts below.
+
+# The key the issue store's path used to have. A config that still sets it is refused, naming
+# issueStore, so a stale config fails loudly instead of silently losing the store.
+RETIRED_STORE_KEY = "issuesDir"
+
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Every key plan reads, and its default. Keys not listed here are never read by any module;
@@ -78,10 +82,11 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #   browserBundleId The launched browser's bundle id, used both to find an existing window on the
 #                  target workspace to reuse as a tab, and for the before/after window-id diff that
 #                  finds a newly-opened window. Default: "com.brave.Browser" (Brave's bundle id).
-#   issuesDir      Where SK-<n> issue files live (lib/fileissues.py's FileIssues), per
-#                  issues/README.md's format. Default: this repo's own issues/ folder, derived
-#                  from lib/config.py's own location -- never a path a user has to set, since
-#                  SK issues are this tool's own backlog, not a configurable tracker.
+#   issueStore     The issue store's checkout: the folder of SK-<nnnn> ticket files
+#                  (lib/fileissues.py's FileIssues), its own git repo, e.g.
+#                  "~/programming/skuld-project/issues". `~` is expanded. Default: None -- the
+#                  store lives outside skuld, so a machine that works tickets sets it; a command
+#                  that needs the store without it refuses, naming this key (issueStoreFrom()).
 def defaults():
     return {
         "jql": DEFAULT_JQL,
@@ -98,7 +103,7 @@ def defaults():
         "slotsFile": "~/.cache/plan/workspaces",
         "browserApp": "Brave Browser",
         "browserBundleId": "com.brave.Browser",
-        "issuesDir": os.path.join(_REPO_ROOT, "issues"),
+        "issueStore": None,
     }
 
 
@@ -119,4 +124,25 @@ def load(file=None):
         parsed = json.loads(text)
     except json.JSONDecodeError as error:
         raise RuntimeError(f"{file} isn't valid JSON: {error}") from error
-    return {**defaults(), **parsed}
+    refuseRetiredKeys(parsed, file)
+    return withExpandedStore({**defaults(), **parsed})
+
+
+def refuseRetiredKeys(parsed, file):
+    if RETIRED_STORE_KEY in parsed:
+        raise RuntimeError(f"{file} sets {RETIRED_STORE_KEY}, which is now issueStore; rename the key")
+
+
+def withExpandedStore(cfg):
+    store = cfg.get("issueStore")
+    if store:
+        cfg["issueStore"] = os.path.expanduser(store)
+    return cfg
+
+
+# The issue store's path, for a command that needs it; refuses when the config names none.
+def issueStoreFrom(cfg):
+    store = cfg.get("issueStore")
+    if not store:
+        raise RuntimeError(f"no issue store set: add \"issueStore\": \"<path>\" to {CONFIG_FILE}")
+    return store

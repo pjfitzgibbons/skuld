@@ -201,7 +201,7 @@ a git remote operation always goes through its adapter.
 | Auth | `~/.netrc` for Jira, read per call; `gh`'s and git's own credentials for GitHub and the store's remote |
 | Terminal front end | Ghostty, Aerospace and tmux via `subprocess`; fzf for the picker; nvim for ticket files |
 | Browser | Brave, reached through Aerospace and AppleScript by `openUrl()`; never system `open`, and never the terminal's own link-click (§7.6.1). Browser automation and browser tests run in Chrome, so `Brave Browser` always names the human's own Brave |
-| Pages | `plan serve`: one local Flask server on `127.0.0.1`, started at login, rendering an issue's pages from Jinja templates (§7.6.1) |
+| Pages | One local Flask server on `127.0.0.1`, run by a LaunchAgent from login and controlled by `plan serve start\|stop\|restart\|status`, rendering an issue's pages from Jinja templates (§7.6.1) |
 | Pull requests | `gh`; Jira linkage through Jira's development panel, not a custom field |
 | Jira writes | `/rest/api/3/*`, ADF for descriptions and comments |
 
@@ -408,8 +408,8 @@ the command. Nothing else opens a page. System `open` sends a page to whichever 
 used last, often on another workspace, so neither the code nor an agent's shell uses it for one
 (§10, rule 7).
 
-`plan browse` takes a key, which opens the issue's page: Jira's browse URL, or `plan serve`'s page
-for a store ticket. It also takes `pr#N`, which opens the pull request, or a URL. `[KEY]` names the
+`plan browse` takes a key, which opens the issue's page: Jira's browse URL, or the local server's
+page for a store ticket. It also takes `pr#N`, which opens the pull request, or a URL. `[KEY]` names the
 issue whose workspace the page belongs in when neither the target nor the session names one.
 
 Target workspace, in order: (1) an explicit `workspace` argument, which Start always passes (§7.1);
@@ -429,8 +429,12 @@ before-and-after diff of `browserBundleId` window ids, the same diffing `appWind
 best-effort: a missing `aerospace`, a missing Brave or any other failure is swallowed, since the
 printed URL stands on its own.
 
-Pages for an issue, such as its report and its review, come from `plan serve`, rendered from Jinja
-templates with the issue's data. Every such page's header links the issue, to its Jira browse URL or
+Pages for an issue, such as its report and its review, come from the local server, rendered from
+Jinja templates with the issue's data. A page's URL path keys (the issue key, the round, the page)
+name it, and the server renders it from the data on each request, so no command publishes a page. A
+URL whose target doesn't exist redirects (302) to the nearest page that does: a missing round to the
+latest round, and an issue with no rounds to the issue's page. An unknown key gets a 404 page that
+says what exists. Every such page's header links the issue, to its Jira browse URL or
 to the server's page for a store ticket, and links its pull request; before a PR exists, the header
 says so. A page is always opened at its server URL, never as a `file://` path.
 
@@ -478,8 +482,7 @@ and `reviews/`. After a quiet period (`debounceSeconds` in `store.yml`), so a ma
 commit, it runs the checker. On failure it commits nothing, posts a macOS notification naming the
 file and rule, and logs the same. On success it commits every change with a generated message
 (`SK-0012: status in-progress`, `12 issues: ordinal`) and pushes, retrying a failed push after
-`pull --rebase`. A store checked out as a submodule of another repo is the same store at another
-path; the watcher watches whatever `issueStore` names.
+`pull --rebase`. The watcher watches the checkout that `issueStore` names.
 
 <a id="failure-modes"></a>
 
@@ -534,5 +537,5 @@ they share:
 5. Tickets are edited in place; only a closed ticket moves, from `active/` to `archive/` (§7.5).
 6. Skuld holds code and definitions, the ticket store holds data, and neither holds the other's
    (§3).
-7. A page for an issue comes from `plan serve`, links the issue and its pull request, and opens in
+7. A page for an issue comes from the local server, links the issue and its pull request, and opens in
    the issue's Aerospace workspace through `openUrl()`, never through system `open` (§7.6.1).
