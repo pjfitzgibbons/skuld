@@ -155,8 +155,9 @@ settles on). Numbers are per prefix and never reused; the next is one above the 
 ### 4.3 Projects, repos and where `plan` runs
 
 Today `lib/fileissues.py` serves one hard-coded project, `PROJECT = "JP"`, and `lib/config.py` defaults `checkouts.JP`
-and `issuesDir` to skuld's own root. Both go. Configuration names the projects and the repos each one works in, and
-`plan` and `pr` work out everything else from the folder they run in.
+and `issuesDir` to skuld's own root. Both go. `store.yml` names the projects and the repos each one works in, the
+machine config lists where this Mac has those repos checked out, and `plan` and `pr` work out everything else from the
+key they are given or the folder they run in.
 
 ```yaml
 # skuld/store.yml: the canonical project list, shared by every machine that clones skuld
@@ -173,6 +174,7 @@ debounceSeconds: 5
 // ~/.config/jira-plan/config.json: this machine only
 {
   "issueStore": "~/issues",
+  "checkouts": ["~/programming/skuld", "~/work/cryo-gitops-github"],
   "jira": {
     "CIAM": { "repos": ["git@github.com:cryoport/cryo-gitops-github.git"] }
   }
@@ -184,35 +186,40 @@ list their repos in skuld's `store.yml`, which travels with skuld. Jira projects
 only the work Mac has them. One project may have several repos (`CIAM` does); one repo belongs to one project, and the
 checker refuses a remote listed twice.
 
+`checkouts` is a plain list of this Mac's main checkouts. Each path's `origin` is matched against the remotes above, so
+the project a checkout serves is never written twice, and a path whose remote no project lists is reported as an
+error. A remote with no checkout on this Mac is simply not worked on here.
+
 <a id="environment"></a>
 
-On every run, `plan` and `pr` resolve their environment from the current folder, as `mainCheckout()` does today
-([architecture §7.0](architecture.md#repo-resolution)), with remotes in place of `checkouts`:
+On every run, `plan` and `pr` resolve their environment as `mainCheckout()` does
+([architecture §7.0](architecture.md#repo-resolution)), with remotes naming the projects:
 
-1. Find the main checkout with `git rev-parse --git-common-dir` from the cwd, so a run inside
-   `<repo>.worktrees/SK-12` means `<repo>`.
-2. Read its `origin` URL, normalized (ssh or https, with or without `.git`), and match it against every repo
-   `store.yml` and the machine config list.
-3. The match gives the project, its tracker (`FileStore` or `Jira`), the main checkout, the worktree root
-   `<repo>.worktrees/`, the base branch, and the store folders the run writes to (`active/` for tickets,
-   `reviews/<KEY>/` for review files). Nothing else is configured.
-4. Outside any git repo, or in a repo no project lists, `plan` and `pr` fail. The message names the cwd, the remote
-   found if any, and the configured repos, and says to `cd` into one. Asking (an `fzf` pick of configured repos) can
-   come later; failing needs no local paths at all.
+1. **A key decides.** When the command has a key (Open, Start, Ship, Done, view), its prefix gives the project, and
+   the project's repos that appear in `checkouts` are the candidates. The current folder may belong to another
+   project; `plan open CIAM-9` works from inside skuld.
+2. **Existing work wins.** Each candidate is searched for `<repo>.worktrees/<KEY>` or the issue's branch. Found in
+   one repo, that repo is used; found in more than one, the command refuses and names each.
+3. **New work.** With nothing found, the current folder's repo is used when it is a candidate (a run inside
+   `<repo>.worktrees/SK-12` means `<repo>`, through `git rev-parse --git-common-dir`). Otherwise one candidate is
+   used outright, several open an `fzf` pick, and none is refused, naming the project's remotes and `checkouts`.
+4. **No key.** `plan list` and the picker show the current repo's project first when run inside a configured repo,
+   and every configured project anywhere else.
+
+The resolved repo gives the project, its tracker (`FileStore` or `Jira`), the main checkout, the worktree root
+`<repo>.worktrees/`, the base branch, and the store folders the run writes to (`active/` for tickets,
+`reviews/<KEY>/` for review files).
 
 A run then works in two places. In the configured repo it makes the git and GitHub changes: Start's branch and
 worktree, Ship's commit, push and PR, Done's cleanup. In the store it makes the ticket and review changes: status, log
 lines, review rounds. It never writes a ticket into the configured repo, and never touches a development repo from
 the store. Even a run inside skuld edits skuld's code in skuld and `SK-` tickets in the store.
 
-This replaces `checkouts`: no path to a repo is configured anywhere. A key typed on the command line must belong to the
-resolved project, so `plan start CIAM-9` run inside skuld is refused rather than started in the wrong repo.
 `FileStore` answers for every key whose prefix `store.yml` lists, and `storeFor()` sends any other key to the
 machine's tracker adapter. A `plan new` for an unlisted prefix is refused, naming `store.yml`; adding a project is one
 entry there, committed to skuld. `plan init-store` creates an empty store's folders at `issueStore`.
 
-The `name` is what the picker and `plan list` show beside the key, which also fills the `projectMarkers` gap
-([architecture §7.7](architecture.md#file-backed-issues)) records as open.
+The `name` is what the picker and `plan list` show beside the key, which also fills the `projectMarkers` gap: that config key has no reader today.
 
 **Skuld is the first project.** The store starts with one entry, `SK` (Skuld), and skuld's own backlog moves into it:
 `JP-1` to `JP-9` become `SK-1` to `SK-9`, numbers kept, so a reference in a commit or an issue body maps by prefix
@@ -267,8 +274,8 @@ directions can't disagree. The relation is tracked end to end:
   refuses one.
 - A blocker counts as cleared when its status is `done` or `wontfix`; an archived blocker is closed, so archiving never
   breaks a relation.
-- `FileStore.blockers(issue)` returns the open ones, so Start refuses a blocked issue exactly as it does for a Jira
-  issue today, naming each blocker.
+- `FileStore.blockers(issue)` returns the open ones, so Start lists them and asks before it goes on, exactly as it
+  does for a Jira issue.
 - The picker and `plan view` show an issue's open blockers and what it blocks; plan order puts blocking issues first
   within a milestone (rule 2 above).
 - A key from another tracker (`blocked_by: [CIAM-163]`) is allowed. The checker can't see it offline, so it skips that
@@ -415,9 +422,8 @@ Each has a recommendation; none blocks phase 1 except the first two.
 3. **Number collisions across two Macs.** Two offline `plan new` calls can take the same number. _Recommend:_ `plan new`
    pulls first when the store is a repo; the checker's duplicate-key rule catches the rest, and the second file is
    renumbered by hand. Single-user rarity doesn't justify a counter service.
-4. **Asking outside a configured repo.** [4.3](#environment) fails there. _Recommend:_ keep failing until it gets in
-   the way, then add an `fzf` pick of the configured repos, which still needs a local path for each and so brings
-   back a per-machine map.
+4. **One issue across two repos.** Existing work found in more than one of a project's repos is refused
+   ([4.3](#environment)). _Recommend:_ keep refusing until a real case needs one issue's work split across repos.
 5. **Does `plan` set `done`?** Today Done never transitions (architecture §7.3), and a person sets `status: done` by
    hand. With files, `plan done` could set it after the merge, since the watcher commits it visibly. _Recommend:_ keep
    the rule for Jira; for the file store, Done sets `status: done` and `closed:` only after it confirms the PR merged.
@@ -455,7 +461,7 @@ The code's home is settled: skuld. gh-plan's [#185](http://127.0.0.1:3010/issues
 | L3 Reliability and failure     | Writes are whole-file, checked before writing. The watcher never commits a failing tree, retries a failed push after a rebase, and stops loudly on a conflict. A crash mid-debounce loses nothing: the next start commits what's on disk.                                                                      |
 | L4 Performance and limits      | `list` parses every active file; hundreds of files parse in well under a second. No index until that changes.                                                                                                                                                                                                  |
 | L5 Observability               | The checker names file, line and rule. The watcher notifies on failure and logs every commit and push. `git log` in the store is the full history.                                                                                                                                                             |
-| L6 Compatibility and migration | The 9 `JP-` issues become `SK-` issues in the new format in phase 2 (a one-off script, checked), numbers kept; no branch or worktree carries a `JP` key. `issuesDir` becomes `issueStore`, with the old key read once and warned about; `checkouts` goes, replaced by repo remotes matched against the cwd's `origin` ([4.3](#environment)), and the CIAM entry moves to `jira.CIAM.repos`. Jira-shaped dicts stay until phase 3. |
+| L6 Compatibility and migration | The 9 `JP-` issues become `SK-` issues in the new format in phase 2 (a one-off script, checked), numbers kept; no branch or worktree carries a `JP` key. `issuesDir` becomes `issueStore`, with the old key read once and warned about; `checkouts` becomes a plain list of main checkouts, each matched to its project by its `origin` remote ([4.3](#environment)), and `CIAM`'s repos move to `jira.CIAM.repos`. Jira-shaped dicts stay until phase 3. |
 | L7 Usability                   | `plan new` and `plan set` mean no hand-written front matter. Files open in nvim beside Claude, as JP issues do today.                                                                                                                                                                                          |
 | L8 Testability                 | The checker and `FileStore` test against a fixture store in a temp dir; the watcher's debounce and gate test with a fake clock and a temp repo. No network.                                                                                                                                                    |
 | L9 Operations and cost         | One launchd agent, stdlib Python, git. No server.                                                                                                                                                                                                                                                              |
