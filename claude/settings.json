@@ -16,6 +16,7 @@
       "Bash(python3 -m pytest:*)",
       "Bash(python3 .claude/hooks/test_no_ai_attribution.py:*)",
       "Bash(python3 .claude/hooks/test_no_terminal_jira_transition.py:*)",
+      "Bash(python3 .claude/hooks/test_no_bare_open.py:*)",
       "Bash(jira issue view:*)",
       "Bash(jira issue list:*)",
       "Bash(jira me:*)",
@@ -49,6 +50,10 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/no_terminal_jira_transition.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/no_bare_open.py"
           }
         ]
       }

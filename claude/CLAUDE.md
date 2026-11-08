@@ -30,6 +30,9 @@ settings: what this repo needs is here or in `.claude/`.
   "Review: co-signing and dispositions."
 - **Before each push:** `/code-review high` on the branch's whole diff, review fixes included. The
   PR body says it ran.
+- **Browser checks:** a test script in Chrome or Chromium, run with the suite. The
+  `chrome-devtools` MCP server (Chrome, `--isolated`) is for investigating an issue, never for
+  checking a change, and never drives Brave.
 - **Python:** `python3` on PATH. `/usr/bin/python3` is 3.9 and can't run the skill scripts.
 - **An issue's work:** Start, Ship and Done, run from `plan`'s Next up list.
 - **An issue's body:** `jira-get /rest/api/3/issue/<KEY>`, or `?expand=changelog` for its history.
@@ -84,6 +87,8 @@ settings: what this repo needs is here or in `.claude/`.
   command that looks like it moves a Jira issue to a terminal status. It is a false-positive-prone
   substring match by design: if it blocks a genuinely read-only command, don't work around it —
   report it and ask.
+- **The page-open hook** (`.claude/hooks/no_bare_open.py`) blocks `open` on a URL or an `.html`
+  file. Open a page with `plan browse <KEY | pr#N | url> [KEY]`, or print the URL for Peter.
 - **`gh pr create --fill`** copies the commit's `Assisted-by:` trailer into the PR body. Use `gh pc`.
 - **zsh globs `[]`:** quote it, `-f 'labels[]=bug'`.
 - **~/.netrc holds the Jira token.** Never `cat`, `Read` or print it; `Read(./**/.netrc)` is denied
