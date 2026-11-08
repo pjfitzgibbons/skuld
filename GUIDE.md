@@ -4,10 +4,10 @@ This guide covers how to set skuld up, run each command, and what each command d
 The [architecture](docs/architecture.md) says what the system is and the rules it keeps; this guide
 links to it for the reasons and doesn't repeat them.
 
-Skuld plans and ships work from the terminal. `plan` lists what's next, and starts, opens, ships
-and finishes an issue in Ghostty under Aerospace and tmux. `pr` commits, pushes, opens or updates
-the pull request and answers its review. Issues live in the ticket store, a git repo of Markdown
-files, or in Jira Cloud (`cryoport.atlassian.net`).
+Skuld plans and ships work from the terminal. `plan` lists what's next, and starts, opens, ships and
+finishes an issue, each in its own VS Code window on an Aerospace workspace. `pr` commits, pushes,
+opens or updates the pull request and answers its review. Issues live in the ticket store, a git
+repo of Markdown files, or in Jira Cloud (`cryoport.atlassian.net`).
 
 ## Contents
 
@@ -31,7 +31,7 @@ files, or in Jira Cloud (`cryoport.atlassian.net`).
    Next up (plan order)       worktree <repo>.worktrees/<KEY>          the issue (store or Jira)
    ────────────────────       ───────────────────────────────          ─────────────────────────
    (1) START ───────────────▶ branch <type>/<KEY>-slug, off base ────▶ in progress, "Started" logged
-                              Ghostty+tmux window, Claude beside        (a store ticket opens in nvim)
+                              issue window, Claude in its terminal      (a store ticket opens in a tab)
                               Claude works · writes <store>/reviews/<KEY>/
    (2) SHIP ────────────────▶ pr <KEY>: commit, push, open/update PR ─▶ Done boxes ticked
                               review rounds: replies/                    (Jira: dev panel, native)
@@ -56,8 +56,8 @@ everything reaches it by PR. The only status change `plan` makes is Start's move
 macOS only. In order:
 
 1. **Tools.** `git`, `gh` (signed in with `gh auth login`), Python 3.10 or later on `PATH` as
-   `python3` (`/usr/bin/python3` is 3.9 and can't run the scripts), Ghostty, Aerospace, tmux, fzf,
-   nvim, lazygit and Brave. SketchyBar is optional.
+   `python3` (`/usr/bin/python3` is 3.9 and can't run the scripts), VS Code with its `code` command
+   on `PATH`, Aerospace and fzf. SketchyBar is optional.
 
 2. **The Jira token in `~/.netrc`**, never in a tracked file or an env var:
 
@@ -111,8 +111,6 @@ macOS only. In order:
    | `disposable` | `done.py`'s list | Ignored files Done may delete with a worktree |
    | `aerospaceConfig` | `~/.aerospace.toml` | Where the `# Workspaces:` comment names the workspaces `plan` never takes |
    | `slotsFile` | `~/.cache/plan/workspaces` | The `<workspace>=<KEY>` lines that place issues on workspaces |
-   | `ghosttyApp` | `/Applications/Ghostty.app` | The Ghostty that Start launches |
-   | `browserBundleId` | `com.brave.Browser` | The browser `openUrl()` adds tabs to |
    | `netrcFile`, `baseUrl` | `~/.netrc`, `https://cryoport.atlassian.net` | Where the Jira token and site are |
 
 6. **The skill.** Link `skills/jira-issues/` to `~/.claude/skills/jira-issues/`, so every repo
@@ -164,7 +162,7 @@ decides the repo (§4).
 | `plan start <KEY>`, `plan open <KEY>` | Start or Open (§4); one command, one code path |
 | `plan ship [KEY]` | Ship (§5); the key defaults to the current worktree's branch |
 | `plan done [KEY]` | Done (§6) |
-| `plan browse <KEY \| pr#N \| url> [KEY]` | Open a page in the issue's Brave window (§7) |
+| `plan browse <KEY \| pr#N \| url> [KEY]` | Open a page in the issue window's browser (§7) |
 | `plan serve start\|stop\|restart\|status` | Control the local server's LaunchAgent (§7); `status` prints the server's URL and whether it answers |
 | `plan archive` | Move closed tickets past `archiveAfterDays` to `archive/` |
 | `plan init-store` | Make an empty store's folders |
@@ -210,20 +208,19 @@ runs only when it has something to do:
    (`sketchybar --trigger plan_workspaces_change`, skipped when it isn't installed). Every command
    that touches workspaces first sweeps the slots file, dropping lines whose workspace has no
    windows.
-8. **Open Ghostty and tmux.** `open -na Ghostty.app --args -e "tmux new-session -A -s <KEY> -c
-   <worktree>"` opens a window. Its Aerospace window id is found by diffing
-   `aerospace list-windows --app-bundle-id com.mitchellh.ghostty` before and after, never by its
-   title, and the window moves to the issue's workspace. The tmux session has a `claude` window,
-   started with a prompt naming the issue, and a shell window. When the session already exists,
-   `-A` attaches to it instead.
+8. **Open the issue window.** Write `<repo>.worktrees/<KEY>.code-workspace`, listing the worktree
+   and the ticket store, and open it in a new window with `code`. Its Aerospace window id is found
+   by diffing VS Code's windows in `aerospace list-windows` before and after, never by its title,
+   and the window moves to the issue's workspace. Claude starts in one integrated terminal with a
+   prompt naming the issue, and a shell waits in another; both carry the issue's key in their
+   environment. When the window is already open, Open reuses it.
 9. **Put the issue beside Claude.** A Jira issue's browse URL opens through `openUrl()` with the
-   workspace from step 7 (§7). A store ticket opens in nvim, in a pane split beside the `claude`
-   window, on the ticket file in the store. The pane is tagged `@plan_ticket <KEY>`, so Open run
-   again reuses it. The URL or file path is printed either way.
-10. **Focus the issue.** Switch to the workspace, focus its Ghostty window and select the `claude`
-    window, so the command ends with the human at the issue's Claude.
+   issue's key (§7). A store ticket opens in an editor tab, on the ticket file in the window's store
+   folder. The URL or file path is printed either way.
+10. **Focus the issue.** Switch to the workspace and focus the issue window with Claude's terminal
+    in front, so the command ends with the human at the issue's Claude.
 
-Open on an issue whose window, session or workspace is gone recreates what's missing
+Open on an issue whose window or workspace is gone recreates what's missing
 ([failure-modes.md, *Open*](docs/failure-modes.md)).
 
 ## 5. Ship and the review round
@@ -265,9 +262,9 @@ Rules the files follow:
 Ship runs `ship.check()`, which refuses by name: a branch that isn't the issue's, a missing
 `pr-body.md`, a tree with changes and no `commit.txt`, a reply file not named
 `replies/<digits>.md`, an empty reply, or two replies to one thread. On success it runs `pr <KEY>`
-in a tmux window named `ship` in the issue's session, so its output shows as it runs.
+in an integrated terminal of the issue window, so its output shows as it runs.
 
-- **Non-zero exit:** the window shows why, and nothing else happens.
+- **Non-zero exit:** the terminal shows why, and nothing else happens.
 - **Zero exit:** any round file edited while `pr` ran, which `pr` has since sent and deleted, is
   saved beside it as `<file>.unsent` (`.unsent2` and so on, never over a file).
 
@@ -330,9 +327,10 @@ clean, holds no ignored files outside `disposable`, and its HEAD is the PR's mer
 it; no round files are left unsent; the worktree isn't locked; the main checkout's base can
 fast-forward to `origin/<base>`.
 
-The changes: fast-forward the base, `git worktree remove`, delete every branch named for the issue
-whose tip is in the PR, note the PR and merge commit on the issue (an ADF comment in Jira, a
-`## Log` line in a ticket), free the issue's workspace slot, and print the close note:
+The changes: fast-forward the base, `git worktree remove`, delete the workspace file, delete every
+branch named for the issue whose tip is in the PR, note the PR and merge commit on the issue (an ADF
+comment in Jira, a `## Log` line in a ticket), free the issue's workspace slot, and print the close
+note:
 
 ```text
 Close CIAM-123 in Jira: https://cryoport.atlassian.net/browse/CIAM-123
@@ -378,32 +376,23 @@ no buttons that act. A page is always opened at its server URL, never as a `file
 ### `plan browse` and `openUrl()`
 
 `plan browse` takes a key (the issue's page), `pr#N` (the pull request) or a URL. `[KEY]` names the
-issue whose workspace the page belongs in when neither the target nor the tmux session names one.
+issue whose window the page belongs in when neither the target nor the terminal names one.
 Start and Open use the same `openUrl()`.
 
-`openUrl()` prints the URL, then picks the target workspace: an explicit workspace (Start passes
-the one it just placed the issue on), else the tmux session's slot, else the focused workspace
-([architecture §7.6.1](docs/architecture.md#open-url)). Then:
-
-- **The workspace has a Brave window:** `aerospace list-windows --workspace <ws>
-  --app-bundle-id com.brave.Browser` gives its title, and AppleScript adds a tab to the Brave
-  window with that title. Focus doesn't move and the screen doesn't switch.
-- **Two Brave windows there share a title:** `openUrl()` focuses the one Aerospace names, adds the
-  tab to Brave's front window, and gives focus back. On a hidden workspace the screen switches
-  briefly.
-- **No Brave window there:** AppleScript makes one, and it moves to the workspace by a
-  before-and-after diff of Brave's window ids.
+`openUrl()` prints the URL, then picks the issue window: an explicit key (Start passes its own),
+else the key in the calling terminal's environment, else the issue window on the focused workspace
+([architecture §7.6.1](docs/architecture.md#open-url)). The page opens in that window's integrated
+browser, and a link clicked in one of its terminals opens there too.
 
 Every step is best-effort; the printed URL stands on its own. System `open` is never used for a
-page, since it sends the page to whichever Brave window was used last. The `no_bare_open.py` hook
-refuses it in an agent's shell (§9).
+page, since it sends the page to the default browser, outside every issue window. The
+`no_bare_open.py` hook refuses it in an agent's shell (§9).
 
 ### Browser automation and tests
 
 Browser tests are scripts that run in Chrome or Chromium with the test suite. The
 `chrome-devtools` MCP server (Chrome, `--isolated`) is for investigating an issue, not for
-checking a change. Neither runs Brave, so `Brave Browser` in AppleScript always means the human's
-own Brave.
+checking a change. Neither runs in an issue window, whose integrated browser is the human's own.
 
 ## 8. The helpers
 
@@ -473,7 +462,7 @@ These recur through the code, and they're worth taking away even without the too
    GitHub credentials.
 8. **A refusal that names its fix** instead of recovery code.
 9. **Outside systems behind ports.** Each tracker, GitHub and git remote is reached through its
-   port's adapter, and `lib/term.py` alone runs Ghostty, Aerospace and tmux, so the rest of `lib/`
+   port's adapter, and `lib/term.py` alone runs `code` and Aerospace, so the rest of `lib/`
    tests without a real terminal ([architecture §6](docs/architecture.md#components)).
 10. **A gate that fails loudly.** The watcher commits nothing that fails the checker, and says so
     in a notification and a log.
@@ -497,12 +486,12 @@ and the exit code out.
 
 ## 12. Limits
 
-- **macOS only:** Aerospace, Ghostty, AppleScript, launchd and the Keychain-free `~/.netrc` setup
+- **macOS only:** Aerospace, launchd and the Keychain-free `~/.netrc` setup
   all assume it.
 - **One user and one Jira site:** `cryoport.atlassian.net`, with the `netrc` machine name in
   config.
-- **No in-terminal browsing:** pages open in Brave, never in a TUI browser or through a terminal's
-  link-click.
+- **No in-terminal browsing:** pages open in the issue window's integrated browser, never in a TUI
+  browser or through system `open`.
 - **GitHub only for pull requests;** GitHub Issues is not used.
 
 ## 13. Package index
@@ -521,7 +510,7 @@ lib/
   start.py                 Start and Open: repo resolution, names, worktrees, the lock
   ship.py                  Ship's checks and round-file naming
   done.py                  Done: checks, then changes, then the close note
-  term.py                  Ghostty, Aerospace, tmux and SketchyBar; the slots file; openUrl()
+  term.py                  VS Code, Aerospace and SketchyBar; the slots file; openUrl()
   test_*.py                the unit tests
   (the FileStore adapter, the checker, issue-watch and the local server also live in lib/)
 templates/issue.md         what plan new fills in
