@@ -69,12 +69,11 @@ settings: what this repo needs is here or in `.claude/`.
 - **Never use real personal data** in fixtures, tests or examples.
 - **No speculative files.** No directory or file until something goes in it.
 - **Agree a doc change in chat first**, then edit in place on the branch.
-- **Invariants** ([architecture §10](docs/architecture.md#invariants)); these two break most
-  easily:
+- **Rules** ([architecture §10](docs/architecture.md#invariants)); these two break most easily:
   - **2.** The default branch carries the code, and everything reaches it by PR. Status lives in
-    Jira.
-  - **6.** Only `lib/jira.py` and the Start module, and Ship's `pr` task, spawn a process or open a
-    connection; every Jira call goes through `lib/jira.py`.
+    the issue's tracker.
+  - **3.** Every outside system is reached through its port's adapter; every Jira call goes
+    through `lib/jira.py`.
 
 ## Gotchas
 

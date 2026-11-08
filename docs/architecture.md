@@ -6,473 +6,468 @@
 - [2. Definitions](#definitions)
 - [3. Storage](#storage)
 - [4. Plans](#plans)
-  - [4.1 Projects and versions](#members)
+  - [4.1 Projects and milestones](#members)
   - [4.2 Dependencies and parents](#dependencies)
 - [5. Identity](#identity)
 - [6. Components](#components)
-  - [6.1 Jira and its clients](#front-ends)
+  - [6.1 Ports and clients](#front-ends)
   - [6.2 Process boundary](#process-boundary)
   - [6.3 Platform](#platform)
 - [7. Operations](#operations)
+  - [7.0 Which repo](#repo-resolution)
   - [7.1 Start](#start)
   - [7.2 Ship](#ship)
   - [7.3 Finish](#finish)
-  - [7.4 Tool commits](#tool-commits)
-  - [7.5 Baselines](#freeze)
+  - [7.4 Commits](#tool-commits)
+  - [7.5 Archiving](#archiving)
   - [7.6 Next up](#ready-file)
-  - [7.7 File-backed JP issues](#file-backed-issues)
+  - [7.7 The ticket store](#file-backed-issues)
 - [8. Failure modes](#failure-modes)
 - [9. Views](#views)
-- [10. Invariants](#invariants)
+- [10. Rules](#invariants)
 
-**Requirements:** [`requirements.md`](requirements.md) · **Decisions:** [`adr/`](adr/) ·
 **Failure modes by command:** [`failure-modes.md`](failure-modes.md)
 
 <a id="purpose"></a>
+
 ## 1. Purpose
 
-Jira Plan plans work in Jira Cloud (`cryoport.atlassian.net`, project `CIAM`), which runs outside
-this repo. This repo is the terminal front end around it: a `plan` CLI (`bin/plan`, `lib/`) that
-starts, ships and finishes an issue, run from Ghostty under Aerospace and tmux instead of a VS Code
-panel. `pr`, the jira-issues skill's script, commits, pushes and opens or updates the pull request.
-Jira's own GitHub integration links commits and PRs to the issue through its development panel;
-GitHub Issues is not used, and pull requests are the one GitHub integration this tool drives.
+Skuld plans and ships work from the terminal. It holds the library, the `plan` and `pr` commands,
+the helper scripts and the definitions they share. `plan` lists what's next, and starts, opens,
+ships and finishes an issue in Ghostty under Aerospace and tmux. `pr` commits, pushes, opens or
+updates the pull request and answers its review.
+
+Issues live in one of two trackers: the ticket store, a git repo of Markdown files that skuld
+defines and works, or Jira Cloud (`cryoport.atlassian.net`) for work projects. Pull requests are
+GitHub's, and they are the one GitHub integration; GitHub Issues is not used.
 
 <a id="definitions"></a>
+
 ## 2. Definitions
 
 | Term | Definition |
 |---|---|
-| Issue | A Jira issue, `CIAM-123`, the project key plus a per-project number. The unit of planned work |
-| Project | The Jira project `CIAM`; other projects may exist in the tenant but this tool is scoped to one by config |
+| Issue | The unit of planned work, named by its key, `PREFIX-n`: a project prefix and a per-project number. It lives in the ticket store or in Jira |
+| Project | A key prefix and the repos its work happens in. Store projects are listed in skuld's `store.yml`, Jira projects in the machine config |
+| Ticket store | A git repo, outside every development repo, holding ticket files, milestones and review files, with its own remote (§3, §7.7) |
+| Configured repo | A development repo some project lists by its `origin` remote, checked out on this Mac at a path in `checkouts` (§7.0) |
+| Milestone | A store-wide group of issues with a status (`open`, `locked`, `closed`) and an `ordinal` (§4.1) |
+| Ordinal | An integer that orders milestones, and issues within a milestone; lower comes first (§7.6) |
 | Default branch | The branch GitHub has configured for the repo: `main`, or `develop` under git-flow. It carries the code |
-| Tool commit | None: the tool makes no commits of its own, and every commit reaches the default branch through a pull request (§7.4) |
-| Start | Transitioning an issue to its project's "in progress" status from `plan start`, which makes its branch and worktree and posts a "Started" comment (§7.1) |
-| Round | One pass of review: the commit message, PR body, review replies and Done ticks in `.tmp/<KEY>/` that `pr` sends (§7.2) |
-| Finish | The squash merge of the issue's PR, then Done, which comments the issue and tells the human to close it (§7.3) |
-| Next up | The config's JQL, run against `/rest/api/3/search/jql`: by default `project = CIAM AND assignee = currentUser() AND statusCategory != Done ORDER BY Rank` (§7.6) |
-| Blocker | A Jira issue link of type "Blocks", read from the inward direction ("is blocked by"), whose target's `statusCategory` isn't Done |
+| Start | Moving an issue to "in progress" from `plan start`, which makes its branch and worktree and logs "Started" on the issue (§7.1) |
+| Round | One pass of review: the commit message, PR body and review replies in `<store>/reviews/<KEY>/` that `pr` sends (§7.2) |
+| Finish | The squash merge of the issue's PR, then Done, which notes the merge on the issue and leaves closing it to the human (§7.3) |
+| Next up | The open issues in plan order: the store's issues by milestone and ordinal, merged with the Jira project's JQL results (§7.6) |
+| Blocker | An open issue the issue depends on: a key in the ticket's `blocked_by`, or a Jira "Blocks" link read inward (§4.2) |
 
 <a id="storage"></a>
+
 ## 3. Storage
 
-Jira Cloud is the source of truth, outside this tool's control. It holds every issue with its
-fields, status, comments and issue links. The repos it plans hold no tracker files, and this tool
-keeps no local database of its own.
+Each run touches up to three places, and each holds one kind of thing:
 
-The Jira GitHub integration (installed at the tenant level, outside this repo) links commits and
-pull requests to an issue automatically when the branch name or PR title contains the issue's key,
-and surfaces them in the issue's development panel. This tool relies on that integration for PR
-linkage; it does not write a custom field for it (contrast the original design's `Pull requests`
-field, dropped — see [§7.2](#ship)).
+- **Skuld** holds code and definitions: `lib/`, `bin/`, the helper scripts, the issue file spec
+  (`docs/issue-format.md`), the issue template (`templates/issue.md`), and `store.yml`, which names
+  the store's projects and their repo remotes.
+- **The ticket store** holds data: `active/` and `archive/` for ticket files, `milestones/`, and
+  `reviews/<KEY>/` for review rounds. It sits at the path the machine config's `issueStore` names,
+  and has a git remote of its own. A watcher commits and pushes every change once the checker
+  passes (§7.7).
+- **The configured repo** holds code. Its branches, worktrees and pull requests are what `plan` and
+  `pr` change there. It holds no tracker files.
 
-A checkout's `.tmp/` is ignored by git. `.tmp/<KEY>/` holds a round's files for issue `<KEY>` until
-`pr` sends and deletes them, and `plan done` refuses to remove a worktree that still holds any it
-hasn't sent.
+Jira Cloud holds Jira issues with their fields, status, comments and issue links, outside this
+tool's control. Its GitHub integration links commits and pull requests to an issue when the branch
+name or PR title contains the key, and shows them in the issue's development panel; this tool
+writes no field for that.
 
-The API token lives only in `~/.netrc` (machine `cryoport.atlassian.net`), read fresh by
-`lib/jira.py` on each call — never cached, never in an env var, never logged. Nothing in this repo
-holds a Jira credential.
+The machine config, `~/.config/jira-plan/config.json`, holds what differs per Mac: `issueStore`,
+`checkouts` (this Mac's main checkouts) and the Jira projects with their repo remotes.
+
+The Jira API token lives only in `~/.netrc` (machine `cryoport.atlassian.net`), read fresh by
+`lib/jira.py` on each call: never cached, never in an env var, never logged. Nothing in skuld or the
+ticket store holds a credential.
 
 <a id="plans"></a>
+
 ## 4. Plans
 
 <a id="members"></a>
-### 4.1 Projects and versions
 
-One Jira Cloud site holds the plan. This tool is scoped to one project, `CIAM`, by config
-(`jql` and `project` in `~/.config/jira-plan/config.json`). Other projects in the tenant are out of
-scope for this tool, though Jira itself has no such restriction.
+### 4.1 Projects and milestones
+
+A project is a key prefix and a list of repo remotes. One project may have several repos; one repo
+belongs to one project. Store projects (`SK`, Skuld, among them) are listed in skuld's `store.yml`;
+Jira projects (`CIAM`) in the machine config.
+
+Milestones belong to the ticket store, one file each in `milestones/`, with an `id`, a `name`, a
+`status` (`open`, `locked`, `closed`), an `ordinal` and an optional `due` date. An issue names its
+milestone in `milestone:`; an open issue is never in a closed milestone. Jira issues use Jira's own
+versions and rank.
 
 <a id="dependencies"></a>
+
 ### 4.2 Dependencies and parents
 
-A dependency is Jira's "Blocks" issue link type (id `10000`, outward `blocks`, inward
-`is blocked by`; confirmed live via `GET /rest/api/3/issueLinkType`). Start warns when an issue
-linked as "is blocked by" has a `statusCategory` other than Done.
+A store issue lists the issues that block it in `blocked_by`. Only the blocked side is written; what
+an issue blocks is derived by reading every ticket, so the two directions can't disagree. A blocker
+is cleared when its status is `done` or `wontfix`, and an archived blocker is closed. A
+`blocked_by` key may name a Jira issue, which Jira's adapter is asked about.
 
-A child is a sub-task. Jira's own hierarchy (Epic → Story/Task/Bug → Sub-task) replaces the
-parent/sub-task relation the original tool modeled on top of Redmine; this tool reads it, it does
-not model it separately.
+A Jira issue's blockers are its "Blocks" links (id `10000`, outward `blocks`, inward
+`is blocked by`) whose target's `statusCategory` isn't Done.
+
+A store issue names its parent in `parent`. A Jira issue's parent is Jira's own hierarchy (Epic →
+Story/Task/Bug → Sub-task), which this tool reads and doesn't model.
 
 <a id="identity"></a>
+
 ## 5. Identity
 
-An issue is its Jira key, `CIAM-123`, unique per project. Its branch is `<type>/CIAM-123-<slug>`,
-with `feat/`, `fix/` or `chore/` chosen from the issue's Jira type via a config map (Story/Task →
-`feat`, Bug → `fix`, anything else → `chore`), and its worktree is `<repo>.worktrees/CIAM-123`
-beside the main checkout. A commit message names the issue in its subject, e.g.
-`Add X (CIAM-123)`, which is what the Jira GitHub integration matches on — there is no `fixes
-#<n>`/`refs #<n>` distinction, because Jira Plan never transitions the issue from a commit or a PR
-merge (§7.3); only a human transition, or `plan start`'s one transition to "in progress", moves its
-status.
+An issue is its key, unique within its project: `SK-12` in the store, `CIAM-123` in Jira. A store
+issue's number is one above the highest found in `active/` and `archive/` together, and is never
+reused. Its file is `<KEY>-<slug>.md`, the slug fixed when the file is made, so a retitle doesn't
+rename it.
+
+Its branch is `<type>/<KEY>-<slug>`, with the prefix chosen from the issue's type: a Jira
+Story or Task, or a store `task` or `question`, is `feat/`; a Bug or `bug` is `fix/`; anything else
+`chore/`. Its worktree is `<repo>.worktrees/<KEY>` beside the main checkout. A commit message names
+the issue in its subject, e.g. `Add X (CIAM-123)`, which is what Jira's GitHub integration matches.
+No commit or merge changes an issue's status (§7.3), so there is no `fixes`/`refs` distinction.
 
 <a id="components"></a>
+
 ## 6. Components
 
 <a id="front-ends"></a>
-### 6.1 Jira and its clients
 
-Jira Cloud serves the web UI and the REST API v3. Everything else is a client of the REST API:
+### 6.1 Ports and clients
 
-- **The `plan` CLI** (`bin/plan`, `lib/cli.py`) shows Next up in an fzf picker, and runs Start,
-  Open, Ship and Done ([GUIDE.md §4](../GUIDE.md#4-the-terminal-frontend)).
-- **`pr`** commits, pushes, opens or updates the PR, posts review replies, applies Done ticks to
-  the issue's description, and cleans up after a merge. It and its Python scripts live in
-  `~/.claude/skills/jira-issues/scripts/`, outside this repo.
-- **`jira-get`** (if present; see `bin/`), sends one read-only GET with `~/.netrc` auth, so an
-  agent can read issues without seeing the token.
+`plan` and `pr` are one Python package in modules. Every outside system is reached through a port,
+a module interface with one class per adapter:
+
+| Port | Does | Adapters |
+|---|---|---|
+| `IssueStore` | list Next up, read an issue, create, set fields, transition, append a log line, close note | `FileStore`, `Jira` |
+| `ReviewStore` | record a round, its findings and outcomes, and read them back | files under `<store>/reviews/<KEY>/` |
+| `PullRequests` | open or update a PR, read its state and threads, post replies | `gh` |
+| `GitRemote` | fetch, push, rebase onto the base, add and remove worktrees | `git` |
+
+`storeFor(cfg, key)` picks an issue's adapter from its prefix: `FileStore` for a prefix `store.yml`
+lists, `Jira` for any other.
+
+The clients:
+
+- **`plan`** (`bin/plan`, `lib/cli.py`) shows Next up in an fzf picker, and runs `new`, `set`,
+  `view`, Start, Open, Ship and Done ([GUIDE.md §4](../GUIDE.md#4-the-terminal-frontend)).
+- **`pr`** commits, pushes, opens or updates the PR, posts review replies, and cleans up after a
+  merge.
+- **`issue-check`** runs the checker over the store or the files named (§7.7).
+- **`issue-watch`** is the watcher: it commits and pushes the store (§7.7).
+- **`plan archive`** moves closed issues to `archive/` (§7.5).
+- **`jira-get`** sends one read-only GET with `~/.netrc` auth, so an agent can read Jira issues
+  without seeing the token.
 
 <a id="process-boundary"></a>
+
 ### 6.2 Process boundary
 
-`lib/jira.py` and `lib/start.py` are the only modules that open a network connection to Jira, and
-`lib/jira.py` is the only one that does. The rest of `lib/` is plain functions, testable without a
-network or a repo.
+Each outside system is reached only through its port's adapter. Policy code names no tool.
 
-- `lib/jira.py` makes every call to Jira: the JQL search for Next up, reading an issue, looking up
-  a transition by its target status name and posting it with a read-back guard, reading issue
-  links for blockers, and posting ADF comments. It reads the token from `~/.netrc` on each call, so
-  no repo or process environment holds it.
-- `lib/start.py` runs git and `gh` for Start, Ship and Done: it fetches, adds and removes
-  worktrees, reads PRs, and pulls and deletes merged branches.
+- `lib/jira.py` makes every call to Jira: the JQL search, reading an issue, looking up a transition
+  by its target status name and posting it with a read-back guard, reading issue links for blockers,
+  and posting ADF comments. It reads the token from `~/.netrc` on each call.
+- `FileStore` is the only writer of ticket files that `plan` runs, and it checks every file before
+  writing it.
+- The `GitRemote` and `PullRequests` adapters run `git` and `gh`: fetching, adding and removing
+  worktrees, reading PRs, and pulling and deleting merged branches.
 
-This is a **narrower** invariant than the original tool's, deliberately: the original scoped "only
-these modules spawn a process or open a connection" to the whole extension, because a VS Code
-extension has no legitimate reason to shell out widely. The terminal front end does — `bin/plan`
-and `lib/term.py` spawn `ghostty`/`open`, `aerospace`, `tmux`, `fzf`, `nvim` and `lazygit` as part
-of its normal operation, none of which touch Jira or git state. So the invariant here is scoped to
-**every call to Jira**, not every process: a new Jira call must go through `lib/jira.py`, full
-stop; a new *subprocess* may be added to the terminal front end without violating this invariant,
-as long as it isn't a Jira call in disguise.
+The boundary is drawn around outside systems, not around processes. The terminal front end runs
+`ghostty`, `open`, `aerospace`, `tmux`, `fzf`, `nvim` and `lazygit` as part of its normal work; none
+of them touches a tracker or git state, so they need no port. A new call to Jira, a tracker write or
+a git remote operation always goes through its adapter.
 
-`gh` is already authenticated, so nothing holds a GitHub token. `pr` writes to GitHub through `gh`
-and to Jira through the REST API, with the same `~/.netrc` token `lib/jira.py` uses.
+`gh` is already authenticated, so nothing holds a GitHub token.
 
 <a id="platform"></a>
+
 ### 6.3 Platform
 
-| Layer | Choice | Why |
-|---|---|---|
-| Tracker | Jira Cloud, `cryoport.atlassian.net`, project `CIAM` | decision #1 |
-| Auth | `~/.netrc`, read per call | decision #1 |
-| Terminal frontend | Ghostty + Aerospace + tmux via `subprocess`, fzf for the picker | decision #8 |
-| Browser | Brave, launched explicitly via `open -na "Brave Browser" --args --new-window <url>` (new window) or `open -a "Brave Browser" <url>` (existing window, as a tab) — never a bare `open <url>`, and never the terminal's own link-click | user decision 2026-11-05 |
-| Pull requests | Subprocess to `gh`; linkage via Jira's native development panel, not a custom field | decisions #4, #9 |
-| Tracker writes | `/rest/api/3/*`, ADF for descriptions and comments | decision #1 |
+| Layer | Choice |
+|---|---|
+| Trackers | The ticket store (Markdown with YAML front matter, in a git repo); Jira Cloud, `cryoport.atlassian.net` |
+| Store commits | `issue-watch` under launchd: debounced, gated by the checker, commits and pushes |
+| Auth | `~/.netrc` for Jira, read per call; `gh`'s and git's own credentials for GitHub and the store's remote |
+| Terminal front end | Ghostty, Aerospace and tmux via `subprocess`; fzf for the picker; nvim for ticket files |
+| Browser | Brave, launched explicitly with `open -na "Brave Browser" --args --new-window <url>` (new window) or `open -a "Brave Browser" <url>` (a tab in an existing window); never a bare `open <url>`, and never the terminal's own link-click (§7.6.1) |
+| Pull requests | `gh`; Jira linkage through Jira's development panel, not a custom field |
+| Jira writes | `/rest/api/3/*`, ADF for descriptions and comments |
 
 <a id="operations"></a>
+
 ## 7. Operations
 
-```
-   Next up (JQL)                 worktree <repo>.worktrees/CIAM-123        Jira CIAM-123
-   ──────────────                ──────────────────────────────────        ─────────────
-   (1) START ──────────────────▶ branch <type>/CIAM-123-slug, off base ──▶ In Progress,
-                                 Ghostty+tmux window, Claude Code beside    "Started" comment
-                                 Claude works · writes .tmp/CIAM-123/ files
-   (2) SHIP ────────────────────▶ pr CIAM-123: commit, push, open/update PR ──▶ dev panel (native)
-                                 review rounds: replies/, issue.md ───────▶ Done boxes ticked
-   (3) squash merge on GitHub; PR title/branch carry CIAM-123
-   (4) DONE ───────────────────▶ worktree and branch removed, base up ────▶ ADF comment posted;
-                                                                             human closes CIAM-123
+```text
+   Next up (plan order)       worktree <repo>.worktrees/<KEY>          the issue (store or Jira)
+   ────────────────────       ───────────────────────────────          ─────────────────────────
+   (1) START ───────────────▶ branch <type>/<KEY>-slug, off base ────▶ in progress, "Started" logged
+                              Ghostty+tmux window, Claude beside        (a store ticket opens in nvim)
+                              Claude works · writes <store>/reviews/<KEY>/
+   (2) SHIP ────────────────▶ pr <KEY>: commit, push, open/update PR ─▶ Done boxes ticked
+                              review rounds: replies/                    (Jira: dev panel, native)
+   (3) squash merge on GitHub; the PR title and branch carry <KEY>
+   (4) DONE ────────────────▶ worktree and branch removed, base up ───▶ merge noted;
+                                                                         the human closes <KEY>
 ```
 
-The default branch carries the code, and everything reaches it by PR. An issue's status lives in
-Jira, and the only status change this tool ever makes is Start's one transition to "in progress";
-**Done never transitions the issue** (§7.3) — that is a hard rule, not a default.
+The default branch carries the code, and everything reaches it by PR. An issue's status lives in its
+tracker, and the only status change this tool makes is Start's move to "in progress". **Done never
+changes an issue's status** (§7.3).
 
 <a id="repo-resolution"></a>
-### 7.0 Which repo (`mainCheckout()`)
 
-Several repos can serve one Jira project (e.g. `CIAM` spans `cryo-gitops-github` and
-`Cryoport-Authentication-Service`), so Start, Open, Ship and Done don't look up "the" repo for an
-issue's project — `lib/start.py`'s `mainCheckout()` resolves it fresh on every call, in this order
-(DECIDED, user decision 2026-11-05):
+### 7.0 Which repo
 
-1. **Existing work wins, searched across every candidate repo.** The candidates are the cwd's own
-   main checkout (if cwd is inside one — a linked worktree resolves to its main checkout via `git
-   rev-parse --path-format=absolute --git-common-dir`, so running from inside
-   `<repo>.worktrees/CIAM-9` still means "repo"), plus every repo listed under
-   `checkouts.<PROJECT>` in config. `mainCheckout()` runs the same `existingWorktree()` lookup
-   Start/Open/Done already used within one repo (an existing worktree at `<repo>.worktrees/CIAM-9`,
-   or the issue's branch under `issueBranch()`) against **each** candidate. The worktree (or
-   branch) found is the record of which repo the issue lives in — there's no extra state to keep in
-   sync. Found in more than one repo is a refusal naming every repo it was found in, not a silent
-   pick; that ties into the still-open one-issue-per-repo question below.
-2. **New work uses the cwd's own repo.** If nothing existing was found anywhere, and cwd is inside
-   a git repo, that repo's main checkout is where the new worktree/branch is made — `checkouts` is
-   not consulted for new work when cwd is already a repo, even if a different repo is listed for
-   the project.
-3. **`checkouts` is the fallback for new work when cwd isn't a repo at all.** `checkouts.<PROJECT>`
-   is a repo path, or now a **list** of them (a bare string is still accepted, as a one-item list —
-   back-compat). Exactly one listed repo is used outright, with no prompt. More than one opens an
-   `fzf` picker ("Which repo holds this issue's work?"). None listed (and cwd not a repo) is a
-   refusal: `"Run plan from the repo the work belongs in (or set checkouts.<PROJECT> in
-   ~/.config/jira-plan/config.json)"`.
+Several repos can serve one project (`CIAM` spans `cryo-gitops-github` and
+`Cryoport-Authentication-Service`), so no command looks up "the" repo for a project.
+`mainCheckout()` resolves it on every call:
 
-This applies wherever `mainCheckout()`/`resolveDir()` are consulted: `lib/cli.py`'s `resolveDir()`
-(Open/the picker) and `lib/start.py`'s `start()`/`lib/done.py`'s `finish()` (Start/Ship/Done) all
-thread the real `cwd` through to it instead of looking up a single configured path per project.
+1. **A key decides.** When the command has a key (Open, Start, Ship, Done, `view`), its prefix gives
+   the project, and the project's repos that appear in `checkouts` are the candidates. A checkout
+   matches a repo by its `origin` remote, normalized (ssh or https, with or without `.git`). The
+   current folder may belong to another project: `plan open CIAM-9` works from inside skuld.
+2. **Existing work wins.** Each candidate is searched for `<repo>.worktrees/<KEY>` or the issue's
+   branch (`existingWorktree()`, `issueBranch()`). The worktree or branch found is the record of
+   which repo the issue's work lives in, so there is no extra state to keep in sync. Found in more
+   than one repo, the command refuses and names each.
+3. **New work.** With nothing found, the current folder's repo is used when it is a candidate. A
+   linked worktree resolves to its main checkout through `git rev-parse --path-format=absolute
+   --git-common-dir`, so a run inside `<repo>.worktrees/CIAM-9` means `<repo>`. Otherwise one
+   candidate is used outright, several open an fzf pick ("Which repo holds this issue's work?"), and
+   none is refused, naming the project's remotes and `checkouts`.
+4. **No key.** `plan list` and the picker show the current repo's project first when run inside a
+   configured repo, and every configured project anywhere else.
 
-**OPEN (not solved here):** whether one Jira issue may legitimately span two repos at once (e.g. a
-CIAM change that touches both `cryo-gitops-github` and `Cryoport-Authentication-Service` in the
-same round). Rule 1's "more than one repo" case currently always refuses rather than picking one or
-supporting both; this is deferred, not answered, pending a real case.
-
-**OPTIONAL-LATER (not solved here):** a Jira component or label like `repo:<name>` on the issue
-could preselect the repo at Start instead of relying on cwd, for a user who starts work without
-first `cd`-ing into the right repo. Not implemented.
+The resolved repo gives the project, its tracker, the main checkout, the worktree root
+`<repo>.worktrees/`, the base branch, and the store folders the run writes to. A run makes its git
+and GitHub changes in the configured repo, and its ticket and review changes in the store; it never
+writes a ticket into a development repo.
 
 <a id="start"></a>
+
 ### 7.1 Start
 
-Start shows for an issue whose `statusCategory` is `new` ("To Do"). It checks blockers — any issue
-link of type "Blocks" read inward ("is blocked by") whose target's `statusCategory` isn't `done` —
-then makes the branch `<type>/CIAM-123-<slug>` and its worktree off the latest base, and transitions
-the issue to its project's "in progress"-category status.
+Start shows for an issue that hasn't started: a store `status: open`, or a Jira `statusCategory` of
+`new`. It lists the issue's open blockers (§4.2) and asks whether to go on; no stops with nothing
+changed. It then makes the branch `<type>/<KEY>-<slug>` and its worktree off the latest base, and
+moves the issue to "in progress".
 
-The transition is looked up **by target status name at call time**, never by a hardcoded transition
-id: `lib/jira.py` lists the issue's available transitions, picks the one whose `to.name` matches
-the configured target (default `"In Progress"`), and posts it. Because Jira issue types in `CIAM`
-don't share one status scheme (Task-type issues have a status literally named "In Progress" in
-category In Progress; Story, Bug and Epic each have several differently-named In-Progress-category
-statuses — confirmed via `GET /rest/api/3/project/CIAM/statuses`), the lookup matches on **status
-name** but Start's own "is this issue already started" check reasons from `statusCategory.key`
-(`new`/`indeterminate`/`done`), so it still works correctly on a Story or Bug whose in-progress
-status isn't literally named "In Progress".
+- **Jira.** The transition is looked up by target status name at call time, never by a hardcoded
+  id: `lib/jira.py` lists the issue's available transitions, picks the one whose `to.name` matches
+  the configured target (default `"In Progress"`), and posts it. Issue types in `CIAM` don't share
+  one status scheme, so Start's "already started" check reasons from `statusCategory.key`
+  (`new`/`indeterminate`/`done`), never from a status name.
+- **Store.** `FileStore` sets `status: in-progress` in the front matter, leaving the rest of the
+  file untouched.
 
-After posting the transition, Start **reads the issue back** and refuses if its `statusCategory`
-isn't `indeterminate` (In Progress) — the Jira equivalent of Redmine's silent-204 guard (§8). Start
-then posts a "Started" ADF comment and opens the worktree in a new Ghostty window, moved to an
-Aerospace workspace, running `tmux new-session -A -s CIAM-123 -c <worktree>` with a Claude window
-and a shell window.
+Either way, Start reads the issue back and refuses if its status isn't the target (§8). It then logs
+"Started" on the issue (an ADF comment in Jira, a `## Log` line in a ticket) and opens the worktree
+in a new Ghostty window, moved to an Aerospace workspace, running
+`tmux new-session -A -s <KEY> -c <worktree>` with a Claude window and a shell window.
 
-**Workspaces are numbered, not named for the issue.** Aerospace workspaces keep the fixed hotkeys
-`~/.aerospace.toml` already binds them to (`ctrl-alt-1`..`9`, `ctrl-alt-a`..`z`, etc.); `plan` never
-renames or creates one. `term.freeWorkspace()` reads that file's `# Workspaces: 1 work, 2 editors,
-...` comment line (`namedWorkspaces()`) and picks the first workspace **not** named there that
-currently has no windows — `aerospaceConfig` in config, default `~/.aerospace.toml`.
+**Workspaces are numbered, not named for the issue.** Aerospace workspaces keep the hotkeys
+`~/.aerospace.toml` binds them to (`ctrl-alt-1`..`9`, `ctrl-alt-a`..`z`, etc.); `plan` never renames
+or creates one. `term.freeWorkspace()` reads that file's `# Workspaces: 1 work, 2 editors, ...`
+comment line (`namedWorkspaces()`) and picks the first workspace not named there that has no
+windows (`aerospaceConfig` in config, default `~/.aerospace.toml`).
 
 **Which issue sits on which workspace is tracked in a slots file**, not inferred from the
-workspace's name. `term.writeSlot(key, workspace)` writes a `<workspace>=<KEY>` line to
-`slotsFile` (config, default `~/.cache/plan/workspaces`), replacing any existing line for that
-workspace, via a temp-file-then-rename so a reader never sees a half-written file; it then triggers
-SketchyBar (`sketchybar --trigger plan_workspaces_change`, skipped silently if SketchyBar isn't
-installed) so `~/.config/sketchybar/plugins/workspaces.sh` can relabel the bar. Open's reuse rule:
-`term.openIssueWorkspace()` looks up the issue's existing slot, and reuses that workspace as-is if
-it still has windows; otherwise it picks a fresh free workspace and relabels it — this is also the
-path Start always takes, since a new issue never has an existing slot. Every command that touches
-workspaces (`start`, `open`, `done`, and `plan list`/the fzf picker) first **sweeps** the slots
-file (`term.sweepSlots()`), dropping any line whose workspace currently has no windows, so a slot
-is never kept past the point the user closed its last window by hand.
+workspace's name. `term.writeSlot(key, workspace)` writes a `<workspace>=<KEY>` line to `slotsFile`
+(config, default `~/.cache/plan/workspaces`), replacing any line for that workspace, through a temp
+file and a rename so a reader never sees a half-written file. It then triggers SketchyBar
+(`sketchybar --trigger plan_workspaces_change`, skipped if SketchyBar isn't installed) so
+`~/.config/sketchybar/plugins/workspaces.sh` can relabel the bar. `term.openIssueWorkspace()` looks
+up the issue's slot and reuses that workspace if it still has windows; otherwise it picks a free
+workspace and relabels it. Every command that touches workspaces (`start`, `open`, `done`, and
+`plan list` and the picker) first sweeps the slots file (`term.sweepSlots()`), dropping any line
+whose workspace has no windows.
 
 If the issue's branch already exists here or on `origin`, Start reuses it on its own base. On an
-issue whose `statusCategory` is `indeterminate` (In Progress) the command is Open, which reopens
-the worktree (and its tmux session/Aerospace workspace via the slot lookup above, recreating either
-independently if the other already exists — [failure-modes.md, *Open* under the terminal frontend
-rows](failure-modes.md)), making it the same way if this machine has none. Start refuses an issue
-whose `statusCategory` is `done`. A lock file per issue keeps two invocations from starting it at
-once ([failure-modes.md, *Start*](failure-modes.md)).
+issue in progress the command is Open, which reopens the worktree, and its tmux session and
+Aerospace workspace through the slot lookup, recreating either if missing
+([failure-modes.md, *Open*](failure-modes.md)). Start refuses a closed issue. A lock file per issue
+keeps two invocations from starting it at once ([failure-modes.md, *Start*](failure-modes.md)).
 
-Start then opens the issue's browse URL through `openUrl()` (§7.6.1), passing the workspace it just
-resolved explicitly — Start runs in whatever terminal invoked it, not the new issue's own
-workspace, so it can't rely on `openUrl()`'s own caller-workspace inference.
+**The issue beside Claude.** A Jira issue's browse URL opens through `openUrl()` (§7.6.1), with the
+workspace Start just resolved passed explicitly, since Start runs in the invoking terminal and not
+the new workspace. A store issue opens instead as a tmux pane split beside the `=<KEY>:claude`
+window (`term.openTicketPane()`, `tmux split-window -h -d`), running `nvim` on the ticket file in
+the store, never on a copy in a worktree. The pane is tagged with a pane option
+(`@plan_ticket <KEY>`), so a second Open reuses it rather than splitting again. The URL or file path
+is printed either way. Claude's prompt names the tracker: a Jira key, or the ticket file's path.
 
-Last, Start/Open switches to that workspace, focuses its Ghostty window and selects the session's
-`claude` tmux window (`term.focusIssueWorkspace()`: `tmux select-window -t =<KEY>:claude`,
+Last, Start and Open switch to that workspace, focus its Ghostty window and select the session's
+`claude` window (`term.focusIssueWorkspace()`: `tmux select-window -t =<KEY>:claude`,
 `aerospace workspace <ws>`, then `aerospace focus --window-id` on the workspace's Ghostty window),
-so the command finishes with the human at the issue's Claude — user decisions 2026-11-05. It runs after `openUrl()`, overriding that function's return of focus to
-the calling terminal (§7.6.1), and is best-effort like the SketchyBar trigger.
+so the command finishes with the human at the issue's Claude. This runs after `openUrl()`, and
+overrides its return of focus to the calling terminal. It is best-effort, like the SketchyBar
+trigger.
 
 <a id="ship"></a>
+
 ### 7.2 Ship
 
-A round is written into `.tmp/CIAM-123/`: `commit.txt` when the tree has changes, `pr-body.md`, a
-reply to each review thread in `replies/<comment id>.md`, and `issue.md`, the issue's description
-with Done boxes ticked.
+A round is written into `<store>/reviews/<KEY>/`: `commit.txt` when the tree has changes,
+`pr-body.md`, and a reply to each review thread in `replies/<comment id>.md`. For a Jira issue it
+also holds `issue.md`, the issue's description with Done boxes ticked; a store issue's Done boxes
+are ticked in the ticket's own `### Done` section.
 
 Ship runs `ship.check()` and refuses by name a missing PR body, a missing commit message while the
-tree has changes, or a branch that isn't the issue's. On success it runs `pr CIAM-123` visibly in a
-tmux window/pane, in the same invocation — the pre-flight check and the `pr` run used to be two
-commands, Ship and Go, with a separate review window (`nvim` + `lazygit` on the round files)
-between them; that confirmation step is removed now, before a planned review page replaces it, and
-`plan go` no longer exists. `pr` commits with `commit.txt`, pushes, and opens the PR or replaces
-its body. It then posts each reply to its thread and resolves the thread, and applies the box
-changes in `issue.md` to the issue's description. It refuses any other difference, so an edit made
-in Jira since is kept. Each file is deleted once sent, so a second `pr` sends nothing twice.
-**Unlike the original tool, `pr` never writes a tracker field to link the PR** — Jira's GitHub
-integration reads the branch name and PR title itself and populates the issue's development panel
-automatically, because both contain `CIAM-123` (decision #4). `done.py` finds the PR the same way:
-`gh pr view <branch>` / `gh pr list --head <branch>`, never from a Jira field.
+tree has changes, or a branch that isn't the issue's. On success it runs `pr <KEY>` visibly in a
+tmux window or pane. `pr` commits with `commit.txt`, pushes, and opens the PR or replaces its body.
+It then posts each reply to its thread and resolves the thread. For a Jira issue it applies the box
+changes in `issue.md` to the description, and refuses any other difference, so an edit made in Jira
+since is kept. Each file is deleted once sent, so a second `pr` sends nothing twice; the store's
+history keeps what was sent.
 
-Ship again runs `pr` again: the next round. With nothing left to send, `pr` sends nothing, so Ship
-stays safe to re-run (§8, "every step runs only when it has something to do").
+`pr` writes no tracker field to link the PR. Jira's GitHub integration reads the key in the branch
+name and PR title. `done.py` finds the PR the same way, with `gh pr view <branch>` or
+`gh pr list --head <branch>`.
+
+Ship again is the next round. With nothing left to send, `pr` sends nothing, so Ship is safe to run
+again (§8).
 
 <a id="finish"></a>
+
 ### 7.3 Finish
 
-The finish is the squash merge. The PR's subject includes `CIAM-123` (e.g. `Add X (CIAM-123)`),
-which is what the Jira GitHub integration matches; there is no `fixes`/`refs` distinction, because
-no commit or merge ever transitions the issue (§5).
+The finish is the squash merge. The PR's subject includes the key (e.g. `Add X (CIAM-123)`).
 
-Done shows once a PR for the issue's branch is found and merged. Once the PR has merged, it removes
-the issue's worktree, brings the main checkout's base up to the merge, deletes the branch, and
-posts an ADF comment linking the PR and its merge commit.
+Done shows once a PR for the issue's branch is found and merged. It removes the issue's worktree,
+brings the main checkout's base up to the merge, deletes the branch, and notes the PR and its merge
+commit on the issue: an ADF comment in Jira, a `## Log` line in a ticket.
 
-**Done never transitions the issue — not to Done, not to any status.** This is a hard rule enforced
-at two levels: structurally, `lib/done.py` contains no call to `jira.transition()` at all; and
-defensively, the human's own Claude Code `PreToolUse` hook independently blocks any Bash command
-recognized as moving a Jira issue to a terminal status (Done/Closed/Cancelled/Resolved), so even a
-hand-run CLI command can't do it from inside a Claude session. Done's last step instead prints
-`Close CIAM-123 in Jira` with the issue's browse URL (`https://cryoport.atlassian.net/browse/
-CIAM-123`), plainly — unlike Start (§7.1), Done never calls `openUrl()` (§7.6.1); the printed line
-is the only thing that points the human at the issue.
+**Done never changes an issue's status.** `lib/done.py` contains no call to a transition. The
+human's Claude Code `PreToolUse` hook also blocks any Bash command recognized as moving a Jira issue
+to a terminal status (Done, Closed, Cancelled, Resolved), so a hand-run command can't do it from
+inside a Claude session either. Done's last step prints the close note (`closeNote(key)`): for Jira,
+`Close CIAM-123 in Jira` with the browse URL; for a ticket, the file to set `status: done` in. Done
+never calls `openUrl()`; the printed line is what points the human at the issue.
 
-Done accepts an issue whose `statusCategory` is `indeterminate` (In Progress) or `done` — unlike
-the original, which accepted "In Progress" or "Closed" by exact name, Done here reasons from
-category because, as in §7.1, the exact Done-category status name varies by issue type.
+Done accepts an issue that is in progress or already closed, reasoning from Jira's
+`statusCategory` or the ticket's `status`, since Jira's Done-category status names vary by issue
+type.
 
 It checks everything before it changes anything, and Done again finishes what a stopped one left
 ([failure-modes.md, *Done*](failure-modes.md)). Done also frees the issue's workspace slot
-(`term.removeSlot(key)`, §7.1) and triggers SketchyBar, but opens no browser window — the printed
-`Close CIAM-123 in Jira` note above is the only place Done points the human at the issue.
+(`term.removeSlot(key)`, §7.1) and triggers SketchyBar.
 
 <a id="tool-commits"></a>
-### 7.4 Tool commits
 
-The tool makes no commits of its own. An issue's status lives in Jira: Start makes the one
-transition to "in progress" (§7.1); nothing else in this tool ever moves it, and Done is
-structurally incapable of transitioning the issue (§7.3). Nothing reaches the default branch except
-through a pull request.
+### 7.4 Commits
 
-<a id="freeze"></a>
-### 7.5 Baselines
+`plan` and `pr` make no commits of their own in a development repo; every commit there is the
+human's or Claude's, and reaches the default branch through a pull request. In the ticket store,
+only the watcher commits (§7.7).
 
-Not built: the original tool's administrator-only baseline date fields were a Redmine-specific
-custom-field feature with no Jira equivalent in scope for this port. Left out, rather than
-approximated with a Jira custom field no process here reads.
+<a id="archiving"></a>
+
+### 7.5 Archiving
+
+`plan archive` moves every closed ticket whose `closed` date is older than `store.yml`'s
+`archiveAfterDays` from `active/` to `archive/`, with `git mv`. Only a closed ticket moves; every
+other change edits the file in place, and the store's git history is the record of it. `FileStore`
+reads both folders, so a key resolves whichever one holds it.
 
 <a id="ready-file"></a>
+
 ### 7.6 Next up
 
-Next up is the config's raw JQL (`jql` in `~/.config/jira-plan/config.json`), run against
-`/rest/api/3/search/jql` — the current search endpoint; the older `/rest/api/3/search` returns
-`410 Gone`. The default is `project = CIAM AND assignee = currentUser() AND statusCategory != Done
-ORDER BY Rank`. It answers "what's next" in the `plan` CLI's fzf picker and in `plan list`.
+Next up answers "what's next" in the picker and in `plan list`. For the ticket store it is plan
+order:
+
+1. Milestones by `ordinal`, then issues with no milestone.
+2. Within a milestone, open issues that block others first, then by the issue's `ordinal`, then
+   issues with no ordinal by number.
+
+For Jira it is the config's raw JQL (`jql` in the machine config), run against
+`/rest/api/3/search/jql`. The default is `project = CIAM AND assignee = currentUser() AND
+statusCategory != Done ORDER BY Rank`. The two lists are merged into one, in one row shape; a ticket
+with `after: <JIRA-KEY>` sorts directly after that Jira issue.
 
 <a id="open-url"></a>
+
 ### 7.6.1 Opening the browse URL
 
-`term.openUrl(url, workspace=None, ...)` always prints `url` first, then best-effort acts on a
-Brave window (§6.3, user decision 2026-11-05) in the **same Aerospace workspace as the Ghostty/tmux
-window that ran the command** — never a bare `open <url>`, which (as the human reported) opens in
-whatever default/terminal-associated browser context is frontmost, not necessarily the right
-workspace.
+`term.openUrl(url, workspace=None, ...)` always prints `url` first, then acts on a Brave window
+(§6.3) in the same Aerospace workspace as the Ghostty and tmux window that ran the command. A bare
+`open <url>` opens in whatever browser context is frontmost, not necessarily that workspace, so it is
+never used.
 
-Target workspace, in order: (1) an explicit `workspace` argument, which Start always passes (§7.1),
-since it runs in the invoking terminal, not the new issue's workspace; (2) if inside tmux and the
-session name is a key present in the slots file, that slot's workspace; (3) otherwise, the focused
-workspace (`aerospace list-workspaces --focused`). Order (2) before (3) covers a command run from a
-tmux session whose window has since lost Aerospace focus.
+Target workspace, in order: (1) an explicit `workspace` argument, which Start always passes (§7.1);
+(2) inside tmux, when the session name is a key in the slots file, that slot's workspace; (3)
+otherwise, the focused workspace (`aerospace list-workspaces --focused`). (2) comes before (3) for a
+command run from a tmux session whose window has lost Aerospace focus.
 
-Once a target workspace is resolved: if it already has a `browserBundleId` (`com.brave.Browser`)
-window, `openUrl()` focuses that window (`aerospace focus --window-id`) and opens the URL as a new
-tab in it (`open -a "Brave Browser" <url>`). Verified live 2026-11-05 (JP-4): `plan open CIAM-163`
-with Brave already running opened the ticket as the active tab of the focused workspace's Brave
-window, not a new window. Otherwise it opens a new window
-(`open -na "Brave Browser" --args --new-window <url>`, matching `~/.local/bin/plan-open`'s
-mechanism exactly) and moves it to the target workspace by a before/after window-id diff on
-`browserBundleId`, the same diffing `appWindowIds()`/`newAppWindowId()` already do for Ghostty
-(§7.1). Either way, `openUrl()` then returns focus to whatever window was focused before it ran
-(captured via `aerospace list-windows --focused` beforehand, restored via `aerospace focus
---window-id` afterward) — **DECIDED-BY-AGENT**: no design doc settles whether or how focus should
-return to the terminal; returning it to exactly the window that was focused when `openUrl()` was
-called was chosen so a Start/Open run never leaves the terminal in the background. Start/Open
-then moves focus on to the issue's own workspace anyway (§7.1, user decision 2026-11-05); the
-restore still governs any other `openUrl()` caller. Every Aerospace/
-`open` call in `openUrl()` is wrapped best-effort (§7.1's SketchyBar pattern): a missing `aerospace`
-binary, a missing Brave, or any other failure is swallowed, since the URL printed first already
-stands on its own.
+When the target workspace already has a Brave (`com.brave.Browser`) window, `openUrl()` focuses it
+(`aerospace focus --window-id`) and opens the URL as a new tab there (`open -a "Brave Browser"
+<url>`). Otherwise it opens a new window (`open -na "Brave Browser" --args --new-window <url>`) and
+moves it to the target workspace by a before-and-after diff of `browserBundleId` window ids, the
+same diffing `appWindowIds()` and `newAppWindowId()` do for Ghostty (§7.1). Either way, it then
+returns focus to the window focused before it ran, so a run never leaves the terminal in the
+background; Start and Open then move focus on to the issue's workspace (§7.1). Every Aerospace and
+`open` call in `openUrl()` is best-effort: a missing `aerospace`, a missing Brave or any other
+failure is swallowed, since the printed URL stands on its own.
 
-Start passes its resolved workspace explicitly (§7.1). Done never calls `openUrl()` (§7.3) — it
-only prints. `plan view` prints the browse URL directly too, without calling `openUrl()`, since a
-view is read-only and run from wherever the human happens to be; opening a browser window for it
-would be a second side effect this command doesn't otherwise have.
+Done never calls `openUrl()` (§7.3). `plan view` prints the browse URL without calling it, since a
+view is read-only and run from wherever the human happens to be.
 
 <a id="file-backed-issues"></a>
-### 7.7 File-backed JP issues
 
-**User decision 2026-11-05.** `plan`'s own backlog -- this repo's `issues/` (format:
-`issues/README.md`) -- is a second tracker, scoped to one project key, `JP`, and stored as files
-instead of Jira. `lib/fileissues.py`'s `FileIssues` class implements the same surface
-`lib/jira.py`'s `Jira` class does (`list(jql)`, `issue(key)`, `blockers(issue)`,
-`statusTransitionId(key, name)`, `transition(key, name)`, `textComment(text)`,
-`addComment(key, doc)`, plus `browseUrl(key)`/`closeNote(key)`, added to both classes for this),
-returning dicts shaped the way `Jira`'s already are, so `lib/start.py`, `lib/done.py` and
-`lib/ship.py` need no `JP`-specific branch at all. `lib/cli.py`'s `jiraFrom(cfg, key)` is the
-dispatch: `projectOf(key) == "JP"` (`fileissues.isFileBacked(key)`) returns a `FileIssues`
-instance, anything else a `Jira` one -- every call site already knows its key before it needs a
-client, so this is a plain per-key pick, not a wrapping router object. `checkouts.JP` defaults to
-this repo's own root, and `issuesDir` to its `issues/` folder (both derived from
-`lib/config.py`'s own location), so Start/Open/Ship/Done find the repo without any user
-configuration.
+### 7.7 The ticket store
 
-Three decisions this implements:
+The store is a folder of Markdown files with YAML front matter, in a git repo of its own:
 
-1. **All five commands work on a JP key:** `list`/the picker, `view`, `start`/`open`, `ship`,
-   `done`. `issues/README.md`'s status enum (`open | in-progress | done | wontfix`) maps to the
-   Jira-shaped `(status name, statusCategory key)` pair every caller already reads:
-   `open` -> ("To Do", `new`), `in-progress` -> ("In Progress", `indeterminate`), `done`/`wontfix`
-   -> (`"Done"`/`"Won't Fix"`, `done`) -- both terminal values read as Jira's `done` category,
-   since nothing needs to tell them apart. `issues/README.md`'s type enum maps to a Jira issuetype
-   name the existing branch-prefix map already handles: `bug` -> `Bug` (`fix/`), `task`/`question`
-   -> `Task` (`feat/`). Files carry no issue links, so `blockers()` always returns `[]`, and no
-   parent/hierarchy, so `issue().fields.parent` is always `None`.
-2. **Writes edit the file.** Start's transition to "in progress" (`FileIssues.transition()`) sets
-   frontmatter `status: in-progress` by regex-replacing that one line (everything else in the file
-   is untouched), then **reads the file back** and refuses if the status it reads isn't the target
-   -- the same guard `Jira.transition()` applies after its POST (§7.1,
-   [failure-modes.md](failure-modes.md#jira-silently-blocks-a-transition)). Every `addComment`
-   call (Start's "Started…" note, Done's merge note) appends a dated `- YYYY-MM-DD: <text>` line
-   under a `## Log` heading at the end of the file, creating the heading once if it isn't there
-   yet; `FileIssues.issue()` reads those lines back as `fields.comment.comments`, in ADF-shaped
-   bodies, so Done's "did I already post this note" check (§7.3) still works unmodified. **Done
-   still never changes status** -- same hard rule as Jira (§7.3, [§10](#invariants)) -- so a JP
-   issue's `done`/`wontfix` is always set by a human editing the file directly; Done's closing
-   note (`jira.closeNote(key)`) says so by name instead of naming a Jira browse URL to close.
-3. **Listing is merged.** `plan list` and the picker (`lib/cli.py`'s `issueRows()`) run Jira's
-   configured JQL and concatenate it with every JP file whose `status` is `open` or `in-progress`
-   (`FileIssues.list()`) -- one combined list, in the same row shape, not two separate ones.
+```text
+<store>/
+  milestones/<id>.md
+  active/<KEY>-<slug>.md
+  archive/<KEY>-<slug>.md
+  reviews/<KEY>/
+```
 
-**Opening a JP issue (Start/Open).** A file-backed issue has no Jira browse URL to put in a
-browser (§7.6.1 doesn't apply to it). Instead `cmdStart` checks `isFileBacked(key)` and, for a JP
-key, calls `term.openTicketPane(key, dir, jira.browseUrl(key))` (user decision 2026-11-05, revised
-2026-11-05) before `focusIssueWorkspace()`: create-if-missing, a tmux **pane**, split side-by-side
-(`tmux split-window -h`) off the issue's `=<KEY>:claude` window (§7.1's session, reused if Start
-already made it) -- not a separate `"ticket"` window -- `-d` so the claude pane keeps focus, `cwd`
-the worktree, running `nvim <issuePath>` where `issuePath` is `FileIssues.browseUrl(key)` -- the
-absolute path under `issuesDir` that `FileIssues` itself reads and writes, never the worktree's own
-copy of the file (the worktree may not even have one, since `issues/` lives in this repo, not
-necessarily the repo `plan start` makes the JP issue's branch in). The new pane is tagged with a
-pane user option (`set-option -p -t <pane> @plan_ticket <key>`, the pane id captured off
-split-window's own `-P -F '#{pane_id}'`); `openTicketPane()` checks `list-panes -t =<KEY>:claude -F
-'#{@plan_ticket}'` for that tag before splitting, so a second Open on the same issue -- `start` and
-`open` are the same command (`cmdStart`), so this already covers Open on a session Start already
-built -- reuses the existing pane rather than splitting a duplicate. `cmdStart`'s file-backed branch
-is the only one; there is no separate `cmdOpen`. The file path still prints either way, exactly as
-`openUrl()` always prints its URL first.
+`FileStore` is the `IssueStore` adapter for it. It answers for every prefix `store.yml` lists, and
+reads `active/` and `archive/` together. A ticket's front matter holds `key`, `title`, `status`
+(`open`, `in-progress`, `done`, `wontfix`), `type`, `opened`, `closed`, `milestone`, `ordinal`,
+`after`, `parent`, `blocked_by` and `points`; its body is the house outline (Task, Guardrails,
+Lenses, Done), then `## Log`, one dated line per thing `plan` did. `docs/issue-format.md` is the
+spec.
 
-The `claude` window's prompt changes too: a JP key's Claude is asked to work on "a local
-file-backed issue, not a Jira ticket" and given the issue file's `issuesDir` path, instead of
-`Work on Jira <KEY>` (`openIssueWorkspace(..., prompt)`; 2026-11-05, after the Jira prompt sent
-JP-3's Claude looking for a Jira ticket).
+**The checker.** `issue-check` (stdlib Python) checks every file against the spec and exits
+non-zero on any error, naming file, line and rule: front matter keys, types and enums; the key
+against the file name and `store.yml`; no duplicate keys; `parent` and `blocked_by` naming tickets
+that exist, with no `blocked_by` cycle; `closed` set exactly when the ticket is closed; milestones
+that exist and aren't closed under an open ticket; the body's outline and log lines. Every writer,
+`plan`, a person or an agent, produces files it accepts. `FileStore` runs the same checks before
+every write, so `plan` can't produce a file the watcher would refuse.
 
-**OPEN (not solved here):** `projectMarkers` (`lib/config.py`) is documented as a picker/list
-marker per project but has no reader anywhere in `lib/` -- it was never wired up for any project,
-Jira or file-backed; `JP` rows get no special marker beyond printing `"JP"` as `project`, same as
-every other project today.
+**Writing tickets.** `plan new <PREFIX> "<title>"` takes the next number, fills skuld's
+`templates/issue.md`, writes the ticket, checks it and opens it in `$EDITOR`. `plan set <KEY>
+field=value…` changes front-matter fields, all or nothing, checked first. Nobody writes front matter
+by hand. A transition edits the one `status` line and reads the file back (§7.1); a log entry
+appends a dated line under `## Log`. `FileStore` answers in the same shapes `Jira` does, so Start,
+Ship and Done have no store-specific branch.
+
+**The watcher.** `issue-watch` runs under launchd and watches `active/`, `archive/`, `milestones/`
+and `reviews/`. After a quiet period (`debounceSeconds` in `store.yml`), so a mass edit lands as one
+commit, it runs the checker. On failure it commits nothing, posts a macOS notification naming the
+file and rule, and logs the same. On success it commits every change with a generated message
+(`SK-12: status in-progress`, `12 issues: ordinal`) and pushes, retrying a failed push after
+`pull --rebase`. A store checked out as a submodule of another repo is the same store at another
+path; the watcher watches whatever `issueStore` names.
 
 <a id="failure-modes"></a>
+
 ## 8. Failure modes
 
 Each command that writes has its own table in [`failure-modes.md`](failure-modes.md). The events
@@ -480,46 +475,47 @@ they share:
 
 | Event | Effect | Handling |
 |---|---|---|
-| Jira is down, or the network is unreachable | Next up can't load, and nothing can start or finish | Start and Done refuse before they change anything |
+| Jira is down, or the network is unreachable | Jira's Next up can't load, and no Jira issue can start or finish | Start and Done refuse before they change anything |
 | No token in `~/.netrc` | No call to Jira can be made | Refused, naming `~/.netrc` and the expected `machine cryoport.atlassian.net` entry |
-| A transition POST succeeds at the API layer but a workflow condition silently blocks the actual status change | The status is unchanged, though a comment made in the same call may still be saved | The write reads the issue back, refuses, and names the attempted and actual status ([failure-modes.md, *Jira silently blocks a transition*](failure-modes.md#jira-silently-blocks-a-transition)) |
-| A transition id requested doesn't correspond to an allowed transition from the current status | The POST 4xxs outright | Already visible to the caller; `lib/jira.py` looks the transition up by name immediately beforehand, so this should only happen if the issue moved between the lookup and the POST |
+| A transition succeeds at the API layer but a workflow condition silently blocks the status change | The status is unchanged, though a comment made in the same call may still be saved | The write reads the issue back, refuses, and names the attempted and actual status ([failure-modes.md, *Jira silently blocks a transition*](failure-modes.md#jira-silently-blocks-a-transition)) |
+| A transition id doesn't correspond to an allowed transition from the current status | The POST fails with a 4xx | Visible to the caller; `lib/jira.py` looks the transition up by name immediately before, so this means the issue moved in between |
+| A key's project has no repo in `checkouts` on this Mac | There is nowhere to make the worktree | Refused, naming the project's remotes and `checkouts` (§7.0) |
+| A key's work is found in more than one repo | The command can't tell which repo holds it | Refused, naming each repo (§7.0) |
+| A `checkouts` path's remote is listed by no project | The checkout serves nothing | Reported as a config error, naming the path and its remote |
+| A ticket fails the checker | The watcher would push a bad file | The watcher commits nothing, notifies and logs file and rule, and tries again on the next change; `FileStore` refuses to write such a file at all |
+| The store's push fails (offline, or behind) | The remote lags the local store | The watcher retries after `pull --rebase`; a conflict stops it, loudly, until a person resolves it |
+| Two Macs take the same number offline | Two tickets share a key | The checker's duplicate-key rule refuses the second; it is renumbered by hand |
 | Two invocations start or finish one issue | Both would change the same worktree | A lock file per issue refuses the second |
-| The issue's description is edited after `issue.md` is written | The ticks would overwrite the edit | `checklist.py` refuses any difference beyond box state, and keeps the file |
-| A round's files are still unsent at Done | Removing the worktree would delete them | Done refuses before it changes anything, and names them |
-| `CIAM-123` in a commit message or PR title | GitHub's Jira integration reads it and populates the issue's development panel | None; this is the intended mechanism (§7.2) |
-| A tmux session for the issue exists but its slot's workspace has no windows left (closed by hand) | Open could mistakenly reuse a workspace with nothing on it | Workspace reuse is gated on `windowsIn()`, not just the slot lookup; a stale slot is swept and a fresh workspace picked (§7.1; [failure-modes.md](failure-modes.md)) |
+| The Jira description is edited after `issue.md` is written | The ticks would overwrite the edit | `checklist.py` refuses any difference beyond box state, and keeps the file |
+| A round's files are still unsent at Done | Done would finish with review work unsent | Done refuses before it changes anything, and names them |
+| The key in a commit message or PR title | Jira's GitHub integration links it in the issue's development panel | None; this is the intended mechanism (§7.2) |
+| A tmux session for the issue exists but its slot's workspace has no windows left | Open could reuse a workspace with nothing on it | Workspace reuse is gated on `windowsIn()`, not just the slot; a stale slot is swept and a fresh workspace picked (§7.1) |
 
 <a id="views"></a>
-## 9. Views
 
-Jira's own pages are the views:
+## 9. Views
 
 | View | Shows |
 |---|---|
-| Issue list / board | Issues with their fields; the development panel shows linked branches/PRs/commits |
-| Next up | The JQL's results, in Jira's issue navigator and in the `plan` CLI's fzf picker (§7.6) |
-| An issue's page | Its description, issue links, comments and development panel |
+| The picker and `plan list` | Next up in plan order, both trackers merged, with each issue's project name (§7.6) |
+| `plan view <KEY>` | One issue: fields, open blockers, what it blocks, and its body or description |
+| A ticket in nvim | The ticket file itself, opened beside Claude by Start and Open (§7.1) |
+| `git log` in the store | Every change to every ticket, milestone and review round |
+| Jira's issue list, board and issue page | Jira issues, their links, comments and development panel |
 
 <a id="invariants"></a>
-## 10. Invariants
 
-1. Jira Cloud is the tracker. It holds every issue, with its status and history, outside the repos
-   it plans, and nothing tracker-related is committed in them.
+## 10. Rules
+
+1. Issues live in a tracker, never in a development repo: the ticket store or Jira Cloud. Nothing
+   tracker-related is committed in the repos the trackers plan.
 2. The default branch carries the code, and every change reaches it through a pull request. An
-   issue's status lives in Jira: Start's one transition sets it In Progress; **nothing else in this
-   tool ever transitions an issue**, and Done is structurally incapable of it (§7.3, §7.4).
-3. Retired with the tool's `plan:` commits, so the invariants after it keep their numbers.
-4. Carried over unused: not applicable (see §7.5, baselines not built).
-5. Retired, so the invariants after it keep their numbers. Invariant 6 bounds remote writes, which
-   include Jira's REST API.
-6. `lib/jira.py` and `lib/start.py` are the only modules that open a network connection to Jira.
-   This invariant is scoped to Jira calls specifically, not to every subprocess — see §6.2 for why
-   the terminal front end is a deliberate, documented exception to the broader "process boundary"
-   phrasing the original tool used.
-7. Retired: points/estimation fields were a Redmine-specific custom-field feature not carried into
-   this port.
-8. Retired: lanes were a Redmine plugin feature not carried into this port.
-9. Retired, so the invariants keep their numbers (see #8).
-10. Retired: baselines not built (§7.5).
-11. Retired while tracked time is paused, so the invariants keep their numbers.
+   issue's status lives in its tracker: Start's one move sets it in progress, and **nothing else in
+   this tool changes an issue's status**; Done is structurally incapable of it (§7.3, §7.4).
+3. Every outside system is reached through its port's adapter, and every call to Jira through
+   `lib/jira.py` (§6.2).
+4. Every ticket file passes the checker. `FileStore` checks before it writes, and the watcher
+   commits nothing that fails (§7.7).
+5. Tickets are edited in place; only a closed ticket moves, from `active/` to `archive/` (§7.5).
+6. Skuld holds code and definitions, the ticket store holds data, and neither holds the other's
+   (§3).

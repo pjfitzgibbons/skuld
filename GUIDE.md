@@ -595,7 +595,7 @@ skills/jira-issues/                SKILL.md, references/ (pr-body, issue templat
 claude/CLAUDE.md                   the repo's Claude instructions
 claude/settings.json               attribution, permissions, the hook
 claude/hooks/                      no_ai_attribution.py and its test
-docs/architecture.md               the system's architecture (§6.2 process boundary, §7 operations, §10 invariants)
+docs/architecture.md               the system's architecture (§6.2 process boundary, §7 operations, §10 rules)
 docs/failure-modes.md              the failure-mode table method, and Start's and Done's tables
 lib/test_*.py                      unittest suite against a fake Jira client and fake gh/git
 ```
