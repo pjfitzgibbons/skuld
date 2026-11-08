@@ -475,6 +475,7 @@ python3 -m unittest discover -s skills/jira-issues/scripts -p 'test_*.py'
 python3 claude/hooks/test_no_ai_attribution.py
 python3 claude/hooks/test_no_terminal_jira_transition.py
 python3 claude/hooks/test_no_bare_open.py
+(cd vscode/plan-window && node --test)
 ```
 
 Tests build real temporary git repos with a bare `origin`, a fixture store in a temp dir, and a
@@ -522,6 +523,9 @@ claude/
   settings.json            attribution, permissions, the hooks
   hooks/                   no_ai_attribution.py, no_terminal_jira_transition.py,
                            no_bare_open.py, and a test for each
+vscode/plan-window/        the VS Code extension that opens an issue window's ticket and Claude
+                           terminal: extension.js (the VS Code calls), plan.js (what they
+                           need, from the plan.* settings), plan.test.js
 docs/
   architecture.md          what the system is, and its rules (§10)
   failure-modes.md         each command's failure-mode table
