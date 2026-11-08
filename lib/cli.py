@@ -16,7 +16,7 @@ from . import term as term_mod
 from .jira import KEY_RE, Jira
 
 
-# The client key's commands go through: FileIssues for a SK-<n> key (lib/fileissues.py, user
+# The client key's commands go through: FileIssues for a SK-<nnnn> key (lib/fileissues.py, user
 # decision 2026-11-05 -- SK issues are this repo's own backlog, stored as files, not Jira), Jira
 # for every other project. Every call site below already knows its key before it needs a client
 # (checkId() runs first), so dispatch is a plain "which class for this key", not a wrapping
@@ -366,7 +366,7 @@ def main(argv=None):
         argv = sys.argv[1:]
     cfg = config_mod.load()
     cmd = argv[0] if argv else None
-    rest = argv[1:]
+    rest = [fileissues_mod.canonicalKey(arg) for arg in argv[1:]]
     if not cmd:
         return cmdPicker(cfg)
     if cmd == "list":
@@ -380,5 +380,5 @@ def main(argv=None):
     if cmd == "done":
         return cmdDone(cfg, rest[0] if rest else None)
     if KEY_RE.match(cmd):  # `plan CIAM-123` is shorthand for view
-        return cmdView(cfg, cmd)
+        return cmdView(cfg, fileissues_mod.canonicalKey(cmd))
     raise RuntimeError(f'unknown command "{cmd}"; try: list, view, start, open, ship, done')

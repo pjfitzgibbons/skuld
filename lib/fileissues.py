@@ -1,4 +1,4 @@
-# SK-<n> issues: Jira Plan's own backlog (issues/README.md), stored as files in this repo instead
+# SK-<nnnn> issues: Jira Plan's own backlog (issues/README.md), stored as files in this repo instead
 # of Jira. FileIssues implements the same surface lib/jira.py's Jira class does -- list(jql),
 # issue(key), blockers(issue), statusTransitionId(key, name), transition(key, name),
 # textComment(text), addComment(key, doc) -- returning dicts shaped the way callers (lib/cli.py,
@@ -19,11 +19,15 @@ import re
 from datetime import date
 from pathlib import Path
 
-from .jira import projectOf, textComment as _adfTextComment
+from .jira import KEY_RE, projectOf, textComment as _adfTextComment
 
-# The one project this module serves. projectOf("SK-3") == PROJECT routes a key here instead of
+# The one project this module serves. projectOf("SK-0003") == PROJECT routes a key here instead of
 # to Jira.
 PROJECT = "SK"
+
+# A key's number is zero-padded to this many digits, SK-0003, so a file listing of the store sorts
+# in number order. A number past 9999 simply grows a digit.
+KEY_DIGITS = 4
 
 # issues/README.md's status enum -> the Jira-shaped (status name, statusCategory key) pair a
 # caller reads off issue["fields"]["status"]. done/wontfix both read as Jira's "done" category --
@@ -51,6 +55,15 @@ LOG_LINE_RE = re.compile(r"^-\s*(\d{4}-\d{2}-\d{2}):\s*(.*)$")
 
 def isFileBacked(key):
     return projectOf(key) == PROJECT
+
+
+# The key as the store names it: a file-backed key with its number zero-padded (SK-0003 -> SK-0003),
+# so a key typed without the padding still finds its file. Any other key comes back unchanged.
+def canonicalKey(key):
+    if not (isFileBacked(key) and KEY_RE.match(key)):
+        return key
+    number = int(key.split("-", 1)[1])
+    return f"{PROJECT}-{number:0{KEY_DIGITS}d}"
 
 
 def _paragraphAdf(text):
@@ -139,7 +152,7 @@ def _appendLog(text, line_text):
 
 
 def _keyFromFilename(name):
-    m = re.match(rf"^({re.escape(PROJECT)}-\d+)(?:-.*)?\.md$", name)
+    m = re.match(rf"^({re.escape(PROJECT)}-\d{{{KEY_DIGITS},}})(?:-.*)?\.md$", name)
     return m.group(1) if m else None
 
 
@@ -161,6 +174,7 @@ class FileIssues:
         self.settings = {"dir": str(self.dir)}
 
     def _path(self, key):
+        key = canonicalKey(key)
         matches = sorted(p for p in self.dir.glob(f"{key}-*.md"))
         if not matches:
             exact = self.dir / f"{key}.md"
@@ -177,8 +191,8 @@ class FileIssues:
     # jql is accepted and ignored: a file has no JQL to run.
     #
     # Sort order (issues/README.md's `ordinal:` field, the work order): issues with an ordinal first,
-    # by `ordinal:` ascending; the rest after them, by issue NUMBER ascending (numeric, not the
-    # lexical glob/filename order, so SK-10 doesn't sort before SK-2). Glob order is irrelevant
+    # by `ordinal:` ascending; the rest after them, by issue NUMBER ascending (numeric, so the
+    # order holds even past SK-9999, where the padding runs out). Glob order is irrelevant
     # here -- every candidate is parsed first, then the whole batch is sorted by workOrder().
     def list(self, jql=None):
         candidates = []
@@ -230,7 +244,7 @@ class FileIssues:
         issuetypeName = TYPE_NAME_MAP.get(front.get("type", "task"), "Task")
         comments = [{"author": {"displayName": "plan"}, "body": _paragraphAdf(e["text"])} for e in entries]
         return {
-            "key": key,
+            "key": canonicalKey(key),
             "fields": {
                 "summary": title,
                 "status": {"name": statusName, "statusCategory": {"key": categoryKey}},

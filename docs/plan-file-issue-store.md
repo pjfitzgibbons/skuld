@@ -135,11 +135,11 @@ skuld/                         the code and the definitions
   milestones/
     m5-terminal.md
   active/
-    SK-12-file-store-port.md
+    SK-0012-file-store-port.md
   archive/
-    SK-3-verify-ghostty-argv.md
+    SK-0003-verify-ghostty-argv.md
   reviews/
-    SK-12/                     one issue's review rounds: PR body, findings, replies
+    SK-0012/                     one issue's review rounds: PR body, findings, replies
 ```
 
 `<store>` comes from `~/.config/skuld/config.json`'s `issueStore` key (today's `issuesDir`, renamed). The review
@@ -201,7 +201,7 @@ On every run, `plan` and `pr` resolve their environment as `mainCheckout()` does
 2. **Existing work wins.** Each candidate is searched for `<repo>.worktrees/<KEY>` or the issue's branch. Found in
    one repo, that repo is used; found in more than one, the command refuses and names each.
 3. **New work.** With nothing found, the current folder's repo is used when it is a candidate (a run inside
-   `<repo>.worktrees/SK-12` means `<repo>`, through `git rev-parse --git-common-dir`). Otherwise one candidate is
+   `<repo>.worktrees/SK-0012` means `<repo>`, through `git rev-parse --git-common-dir`). Otherwise one candidate is
    used outright, several open an `fzf` pick, and none is refused, naming the project's remotes and `checkouts`.
 4. **No key.** `plan list` and the picker show the current repo's project first when run inside a configured repo,
    and every configured project anywhere else.
@@ -222,7 +222,7 @@ entry there, committed to skuld. `plan init-store` creates an empty store's fold
 The `name` is what the picker and `plan list` show beside the key, which also fills the `projectMarkers` gap: that config key has no reader today.
 
 **Skuld is the first project.** The store starts with one entry, `SK` (Skuld), and skuld's own backlog moves into it:
-`JP-1` to `JP-9` become `SK-1` to `SK-9`, numbers kept, so a reference in a commit or an issue body maps by prefix
+`JP-1` to `JP-9` become `SK-0001` to `SK-0009`, numbers kept, so a reference in a commit or an issue body maps by prefix
 alone. Seven of the nine are open and none has a branch or worktree, so nothing in flight is renamed. Skuld's `issues/`
 folder is then deleted, and from that point every skuld change is planned, started and shipped through the store it
 builds.
@@ -260,13 +260,13 @@ Plan order, which the picker, `plan list` and `plan next` all use:
    by number.
 3. A store issue with `after: <JIRA-KEY>` still sorts right after that Jira issue in the merged picker, as today.
 
-`plan set SK-12 milestone=m5-terminal ordinal=250` moves an issue, and `plan milestone new`, `plan milestone set` and
+`plan set SK-0012 milestone=m5-terminal ordinal=250` moves an issue, and `plan milestone new`, `plan milestone set` and
 `plan milestone list` manage milestones, all through the checker. A milestone report (the `plan-report` skill's
 `milestones.py`) reads `milestones/` and the issue files directly.
 
 <a id="blockers"></a>
 
-**Blockers.** An issue records what blocks it in `blocked_by: [SK-4, SK-7]`, the store's form of Redmine's `blocks`
+**Blockers.** An issue records what blocks it in `blocked_by: [SK-0004, SK-0007]`, the store's form of Redmine's `blocks`
 relation and Jira's issue links. Only the blocked side is written; "blocks" is derived by reading every file, so the two
 directions can't disagree. The relation is tracked end to end:
 
@@ -280,7 +280,7 @@ directions can't disagree. The relation is tracked end to end:
   within a milestone (rule 2 above).
 - A key from another tracker (`blocked_by: [CIAM-163]`) is allowed. The checker can't see it offline, so it skips that
   key, and Start asks that tracker's adapter whether it is still open.
-- `plan set SK-12 blocked_by+=SK-4` and `blocked_by-=SK-4` add and remove one, checked first.
+- `plan set SK-0012 blocked_by+=SK-0004` and `blocked_by-=SK-0004` add and remove one, checked first.
 
 <a id="issue-file"></a>
 
@@ -288,7 +288,7 @@ directions can't disagree. The relation is tracked end to end:
 
 ```markdown
 ---
-key: SK-12
+key: SK-0012
 title: Read and write issues through an IssueStore port
 status: open # open | in-progress | done | wontfix
 type: task # task | bug | question
@@ -320,7 +320,7 @@ points: # optional: 1 2 3 5 8 13
 
 ## Log
 
-- 2026-11-07: Started on `feat/SK-12-issue-store-port`, in ~/programming/skuld.worktrees/SK-12.
+- 2026-11-07: Started on `feat/SK-0012-issue-store-port`, in ~/programming/skuld.worktrees/SK-0012.
 ```
 
 Changes from today's `issues/README.md`: `key` and `title` move into the front matter, so the checker can compare the
@@ -383,7 +383,7 @@ Phase 6 makes `<store>` a git repo with a remote. Phase 7 adds the watcher:
   commit.
 - It runs the checker. On failure it commits nothing, posts a macOS notification naming the file and rule, writes the
   same to a log, and tries again on the next change.
-- On success it commits every change with a generated message (`SK-12: status in-progress`, or `12 issues: ordinal`) and
+- On success it commits every change with a generated message (`SK-0012: status in-progress`, or `12 issues: ordinal`) and
   pushes. A push that fails (offline, behind) is retried with `pull --rebase` first, and a conflict stops the watcher
   loudly until a person resolves it.
 
@@ -398,7 +398,7 @@ Each phase is usable on its own, and the files written in phase 1 stay valid thr
 | #   | Phase                         | Delivers                                                                                                                                                                                                                                                                                                 | Reuses                              |
 | --- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
 | 1   | Format                        | in skuld: the file spec `docs/issue-format.md` (replacing `issues/README.md`), `templates/issue.md`, the `store.yml` and milestone schemas, the checker and `issue-check`                                                                                                                                | `outline.py`, today's `_parse`      |
-| 2   | FileStore, dogfooded on Skuld | `FileIssues` generalized: projects from `store.yml` instead of `PROJECT = "JP"`, `active/` and `archive/`, a store outside this repo, `parent` and `blocked_by` for `blockers()`; the store created with one project, `SK` (Skuld), and `JP-1`–`JP-9` moved into it as `SK-1`–`SK-9` ([§4.3](#projects)) | `lib/fileissues.py` and its tests   |
+| 2   | FileStore, dogfooded on Skuld | `FileIssues` generalized: projects from `store.yml` instead of `PROJECT = "JP"`, `active/` and `archive/`, a store outside this repo, `parent` and `blocked_by` for `blockers()`; the store created with one project, `SK` (Skuld), and `JP-1`–`JP-9` moved into it as `SK-0001`–`SK-0009` ([§4.3](#projects)) | `lib/fileissues.py` and its tests   |
 | 3   | `plan` on the store           | `plan new`, `plan set`, `plan milestone`, list/picker/view/start/ship/done against `FileStore` in plan order ([§4.4](#milestones)); the neutral `Issue` model; `storeFor()`                                                                                                                              | `lib/cli.py`, `start.py`, `done.py` |
 | 4   | Ports and `pr`                | `IssueStore`, `ReviewStore`, `PullRequests`, `GitRemote` as modules; `pr` ported from shell to Python behind them; review files moved from `.tmp/<KEY>/` to `<store>/reviews/<KEY>/` and their format specified                                                                                          | `pr.sh`, `pr_threads.py`, `ship.py` |
 | 5   | Archive                       | `plan archive` and its schedule                                                                                                                                                                                                                                                                          | —                                   |

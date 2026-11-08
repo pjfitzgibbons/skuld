@@ -253,7 +253,7 @@ class TermTests(unittest.TestCase):
         self.assertIn(["aerospace", "workspace", "3"], calls)
 
     def test_openIssueWorkspace_sends_custom_claude_prompt_quoted(self):
-        # SK-3 (2026-11-05): "Work on Jira SK-3" sent the new Claude to Jira for a file issue.
+        # SK-0003 (2026-11-05): "Work on Jira SK-0003" sent the new Claude to Jira for a file issue.
         calls = []
         list_windows_calls = {"n": 0}
 
@@ -273,12 +273,12 @@ class TermTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             slots = os.path.join(tmp, "workspaces")
             with mock.patch.object(term, "run", side_effect=fake_run):
-                term.openIssueWorkspace("SK-3", "/tmp/jp-3", "Ghostty", "/no/such/aerospace.toml", slots, "Work on SK-3: read /x/SK-3.md")
+                term.openIssueWorkspace("SK-0003", "/tmp/jp-3", "Ghostty", "/no/such/aerospace.toml", slots, "Work on SK-0003: read /x/SK-0003.md")
         send = next(c for c in calls if c[:2] == ["tmux", "send-keys"])
-        self.assertEqual(send[4], "claude 'Work on SK-3: read /x/SK-3.md'")
+        self.assertEqual(send[4], "claude 'Work on SK-0003: read /x/SK-0003.md'")
 
     def test_openIssueWorkspace_reattaches_ghostty_when_session_has_no_window(self):
-        # SK-1: CIAM-163's session outlived a failed Ghostty launch; the workspace held only the
+        # SK-0001: CIAM-163's session outlived a failed Ghostty launch; the workspace held only the
         # Brave tab, and Open switched to it without opening a terminal.
         calls = []
         list_windows_calls = {"n": 0}
@@ -342,16 +342,16 @@ class TermTests(unittest.TestCase):
             return ""
 
         with mock.patch.object(term, "run", side_effect=fake_run):
-            term.openTicketPane("SK-1", "/repo.worktrees/SK-1", "/repo/issues/SK-1-slug.md")
+            term.openTicketPane("SK-0001", "/repo.worktrees/SK-0001", "/repo/issues/SK-0001-slug.md")
         listPanes = next(c for c in calls if c[1] == "list-panes")
         splitWindow = next(c for c in calls if c[1] == "split-window")
         setOption = next(c for c in calls if c[1] == "set-option")
-        self.assertEqual(listPanes, ["tmux", "list-panes", "-t", "=SK-1:claude", "-F", "#{@plan_ticket}"])
+        self.assertEqual(listPanes, ["tmux", "list-panes", "-t", "=SK-0001:claude", "-F", "#{@plan_ticket}"])
         self.assertEqual(
             splitWindow,
-            ["tmux", "split-window", "-h", "-d", "-P", "-F", "#{pane_id}", "-t", "=SK-1:claude", "-c", "/repo.worktrees/SK-1", "nvim", "/repo/issues/SK-1-slug.md"],
+            ["tmux", "split-window", "-h", "-d", "-P", "-F", "#{pane_id}", "-t", "=SK-0001:claude", "-c", "/repo.worktrees/SK-0001", "nvim", "/repo/issues/SK-0001-slug.md"],
         )
-        self.assertEqual(setOption, ["tmux", "set-option", "-p", "-t", "%7", "@plan_ticket", "SK-1"])
+        self.assertEqual(setOption, ["tmux", "set-option", "-p", "-t", "%7", "@plan_ticket", "SK-0001"])
         self.assertFalse(any(c[1] == "new-window" for c in calls))
 
     def test_openTicketPane_skips_when_a_tagged_pane_already_exists(self):
@@ -360,11 +360,11 @@ class TermTests(unittest.TestCase):
         def fake_run(command, args, cwd):
             calls.append([command, *args])
             if command == "tmux" and args[0] == "list-panes":
-                return "\nSK-1\n"  # the claude pane has no tag, the split one is already tagged
+                return "\nSK-0001\n"  # the claude pane has no tag, the split one is already tagged
             return ""
 
         with mock.patch.object(term, "run", side_effect=fake_run):
-            term.openTicketPane("SK-1", "/repo.worktrees/SK-1", "/repo/issues/SK-1-slug.md")
+            term.openTicketPane("SK-0001", "/repo.worktrees/SK-0001", "/repo/issues/SK-0001-slug.md")
         self.assertFalse(any(c[1] == "split-window" for c in calls))
         self.assertFalse(any(c[1] == "set-option" for c in calls))
 

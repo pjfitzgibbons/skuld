@@ -35,12 +35,12 @@ class CmdOpenFileBackedTests(unittest.TestCase):
     def test_open_on_a_sk_key_opens_the_ticket_pane(self):
         class FakeJira:
             def browseUrl(self, key):
-                return "/repo/issues/SK-1-slug.md"
+                return "/repo/issues/SK-0001-slug.md"
 
         with mock.patch.object(cli, "jiraFrom", return_value=FakeJira()), mock.patch.object(
             term_mod, "sweepSlots"
         ), mock.patch.object(
-            startLib, "start", return_value={"dir": "/repo.worktrees/SK-1", "notes": []}
+            startLib, "start", return_value={"dir": "/repo.worktrees/SK-0001", "notes": []}
         ), mock.patch.object(
             term_mod, "openIssueWorkspace", return_value={"created": False, "workspace": "3"}
         ) as openIssueWorkspace, mock.patch.object(
@@ -50,10 +50,30 @@ class CmdOpenFileBackedTests(unittest.TestCase):
         ) as openUrl, mock.patch.object(
             term_mod, "focusIssueWorkspace"
         ):
-            main(["open", "SK-1"])
+            main(["open", "SK-0001"])
         openIssueWorkspace.assert_called_once()
-        openTicketPane.assert_called_once_with("SK-1", "/repo.worktrees/SK-1", "/repo/issues/SK-1-slug.md")
+        openTicketPane.assert_called_once_with("SK-0001", "/repo.worktrees/SK-0001", "/repo/issues/SK-0001-slug.md")
         openUrl.assert_not_called()  # a SK key has no browse URL to open in a browser
+
+    def test_open_pads_a_sk_key_typed_without_its_zeros(self):
+        class FakeJira:
+            def browseUrl(self, key):
+                return "/repo/issues/SK-0001-slug.md"
+
+        with mock.patch.object(cli, "jiraFrom", return_value=FakeJira()), mock.patch.object(
+            term_mod, "sweepSlots"
+        ), mock.patch.object(
+            startLib, "start", return_value={"dir": "/repo.worktrees/SK-0001", "notes": []}
+        ) as start, mock.patch.object(
+            term_mod, "openIssueWorkspace", return_value={"created": False, "workspace": "3"}
+        ), mock.patch.object(
+            term_mod, "openTicketPane"
+        ) as openTicketPane, mock.patch.object(
+            term_mod, "focusIssueWorkspace"
+        ):
+            main(["open", "SK-1"])
+        self.assertEqual(start.call_args.args[2], "SK-0001")
+        openTicketPane.assert_called_once_with("SK-0001", "/repo.worktrees/SK-0001", "/repo/issues/SK-0001-slug.md")
 
 
 class ResolveDirTests(unittest.TestCase):
@@ -292,7 +312,7 @@ class IssueRowsAlignmentTests(unittest.TestCase):
 
     def test_key_is_still_the_bare_id_for_fzfs_default_field_splitting(self):
         jira = [{"id": "CIAM-163", "subject": "Doc registry DR-1: a longer subject with spaces", "status": "In Progress", "statusCategory": "indeterminate", "issueType": "Story", "project": "CIAM", "parent": None}]
-        jp = [{"id": "SK-2", "subject": "short", "status": "To Do", "statusCategory": "new", "issueType": "Bug", "project": "SK", "parent": None, "after": None}]
+        jp = [{"id": "SK-0002", "subject": "short", "status": "To Do", "statusCategory": "new", "issueType": "Bug", "project": "SK", "parent": None, "after": None}]
         rows = self._run(jira, jp)
         for row in rows:
             self.assertEqual(row["key"], row["id"])
@@ -308,7 +328,7 @@ class IssueRowsAlignmentTests(unittest.TestCase):
         # line, exercised directly as the field-index-expression contract fzf's own docs specify
         # (default delimiter = runs of whitespace).
         jira = [{"id": "CIAM-163", "subject": "Doc registry DR-1", "status": "In Progress", "statusCategory": "indeterminate", "issueType": "Story", "project": "CIAM", "parent": None}]
-        jp = [{"id": "SK-9", "subject": "Point failure-modes.md", "status": "To Do", "statusCategory": "new", "issueType": "Task", "project": "SK", "parent": None, "after": None}]
+        jp = [{"id": "SK-0009", "subject": "Point failure-modes.md", "status": "To Do", "statusCategory": "new", "issueType": "Task", "project": "SK", "parent": None, "after": None}]
         rows = self._run(jira, jp)
         for row in rows:
             # awk's default field splitting (FS unset) is the same "runs of whitespace" rule fzf
@@ -322,45 +342,45 @@ class IssueRowsAlignmentTests(unittest.TestCase):
 class MergeRowsTests(unittest.TestCase):
     def test_anchored_issue_sorts_right_after_its_jira_issue(self):
         jira = [jiraRow("CIAM-1"), jiraRow("CIAM-2")]
-        jp = [skRow("SK-1", after="CIAM-1")]
+        jp = [skRow("SK-0001", after="CIAM-1")]
         ids = [r["id"] for r in mergeRows(jira, jp)]
-        self.assertEqual(ids, ["CIAM-1", "SK-1", "CIAM-2"])
+        self.assertEqual(ids, ["CIAM-1", "SK-0001", "CIAM-2"])
 
     def test_two_sk_issues_sharing_one_anchor_keep_their_sk_sort_order(self):
         jira = [jiraRow("CIAM-1")]
         # jp is handed in already in SK sort order (as FileIssues.list() would return it) --
-        # SK-3 (lower ordinal) before SK-9, both anchored to the same Jira issue.
-        jp = [skRow("SK-3", after="CIAM-1"), skRow("SK-9", after="CIAM-1")]
+        # SK-0003 (lower ordinal) before SK-0009, both anchored to the same Jira issue.
+        jp = [skRow("SK-0003", after="CIAM-1"), skRow("SK-0009", after="CIAM-1")]
         ids = [r["id"] for r in mergeRows(jira, jp)]
-        self.assertEqual(ids, ["CIAM-1", "SK-3", "SK-9"])
+        self.assertEqual(ids, ["CIAM-1", "SK-0003", "SK-0009"])
 
     def test_anchor_missing_from_the_jira_list_falls_to_the_end(self):
-        # CIAM-9 isn't in jira (closed/unassigned/filtered out of the JQL) -- SK-1 falls to the
+        # CIAM-9 isn't in jira (closed/unassigned/filtered out of the JQL) -- SK-0001 falls to the
         # end instead of vanishing or raising.
         jira = [jiraRow("CIAM-1")]
-        jp = [skRow("SK-1", after="CIAM-9")]
+        jp = [skRow("SK-0001", after="CIAM-9")]
         ids = [r["id"] for r in mergeRows(jira, jp)]
-        self.assertEqual(ids, ["CIAM-1", "SK-1"])
+        self.assertEqual(ids, ["CIAM-1", "SK-0001"])
 
     def test_a_sk_key_anchor_falls_to_the_end(self):
         # Only a Jira key can anchor a placement -- a SK key can never appear in jiraRows' ids,
         # so this is covered by the same "anchor not in jiraRows" path, with no special case.
         jira = [jiraRow("CIAM-1")]
-        jp = [skRow("SK-2", after="SK-1")]
+        jp = [skRow("SK-0002", after="SK-0001")]
         ids = [r["id"] for r in mergeRows(jira, jp)]
-        self.assertEqual(ids, ["CIAM-1", "SK-2"])
+        self.assertEqual(ids, ["CIAM-1", "SK-0002"])
 
     def test_no_after_at_all_gives_todays_plain_concatenation(self):
         jira = [jiraRow("CIAM-1"), jiraRow("CIAM-2")]
-        jp = [skRow("SK-1"), skRow("SK-2")]
+        jp = [skRow("SK-0001"), skRow("SK-0002")]
         ids = [r["id"] for r in mergeRows(jira, jp)]
-        self.assertEqual(ids, ["CIAM-1", "CIAM-2", "SK-1", "SK-2"])
+        self.assertEqual(ids, ["CIAM-1", "CIAM-2", "SK-0001", "SK-0002"])
 
     def test_jira_rows_are_never_reordered(self):
         jira = [jiraRow("CIAM-2"), jiraRow("CIAM-1")]  # deliberately not key order -- JQL's own
-        jp = [skRow("SK-1", after="CIAM-1")]
+        jp = [skRow("SK-0001", after="CIAM-1")]
         ids = [r["id"] for r in mergeRows(jira, jp)]
-        self.assertEqual(ids, ["CIAM-2", "CIAM-1", "SK-1"])
+        self.assertEqual(ids, ["CIAM-2", "CIAM-1", "SK-0001"])
 
 
 if __name__ == "__main__":
