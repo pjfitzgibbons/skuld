@@ -67,9 +67,11 @@ macOS only. In order:
      password <API token>
    ```
 
-3. **The ticket store.** Clone the store's repo, e.g. to `~/issues`. For a new store,
-   `plan init-store` makes the empty folders (`milestones/`, `active/`, `archive/`, `reviews/`) at
-   `issueStore`; give it a git remote.
+3. **The ticket store.** Skuld's store is the private repo `pjfitzgibbons/issues`, checked out
+   as skuld's `issues/` submodule: `git submodule update --init issues` after cloning skuld. It
+   can as well be cloned anywhere else, e.g. to `~/issues`; `issueStore` names whichever path.
+   For a new store, `git init` a folder, give it a private remote, and run `plan init-store` to
+   make the empty folders (`milestones/`, `active/`, `archive/`, `reviews/`) at `issueStore`.
 
 4. **`store.yml`**, in skuld, lists the store's projects, each with its key prefix, its name and
    its repos by remote:
