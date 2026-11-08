@@ -46,7 +46,7 @@ GitHub's, and they are the one GitHub integration; GitHub Issues is not used.
 ## 2. Definitions
 
 | Term | Definition |
-|---|---|
+| --- | --- |
 | Issue | The unit of planned work, named by its key, `PREFIX-n`: a project prefix and a per-project number. It lives in the ticket store or in Jira |
 | Project | A key prefix and the repos its work happens in. Store projects are listed in skuld's `store.yml`, Jira projects in the machine config |
 | Ticket store | A git repo, outside every development repo, holding ticket files, milestones and review files, with its own remote (§3, §7.7) |
@@ -147,7 +147,7 @@ No commit or merge changes an issue's status (§7.3), so there is no `fixes`/`re
 a module interface with one class per adapter:
 
 | Port | Does | Adapters |
-|---|---|---|
+| --- | --- | --- |
 | `IssueStore` | list Next up, read an issue, create, set fields, transition, append a log line, close note | `FileStore`, `Jira` |
 | `ReviewStore` | record a round, its findings and outcomes, and read them back | files under `<store>/reviews/<KEY>/` |
 | `PullRequests` | open or update a PR, read its state and threads, post replies | `gh` |
@@ -194,12 +194,13 @@ a git remote operation always goes through its adapter.
 ### 6.3 Platform
 
 | Layer | Choice |
-|---|---|
+| --- | --- |
 | Trackers | The ticket store (Markdown with YAML front matter, in a git repo); Jira Cloud, `cryoport.atlassian.net` |
 | Store commits | `issue-watch` under launchd: debounced, gated by the checker, commits and pushes |
 | Auth | `~/.netrc` for Jira, read per call; `gh`'s and git's own credentials for GitHub and the store's remote |
 | Terminal front end | Ghostty, Aerospace and tmux via `subprocess`; fzf for the picker; nvim for ticket files |
-| Browser | Brave, launched explicitly with `open -na "Brave Browser" --args --new-window <url>` (new window) or `open -a "Brave Browser" <url>` (a tab in an existing window); never a bare `open <url>`, and never the terminal's own link-click (§7.6.1) |
+| Browser | Brave, reached through Aerospace and AppleScript by `openUrl()`; never system `open`, and never the terminal's own link-click (§7.6.1). Browser automation and browser tests run in Chrome, so `Brave Browser` always names the human's own Brave |
+| Pages | `plan serve`: one local Flask server on `127.0.0.1`, started at login, rendering an issue's pages from Jinja templates (§7.6.1) |
 | Pull requests | `gh`; Jira linkage through Jira's development panel, not a custom field |
 | Jira writes | `/rest/api/3/*`, ADF for descriptions and comments |
 
@@ -397,27 +398,40 @@ with `after: <JIRA-KEY>` sorts directly after that Jira issue.
 
 <a id="open-url"></a>
 
-### 7.6.1 Opening the browse URL
+### 7.6.1 Opening a page
 
-`term.openUrl(url, workspace=None, ...)` always prints `url` first, then acts on a Brave window
-(§6.3) in the same Aerospace workspace as the Ghostty and tmux window that ran the command. A bare
-`open <url>` opens in whatever browser context is frontmost, not necessarily that workspace, so it is
-never used.
+`plan browse <KEY | pr#N | url> [KEY]`, Start and Open open a page through
+`term.openUrl(url, workspace=None, ...)`. It always prints the URL first, then adds the page as a
+tab to a Brave window (§6.3) in the same Aerospace workspace as the Ghostty and tmux window that ran
+the command. Nothing else opens a page. System `open` sends a page to whichever Brave window was
+used last, often on another workspace, so neither the code nor an agent's shell uses it for one
+(§10, rule 7).
+
+`plan browse` takes a key, which opens the issue's page: Jira's browse URL, or `plan serve`'s page
+for a store ticket. It also takes `pr#N`, which opens the pull request, or a URL. `[KEY]` names the
+issue whose workspace the page belongs in when neither the target nor the session names one.
 
 Target workspace, in order: (1) an explicit `workspace` argument, which Start always passes (§7.1);
 (2) inside tmux, when the session name is a key in the slots file, that slot's workspace; (3)
 otherwise, the focused workspace (`aerospace list-workspaces --focused`). (2) comes before (3) for a
 command run from a tmux session whose window has lost Aerospace focus.
 
-When the target workspace already has a Brave (`com.brave.Browser`) window, `openUrl()` focuses it
-(`aerospace focus --window-id`) and opens the URL as a new tab there (`open -a "Brave Browser"
-<url>`). Otherwise it opens a new window (`open -na "Brave Browser" --args --new-window <url>`) and
-moves it to the target workspace by a before-and-after diff of `browserBundleId` window ids, the
-same diffing `appWindowIds()` and `newAppWindowId()` do for Ghostty (§7.1). Either way, it then
-returns focus to the window focused before it ran, so a run never leaves the terminal in the
-background; Start and Open then move focus on to the issue's workspace (§7.1). Every Aerospace and
-`open` call in `openUrl()` is best-effort: a missing `aerospace`, a missing Brave or any other
-failure is swallowed, since the printed URL stands on its own.
+When the target workspace has a Brave (`com.brave.Browser`) window, `openUrl()` finds it by its
+title, which `aerospace list-windows` and Brave's AppleScript both report, and adds the tab to that
+window through AppleScript. Focus doesn't move, so a hidden workspace stays hidden and the screen
+doesn't switch. Two Brave windows on the workspace with the same title can't be told apart that
+way: `openUrl()` then focuses the one Aerospace names (`aerospace focus --window-id`), adds the tab
+to Brave's front window, and returns focus to the window focused before. When the workspace has no
+Brave window, `openUrl()` makes one through AppleScript and moves it to the target workspace by a
+before-and-after diff of `browserBundleId` window ids, the same diffing `appWindowIds()` and
+`newAppWindowId()` do for Ghostty (§7.1). Every Aerospace and AppleScript call in `openUrl()` is
+best-effort: a missing `aerospace`, a missing Brave or any other failure is swallowed, since the
+printed URL stands on its own.
+
+Pages for an issue, such as its report and its review, come from `plan serve`, rendered from Jinja
+templates with the issue's data. Every such page's header links the issue, to its Jira browse URL or
+to the server's page for a store ticket, and links its pull request; before a PR exists, the header
+says so. A page is always opened at its server URL, never as a `file://` path.
 
 Done never calls `openUrl()` (§7.3). `plan view` prints the browse URL without calling it, since a
 view is read-only and run from wherever the human happens to be.
@@ -474,7 +488,7 @@ Each command that writes has its own table in [`failure-modes.md`](failure-modes
 they share:
 
 | Event | Effect | Handling |
-|---|---|---|
+| --- | --- | --- |
 | Jira is down, or the network is unreachable | Jira's Next up can't load, and no Jira issue can start or finish | Start and Done refuse before they change anything |
 | No token in `~/.netrc` | No call to Jira can be made | Refused, naming `~/.netrc` and the expected `machine cryoport.atlassian.net` entry |
 | A transition succeeds at the API layer but a workflow condition silently blocks the status change | The status is unchanged, though a comment made in the same call may still be saved | The write reads the issue back, refuses, and names the attempted and actual status ([failure-modes.md, *Jira silently blocks a transition*](failure-modes.md#jira-silently-blocks-a-transition)) |
@@ -496,7 +510,7 @@ they share:
 ## 9. Views
 
 | View | Shows |
-|---|---|
+| --- | --- |
 | The picker and `plan list` | Next up in plan order, both trackers merged, with each issue's project name (§7.6) |
 | `plan view <KEY>` | One issue: fields, open blockers, what it blocks, and its body or description |
 | A ticket in nvim | The ticket file itself, opened beside Claude by Start and Open (§7.1) |
@@ -519,3 +533,5 @@ they share:
 5. Tickets are edited in place; only a closed ticket moves, from `active/` to `archive/` (§7.5).
 6. Skuld holds code and definitions, the ticket store holds data, and neither holds the other's
    (§3).
+7. A page for an issue comes from `plan serve`, links the issue and its pull request, and opens in
+   the issue's Aerospace workspace through `openUrl()`, never through system `open` (§7.6.1).
