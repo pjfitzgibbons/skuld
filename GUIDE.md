@@ -67,9 +67,10 @@ macOS only. In order:
      password <API token>
    ```
 
-3. **The ticket store.** Skuld's store is the private repo `pjfitzgibbons/issues`, checked out
-   as skuld's `issues/` submodule: `git submodule update --init issues` after cloning skuld. It
-   can as well be cloned anywhere else, e.g. to `~/issues`; `issueStore` names whichever path.
+3. **The ticket store.** Skuld's store is the private repo `pjfitzgibbons/issues`, cloned beside
+   skuld: `git clone https://github.com/pjfitzgibbons/issues.git ~/programming/skuld-project/issues`,
+   with `"issueStore": "~/programming/skuld-project/issues"` in `~/.config/skuld/config.json`. It
+   can be cloned anywhere else; `issueStore` names whichever path.
    For a new store, `git init` a folder, give it a private remote, and run `plan init-store` to
    make the empty folders (`milestones/`, `active/`, `archive/`, `reviews/`) at `issueStore`.
 
@@ -136,7 +137,7 @@ macOS only. In order:
    `.claude/` (settings and hooks) and `claude/CLAUDE.md` as its `CLAUDE.md` (§9).
 
 10. **The LaunchAgents.** `issue-watch` watches the store and commits and pushes it, and
-    `plan serve` serves issue pages. Both start at login and restart if they stop.
+    the local server serves issue pages (§7). Both start at login and restart if they stop.
 
 ## 3. Commands
 
@@ -164,7 +165,7 @@ decides the repo (§4).
 | `plan ship [KEY]` | Ship (§5); the key defaults to the current worktree's branch |
 | `plan done [KEY]` | Done (§6) |
 | `plan browse <KEY \| pr#N \| url> [KEY]` | Open a page in the issue's Brave window (§7) |
-| `plan serve` | Run the page server (§7); the LaunchAgent runs it |
+| `plan serve start\|stop\|restart\|status` | Control the local server's LaunchAgent (§7); `status` prints the server's URL and whether it answers |
 | `plan archive` | Move closed tickets past `archiveAfterDays` to `archive/` |
 | `plan init-store` | Make an empty store's folders |
 | `pr [done] [KEY]` | Send a round (§5) |
@@ -348,20 +349,28 @@ A Done that stops part way says what it already changed, and Done again finishes
 
 ## 7. Pages and the browser
 
-### `plan serve`
+### The local server
 
 One Flask server per machine, on `127.0.0.1` at a fixed port, started at login by a LaunchAgent.
-Its routes only read:
+`plan serve start|stop|restart|status` controls it; the command renders nothing itself. The
+server's routes only read:
 
 | Route | Serves |
 | --- | --- |
 | `/` | Every issue in progress, with links to its pages |
 | `/issues/<KEY>` | A store ticket, rendered from its Markdown |
-| `/issues/<KEY>/report` | The issue's report, from the round data and `git diff` |
+| `/issues/<KEY>/report`, `/issues/<KEY>/review` | A redirect to the latest round's page |
+| `/issues/<KEY>/rounds/<n>/report` | Round `n`'s report, from the round data and `git diff` |
+| `/issues/<KEY>/rounds/<n>/review` | Round `n`'s findings and dispositions |
 | `/issues/<KEY>/files/<name>` | A file from `<store>/reviews/<KEY>/` |
 | `/milestones` | Milestone progress |
 
 Pages are Jinja templates rendered from the issue's data; Claude writes round data, never HTML.
+A page's URL path keys name it, and the server renders it on each request, so a page exists as soon
+as its data does and no command publishes it. A URL whose target doesn't exist redirects to the
+nearest page that does: a missing round to the latest round, and an issue with no rounds to the
+issue's page. The redirects are 302s, since the browser caches a 301 and the latest round changes.
+An unknown key gets a 404 page that says what was asked for and what exists, and links `/`.
 Every page's header links the issue (its Jira browse URL, or `/issues/<KEY>` for a store ticket)
 and its pull request; before a PR exists, the header says so. Pages show commands to copy and have
 no buttons that act. A page is always opened at its server URL, never as a `file://` path.
@@ -514,7 +523,7 @@ lib/
   done.py                  Done: checks, then changes, then the close note
   term.py                  Ghostty, Aerospace, tmux and SketchyBar; the slots file; openUrl()
   test_*.py                the unit tests
-  (the FileStore adapter, the checker, issue-watch and plan serve also live in lib/)
+  (the FileStore adapter, the checker, issue-watch and the local server also live in lib/)
 templates/issue.md         what plan new fills in
 skills/jira-issues/        SKILL.md, references/ (pr-body.md, jira-issue.md),
                            scripts/ (pr.sh, ghbody.sh, pr_threads.py, checklist.py,

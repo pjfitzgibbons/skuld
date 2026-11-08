@@ -164,12 +164,13 @@ def workOrder(candidate):
 
 
 class FileIssues:
-    # settings: { dir }. dir defaults to this repo's issues/ folder (lib/config.py's issuesDir).
+    # settings: { dir }, the store's checkout (lib/config.py's issueStore). There is no default:
+    # the store is its own repo, outside skuld.
     def __init__(self, settings=None):
         settings = settings or {}
         d = settings.get("dir")
         if not d:
-            d = Path(__file__).resolve().parent.parent / "issues"
+            raise RuntimeError("FileIssues needs the issue store's folder (issueStore)")
         self.dir = Path(d).resolve()
         self.settings = {"dir": str(self.dir)}
 

@@ -283,7 +283,7 @@ class IssueRowsAlignmentTests(unittest.TestCase):
         with mock.patch.object(cli, "jiraFrom", return_value=FakeJira()), mock.patch.object(
             cli.fileissues_mod, "FileIssues", FakeFileIssues
         ):
-            return cli.issueRows({})
+            return cli.issueRows({"issueStore": "/store"})
 
     def test_widths_come_from_the_longest_id_and_status_across_all_rows(self):
         jira = [
