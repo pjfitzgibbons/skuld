@@ -199,7 +199,7 @@ decides the repo (§4).
 | `plan serve start\|stop\|restart\|status` | Control the local server's LaunchAgent (§7); `status` prints the server's URL and whether it answers |
 | `plan archive` | Move closed tickets past `archiveAfterDays` to `archive/` |
 | `plan init-store` | Make an empty store's folders |
-| `pr [done] [KEY]` | Send a round (§5) |
+| `pr [done] [--no-copilot] [KEY]` | Send a round (§5) |
 | `issue-check [PATH…]` | Check ticket files, or the whole store; exits non-zero naming file, line and rule |
 | `issue-watch` | The store's watcher; launchd runs it |
 | `jira-get <path>` | One read-only Jira GET with `~/.netrc` auth, so an agent can read Jira without seeing the token |
@@ -317,7 +317,7 @@ in an integrated terminal of the issue window, so its output shows as it runs.
 `pr` writes no tracker field to link the PR; the key in the branch name and PR title does that.
 Ship again is the next round, and with nothing left to send, `pr` sends nothing.
 
-### `pr [done] [KEY]`
+### `pr [done] [--no-copilot] [KEY]`
 
 `KEY` defaults to the key in the branch name (`fix/CIAM-88-go-requests` is `CIAM-88`). Each step
 runs only when it has something to do, so `pr` is safe to repeat:
@@ -333,7 +333,8 @@ runs only when it has something to do, so `pr` is safe to repeat:
 | round | `replies/` or `issue.md` exist | `pr_threads.py --post`, then `checklist.py`, after the push |
 | hand-off | always | records the PR on the branch's git config and prints its URL |
 
-`pr done` runs the merged-PR step and refuses an unmerged PR.
+`pr done` runs the merged-PR step and refuses an unmerged PR. `--no-copilot` skips the Copilot step,
+and `gh pc` then doesn't ask Copilot to review a new PR either.
 
 ### Review: co-signing and dispositions
 

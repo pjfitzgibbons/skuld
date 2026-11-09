@@ -233,6 +233,17 @@ class FinishTests(unittest.TestCase):
         finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"], workspaceDir=workspaceDir)
         self.assertFalse(os.path.exists(current) or os.path.exists(legacy))
 
+    def test_deletes_the_legacy_file_beside_a_worktree_moved_from_its_usual_place(self):
+        s = self.sandbox()
+        moved = os.path.join(s["root"], "elsewhere", KEY)
+        os.makedirs(os.path.dirname(moved))
+        git(s["checkout"], "worktree", "move", s["dir"], moved)
+        legacy = term.legacyWorkspaceFilePath(moved, KEY)
+        open(legacy, "w").close()
+        finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"], workspaceDir=os.path.join(s["root"], "ws"))
+        self.assertFalse(os.path.exists(moved))
+        self.assertFalse(os.path.exists(legacy))
+
     def test_a_workspace_file_that_wont_delete_warns_and_done_still_finishes(self):
         s = self.sandbox()
         workspaceDir = os.path.join(s["root"], "ws")

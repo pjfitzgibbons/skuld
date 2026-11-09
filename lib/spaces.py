@@ -122,6 +122,13 @@ def broughtForward(snapshot, before, desktop):
     return desktop not in snapshot.showing or snapshot.front != before.front
 
 
+# The issue window's title starts with its key (term.issueWorkspace's window.title). A window
+# whose first word isn't the key is not the issue's window.
+def titleNamesIssue(title, key):
+    words = title.split()
+    return bool(words) and words[0] == key
+
+
 def offTheDesktops(key):
     return (
         f"{key}'s window isn't on a numbered Desktop (it may be full screen): "
@@ -216,7 +223,7 @@ class SpacesPlacer:
         with term.step("opening the issue's VS Code window", byHand):
             run("code", [workspaceFile], os.getcwd())
         with term.step("finding the issue's VS Code window", f"Find it with: code {workspaceFile}"):
-            windowId, landed, adopted = self.issueWindow(before, desktop)
+            windowId, landed, adopted = self.issueWindow(key, before, desktop)
         self.recordWindow(key, windowId)
         if landed is None:
             raise RuntimeError(offTheDesktops(key))
@@ -299,14 +306,16 @@ class SpacesPlacer:
 
     # (window id, its Desktop, adopted) for the window `code` brought up, given the snapshot taken
     # just before it ran. A new id is a new window, taken once its Desktop is known. With no new id,
-    # `code` brought forward a window that was already open, and the frontmost one on screen is it.
-    def issueWindow(self, before, desktop):
+    # `code` brought forward a window that was already open, and the frontmost one on screen is it:
+    # seen by a switch or a new front window, or, for one already in front on another display, by
+    # its title naming the issue.
+    def issueWindow(self, key, before, desktop):
         for _ in range(self.windowWaitTries):
             snapshot = self.readSpaces()
             added = newWindow(snapshot, before)
             if added is not None and snapshot.desktopOf(added) is not None:
                 return added, snapshot.desktopOf(added), False
-            if added is None and broughtForward(snapshot, before, desktop):
+            if added is None and (broughtForward(snapshot, before, desktop) or self.frontIsIssues(snapshot, key)):
                 return snapshot.front, snapshot.desktopOf(snapshot.front), True
             self.pause()
         if added is not None:
@@ -315,6 +324,21 @@ class SpacesPlacer:
 
     def waitSeconds(self):
         return self.windowWaitTries * self.windowWaitMs / 1000
+
+    def frontIsIssues(self, snapshot, key):
+        return snapshot.front in snapshot.windows and titleNamesIssue(self.frontTitle(), key)
+
+    # The title of VS Code's front window, through System Events (the permission ^N already needs),
+    # or "" when it can't be read.
+    def frontTitle(self):
+        script = (
+            'tell application "System Events" to get name of front window of '
+            f'(first process whose bundle identifier is "{term.VSCODE_BUNDLE_ID}")'
+        )
+        try:
+            return run("osascript", ["-e", script], os.getcwd()).strip()
+        except RuntimeError:
+            return ""
 
     def pause(self):
         time.sleep(self.windowWaitMs / 1000)
@@ -379,8 +403,14 @@ class SpacesPlacer:
         self.writeWindows(windows)
 
     def writeWindows(self, windows):
-        term.writeSlotsLines(term.resolveSlotsFile(self.windowsFile), [f"{k}={w}" for k, w in windows.items()])
+        term.writeSlotsLines(self.windowsPath(), [f"{k}={w}" for k, w in windows.items()])
 
     def writeSlots(self, entries):
-        term.writeSlotsLines(term.resolveSlotsFile(self.slotsFile), [f"{slot}={key}" for slot, key in entries])
+        term.writeSlotsLines(self.slotsPath(), [f"{slot}={key}" for slot, key in entries])
         term.triggerSketchybar()
+
+    def slotsPath(self):
+        return term.resolveSlotsFile(self.slotsFile)
+
+    def windowsPath(self):
+        return term.resolveSlotsFile(self.windowsFile)

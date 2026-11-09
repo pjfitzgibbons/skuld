@@ -288,6 +288,14 @@ def branchForKey(checkout, key, typeMap=None):
     return refs("refs/heads") or refs("refs/remotes/origin")
 
 
+# The issue's worktree path: the one Done resolved, where Start and Open wrote the legacy workspace
+# file beside it, else the one Start would make.
+def issueWorktreePath(resolved, checkout, key):
+    if resolved and not resolved["main"]:
+        return resolved["dir"]
+    return worktreeDir(checkout, key)
+
+
 def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result, disposable, typeMap=None, slotsFile=None, workspaceDir=None):
     if typeMap is None:
         typeMap = DEFAULT_TYPE_MAP
@@ -469,4 +477,4 @@ def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result,
     # the "Close KEY in Jira" note above, once, ever points Peter at the issue.
     term.removeSlot(key, slotsFile)
     # The issue window's workspace file is a throwaway: one that won't delete is a warning, not a failure.
-    notes.extend(term.removeWorkspaceFiles(key, worktreeDir(checkout, key), workspaceDir))
+    notes.extend(term.removeWorkspaceFiles(key, issueWorktreePath(resolved, checkout, key), workspaceDir))

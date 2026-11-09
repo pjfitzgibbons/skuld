@@ -64,10 +64,10 @@ class ParserTests(unittest.TestCase):
 # that window's Desktop and brings it to the front; on any other workspace it opens window
 # newWindowId on landOn, or on the showing Desktop when landOn is None. secondDisplay is a Desktop
 # that shows all the time on another display. A stuck Mac ignores ^N; a fullScreen one opens the new
-# window on no numbered Desktop.
+# window on no numbered Desktop. titles maps a window id to its title.
 class FakeMac:
     def __init__(self, desktops=4, windows=None, shortcutsOn=(1, 2, 3, 4), newWindowId=900, landOn=None, unknown=None,
-                 openWindows=None, secondDisplay=None, stuck=False, fullScreen=False):
+                 openWindows=None, secondDisplay=None, stuck=False, fullScreen=False, titles=None):
         self.desktops = list(range(1, desktops + 1))
         self.windows = dict(windows or {})
         self.shortcutsOn = shortcutsOn
@@ -80,6 +80,7 @@ class FakeMac:
         self.secondDisplay = secondDisplay
         self.stuck = stuck
         self.fullScreen = fullScreen
+        self.titles = dict(titles or {})
         self.calls = []
 
     def run(self, command, args, cwd):
@@ -88,6 +89,8 @@ class FakeMac:
             return self.helper(args[0])
         if command == "defaults":
             return shortcutsPlist(self.shortcutsOn)
+        if command == "osascript" and "get name of front window" in args[1]:
+            return self.titles.get(self.front, "")
         if command == "osascript":
             if not self.stuck:
                 self.showing = int(args[1].split("key code ")[1].split()[0]) - 17
@@ -262,6 +265,28 @@ class SpacesPlacerTests(FakeMacCase):
         placement = self.placer(mac).openWindow("SK-0044", "/w/k.code-workspace")
         self.assertEqual((placement.created, placement.slot), (False, "4"))
         self.assertEqual(self.windowsOnRecord(), "SK-0044=70\n")
+
+    def test_an_issue_window_already_in_front_on_another_display_is_adopted_by_its_title(self):
+        mac = FakeMac(windows={70: 4}, openWindows={"/w/k.code-workspace": 70}, secondDisplay=4,
+                      titles={70: "SK-0044 - spaces.py"})
+        mac.front = 70
+        placement = self.placer(mac).openWindow("SK-0044", "/w/k.code-workspace")
+        self.assertEqual((placement.created, placement.slot), (False, "4"))
+        self.assertEqual(self.windowsOnRecord(), "SK-0044=70\n")
+
+    def test_another_issues_window_in_front_is_never_adopted(self):
+        mac = FakeMac(windows={70: 4}, openWindows={"/w/k.code-workspace": 70}, secondDisplay=4,
+                      titles={70: "SK-00440 - spaces.py"})
+        mac.front = 70
+        with self.assertRaisesRegex(RuntimeError, "none was brought forward"):
+            self.placer(mac).openWindow("SK-0044", "/w/k.code-workspace")
+
+    def test_a_title_names_the_issue_only_when_its_key_is_whole(self):
+        self.assertTrue(spaces.titleNamesIssue("SK-1 - x", "SK-1"))
+        self.assertFalse(spaces.titleNamesIssue("Claude Code - SK-1 - x", "SK-1"))
+        self.assertFalse(spaces.titleNamesIssue("", "SK-1"))
+        self.assertFalse(spaces.titleNamesIssue("SK-12 - x", "SK-1"))
+        self.assertFalse(spaces.titleNamesIssue("SK-2 - SK-1-notes.md", "SK-1"))
 
     def test_a_new_window_on_no_numbered_desktop_stops_start(self):
         mac = FakeMac(fullScreen=True)

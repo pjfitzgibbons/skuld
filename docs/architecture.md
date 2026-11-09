@@ -313,7 +313,8 @@ shortcut is bound in `com.apple.symbolichotkeys`, waits until that Desktop shows
 never shows stops Start before `code` runs. A window id that wasn't there before is the issue's
 new window. When no new id appears and VS Code has switched away from that Desktop or brought a
 different window to the front, the workspace was already open, and the frontmost VS Code window
-becomes the issue's. To find a recorded window again,
+becomes the issue's. A window already in front on another display changes neither, so it is
+adopted when its title, read through System Events, starts with the issue's key. To find a recorded window again,
 `code <workspace file>` switches to its Desktop and brings it forward.
 
 - **Free Desktop.** The issue's own slot when its Desktop holds no VS Code window, else the first
