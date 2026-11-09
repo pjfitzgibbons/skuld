@@ -1,6 +1,7 @@
 #!/bin/bash
-# Builds SlotBar (macos/slotbar/) with the Command Line Tools' swiftc into macos/build/: the
-# SlotBar.app bundle, ad-hoc signed, and the slotbar-pulse command. Prints the bundle's path.
+# Builds SlotBar (macos/slotbar/) with the Command Line Tools' swiftc into macos/build/SlotBar.app,
+# with the slotbar-pulse command inside it beside SlotBar, where `plan pulse` finds the installed
+# copy. Signs both and prints the bundle's path.
 set -euo pipefail
 root=$(cd "$(dirname "$(realpath "$0")")/.." && pwd)
 src="$root/macos/slotbar"
@@ -25,6 +26,8 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 cp "$src/Info.plist" "$app/Contents/Info.plist"
 swiftc -O -parse-as-library -o "$app/Contents/MacOS/SlotBar" "$src/SlotCore.swift" "$src/slotbar.swift"
-swiftc -O -parse-as-library -o "$out/slotbar-pulse" "$src/SlotCore.swift" "$src/pulse.swift"
+swiftc -O -parse-as-library -o "$app/Contents/MacOS/slotbar-pulse" "$src/SlotCore.swift" "$src/pulse.swift"
+# A second executable in Contents/MacOS is nested code: it's signed before the bundle around it.
+sign "$app/Contents/MacOS/slotbar-pulse"
 sign "$app"
 echo "$app"
