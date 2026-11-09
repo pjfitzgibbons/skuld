@@ -179,7 +179,7 @@ fi
 send_round
 
 # The PR's URL. There's no VS Code Pull Requests extension here to open it in; this is the
-# openUrl() seam's shell-side equivalent — printing it is all this script does. Opening it in a
+# showUrl() seam's shell-side equivalent — printing it is all this script does. Opening it in a
 # terminal browser is out of scope (see GUIDE.md).
 url=$(gh pr view "$branch" --json url --jq .url)
 echo "$url"

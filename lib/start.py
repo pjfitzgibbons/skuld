@@ -130,12 +130,11 @@ def expandHome(dir):
     return re.sub(r"^~(?=$|/)", str(Path.home()), dir)
 
 
-# Opt-in debug tracing (env PLAN_DEBUG=1): every run() call -- every aerospace/tmux/git/etc
+# Opt-in debug tracing (env PLAN_DEBUG=1): every run() call -- every code/osascript/tmux/git/etc
 # invocation in the whole tool goes through here -- prints its argv to stderr before running, and
-# its outcome (returned stdout, or the raised RuntimeError) after. Added to trace a focus-after-
-# Start/Open race (term.focusIssueWorkspace() swallows RuntimeError/OSError/ValueError with no
-# logging at all -- lib/term.py's own try/except), where static reading of the code couldn't say
-# which call (if any) was failing versus the window/workspace simply not being focusable yet.
+# its outcome (returned stdout, or the raised RuntimeError) after. The placer's best-effort steps
+# (SpacesPlacer.showUrl() and focus()) swallow their errors, so this is how to see which call
+# failed.
 def _debugEnabled():
     return os.environ.get("PLAN_DEBUG") == "1"
 

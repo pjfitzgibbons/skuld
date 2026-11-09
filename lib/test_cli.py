@@ -9,6 +9,7 @@
 # visible to cli.py immediately.
 #
 # Ported from lib/cli.test.js. Faithful, behavior-preserving port.
+import io
 import json
 import os
 import shutil
@@ -22,6 +23,7 @@ from lib import ship as ship_mod
 from lib import start as startLib
 from lib import term as term_mod
 from lib.cli import main, mergeRows, resolveDir, shellQuote
+from lib.placer import Placement
 
 
 # `start` and `open` are the same command (main() routes both to cmdStart -- a second Open on an
@@ -38,37 +40,33 @@ class CmdOpenTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmp)
         worktree = os.path.join(tmp, "repo.worktrees", key)
         os.makedirs(worktree)
-        cfg = {"issueStore": "/issues"}
+        cfg = {"issueStore": "/issues", "workspaceDir": os.path.join(tmp, "ws")}
+        placer = FakePlacer(Placement(False, "3", "Desktop 3"))
         with mock.patch.object(cli.config_mod, "load", return_value=cfg), mock.patch.object(
             cli, "jiraFrom", return_value=FakeJira()
-        ), mock.patch.object(term_mod, "sweepSlots"), mock.patch.object(
+        ), mock.patch.object(cli.placer_mod, "placerFrom", return_value=placer), mock.patch.object(
             startLib, "start", return_value={"dir": worktree, "notes": []}
-        ) as start, mock.patch.object(
-            term_mod, "openIssueWindow", return_value={"created": False, "workspace": "3"}
-        ) as openIssueWindow, mock.patch.object(
-            term_mod, "openUrl"
-        ) as openUrl, mock.patch.object(
-            term_mod, "focusIssueWorkspace"
-        ) as focus:
+        ) as start, mock.patch("builtins.print"):
             main(["open", key])
-        workspaceFile = os.path.join(tmp, "repo.worktrees", f"{key}.code-workspace")
+        workspaceFile = os.path.join(tmp, "ws", f"{key}.code-workspace")
         with open(workspaceFile, encoding="utf8") as f:
             settings = json.load(f)["settings"]
-        openIssueWindow.assert_called_once_with(key, workspaceFile, None, None)
-        focus.assert_called_once_with("3")
-        return {"start": start, "openUrl": openUrl, "settings": settings}
+        self.assertIn(("openWindow", key, workspaceFile), placer.calls)
+        self.assertEqual(placer.calls[-1], ("focus", "3", workspaceFile))
+        shown = [call for call in placer.calls if call[0] == "showUrl"]
+        return {"start": start, "shown": shown, "settings": settings}
 
     def test_open_on_a_sk_key_names_the_ticket_and_opens_no_browser(self):
         opened = self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
         self.assertEqual(opened["settings"]["plan.ticket"], "/issues/SK-0001-slug.md")
         self.assertIn("read /issues/SK-0001-slug.md first", opened["settings"]["plan.prompt"])
-        opened["openUrl"].assert_not_called()
+        self.assertEqual(opened["shown"], [])
 
     def test_open_on_a_jira_key_opens_its_url_and_has_no_ticket_tab(self):
         opened = self.runOpen("CIAM-1", None)
         self.assertNotIn("plan.ticket", opened["settings"])
         self.assertEqual(opened["settings"]["plan.prompt"], "Work on Jira CIAM-1")
-        self.assertEqual(opened["openUrl"].call_args.args[:2], ("https://cryoport.atlassian.net/browse/CIAM-1", "3"))
+        self.assertEqual(opened["shown"], [("showUrl", "https://cryoport.atlassian.net/browse/CIAM-1", "3")])
 
     def test_open_pads_a_sk_key_typed_without_its_zeros(self):
         class FakeJira:
@@ -77,13 +75,100 @@ class CmdOpenTests(unittest.TestCase):
 
         with mock.patch.object(cli, "jiraFrom", return_value=FakeJira()), mock.patch.object(
             cli, "writeIssueWorkspaceFile", return_value="/w/SK-0001.code-workspace"
-        ), mock.patch.object(term_mod, "sweepSlots"), mock.patch.object(
+        ), mock.patch.object(
+            cli.placer_mod, "placerFrom", return_value=FakePlacer(Placement(False, "3", "Desktop 3"))
+        ), mock.patch.object(
             startLib, "start", return_value={"dir": "/w/SK-0001", "notes": []}
-        ) as start, mock.patch.object(
-            term_mod, "openIssueWindow", return_value={"created": False, "workspace": "3"}
-        ), mock.patch.object(term_mod, "focusIssueWorkspace"):
+        ) as start, mock.patch("builtins.print"):
             main(["open", "SK-1"])
         self.assertEqual(start.call_args.args[2], "SK-0001")
+
+
+# The WindowPlacer port seen from Start and Open: a fake placer records what cmdStart asks of it,
+# so the order (sweep, open, show the URL, focus) and what's printed are checked with no window
+# server.
+class FakePlacer:
+    def __init__(self, placement):
+        self.placement = placement
+        self.calls = []
+
+    def sweep(self):
+        self.calls.append(("sweep",))
+
+    def openWindow(self, key, workspaceFile):
+        self.calls.append(("openWindow", key, workspaceFile))
+        return self.placement
+
+    def showUrl(self, url, placement):
+        self.calls.append(("showUrl", url, placement.slot))
+
+    def focus(self, placement, workspaceFile):
+        self.calls.append(("focus", placement.slot, workspaceFile))
+
+
+class CmdStartWithFakePlacerTests(unittest.TestCase):
+    def runStart(self, key, placement, ticket=None):
+        class FakeJira:
+            def browseUrl(self, key):
+                return ticket or f"https://cryoport.atlassian.net/browse/{key}"
+
+        placer = FakePlacer(placement)
+        out = io.StringIO()
+        with mock.patch.object(cli.config_mod, "load", return_value={"issueStore": "/issues"}), mock.patch.object(
+            cli, "jiraFrom", return_value=FakeJira()
+        ), mock.patch.object(cli.placer_mod, "placerFrom", return_value=placer), mock.patch.object(
+            cli, "writeIssueWorkspaceFile", return_value=f"/w/{key}.code-workspace"
+        ), mock.patch.object(startLib, "start", return_value={"dir": f"/w/{key}", "notes": []}), mock.patch(
+            "sys.stdout", out
+        ):
+            main(["start", key])
+        return placer.calls, out.getvalue()
+
+    def test_start_on_desktops_opens_then_focuses_and_says_where(self):
+        placement = Placement(True, "3", "Desktop 3")
+        calls, out = self.runStart("SK-0044", placement, "/issues/SK-0044-x.md")
+        self.assertEqual(
+            calls,
+            [("sweep",), ("openWindow", "SK-0044", "/w/SK-0044.code-workspace"), ("focus", "3", "/w/SK-0044.code-workspace")],
+        )
+        self.assertIn("Desktop 3 ready.", out)
+
+    def test_open_prints_the_placers_notes_such_as_a_rewritten_slot(self):
+        note = "SK-0044's window is on Desktop 4, not its slot's Desktop 3; the slot now says 4."
+        _, out = self.runStart("SK-0044", Placement(False, "4", "Desktop 4", [note]), "/issues/SK-0044-x.md")
+        self.assertIn(note, out)
+        self.assertIn("Desktop 4 ready.", out)
+
+    def test_a_jira_issue_hands_its_url_to_the_placer_before_focus(self):
+        calls, _ = self.runStart("CIAM-1", Placement(True, "5", "Desktop 5"))
+        self.assertEqual(calls[2], ("showUrl", "https://cryoport.atlassian.net/browse/CIAM-1", "5"))
+        self.assertEqual(calls[3][0], "focus")
+
+
+class IssueRowsSlotColumnTests(unittest.TestCase):
+    def test_the_slot_column_sits_after_status_and_is_blank_for_issues_without_one(self):
+        jira = [
+            {"id": "CIAM-1", "subject": "a", "status": "To Do"},
+            {"id": "CIAM-22", "subject": "b", "status": "To Do"},
+        ]
+
+        class FakeJira:
+            def list(self, jql=None):
+                return jira
+
+        class FakeFileIssues:
+            def __init__(self, settings=None):
+                pass
+
+            def list(self):
+                return []
+
+        with mock.patch.object(cli, "jiraFrom", return_value=FakeJira()), mock.patch.object(
+            cli.fileissues_mod, "FileIssues", FakeFileIssues
+        ):
+            rows = cli.issueRows({"issueStore": "/s"}, {"CIAM-22": "D3, window on D4"})
+        self.assertEqual(rows[0]["line"], "CIAM-1   To Do                    a")
+        self.assertEqual(rows[1]["line"], "CIAM-22  To Do  D3, window on D4  b")
 
 
 class ResolveDirTests(unittest.TestCase):

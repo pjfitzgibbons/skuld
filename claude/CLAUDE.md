@@ -1,8 +1,8 @@
 # jira-plan — repo instructions
 
 **Jira Plan** plans work in Jira Cloud (project CIAM, https://cryoport.atlassian.net — see
-GUIDE.md), with a VS Code front end (`plan/`, opening one VS Code window per issue on an Aerospace
-workspace) that starts, ships and finishes each issue. It does not use GitHub Issues; pull requests
+GUIDE.md), with a VS Code front end (`plan/`, opening one VS Code window per issue on its own macOS
+Desktop) that starts, ships and finishes each issue. It does not use GitHub Issues; pull requests
 are its one GitHub integration. Nothing is inherited from a parent directory's `CLAUDE.md` or
 settings: what this repo needs is here or in `.claude/`.
 
