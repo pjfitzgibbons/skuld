@@ -6,6 +6,7 @@ not wired into `plan`, and nothing here is tested.
 | File | What it does |
 |---|---|
 | `spaces.swift` | Reads Desktops, the active Space and each window's Space through the read-only SkyLight calls. `spaces [owner]` |
+| `place.sh` | Places an issue window by hand: ^N, `code -n`, wait for the new window by id, then `code <workspace>` so the screen ends on it. `place.sh <desktop> <workspace file>` |
 | `trial.sh` | Item 1: ^N, then `code -n` on a trial workspace, then reports the new window's Space. `trial.sh <n> <desktop> <delay>` |
 | `close-trial.sh` | Closes only the window titled `SK0043-trial-<n>`, by its AX close button, on its Desktop. |
 | `drag.swift`, `move-trial.sh` | Item 3: title-bar drag plus ^N to move a window (it worked 1 time in 13). |
