@@ -54,5 +54,40 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(config.issueStoreFrom({"issueStore": "/store"}), "/store")
 
 
+    def test_the_defaults_name_no_jira_site_project_or_jql(self):
+        defaults = config.defaults()
+        self.assertEqual(config.jiraProjects(defaults), [])
+        self.assertIsNone(defaults["baseUrl"])
+        self.assertIsNone(defaults["jql"])
+        self.assertNotIn("project", defaults)
+
+    def test_jiraProjects_are_the_jira_entrys_keys_in_order(self):
+        cfg = config.load(writeConfig({"jira": {"CIAM": {"repos": []}, "OPS": {"repos": []}}}))
+        self.assertEqual(config.jiraProjects(cfg), ["CIAM", "OPS"])
+
+    def test_jiraSettingsFrom_refuses_a_jira_entry_with_no_site(self):
+        with self.assertRaisesRegex(RuntimeError, 'the "jira" entry needs a site: add "baseUrl"'):
+            config.jiraSettingsFrom({**config.defaults(), "jira": {"CIAM": {}}})
+
+    def test_jiraSettingsFrom_runs_next_up_over_the_configured_projects(self):
+        cfg = {**config.defaults(), "jira": {"CIAM": {}, "OPS": {}}, "baseUrl": "https://jira.example"}
+        self.assertEqual(
+            config.jiraSettingsFrom(cfg),
+            {
+                "baseUrl": "https://jira.example",
+                "jql": "project in (CIAM, OPS) AND assignee = currentUser() AND statusCategory != Done ORDER BY Rank",
+                "netrcFile": None,
+            },
+        )
+
+    def test_a_configured_jql_wins_over_next_up(self):
+        cfg = {**config.defaults(), "jira": {"CIAM": {}}, "baseUrl": "https://jira.example", "jql": "key = CIAM-1"}
+        self.assertEqual(config.jiraSettingsFrom(cfg)["jql"], "key = CIAM-1")
+
+    def test_a_config_with_the_retired_project_key_loads_with_a_warning(self):
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            config.load(writeConfig({"project": "CIAM"}))
+        self.assertIn("project, which is no longer read", stderr.getvalue())
+
 if __name__ == "__main__":
     unittest.main()

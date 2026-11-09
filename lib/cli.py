@@ -15,7 +15,7 @@ from . import ship as ship_mod
 from . import slotbar as slotbar_mod
 from . import start as startLib
 from . import term as term_mod
-from .jira import KEY_RE, Jira
+from .jira import KEY_RE, Jira, projectOf
 
 
 # The client key's commands go through: FileIssues for a SK-<nnnn> key (lib/fileissues.py, user
@@ -24,19 +24,23 @@ from .jira import KEY_RE, Jira
 # (checkId() runs first), so dispatch is a plain "which class for this key", not a wrapping
 # router object: each returned client implements the same surface (list/issue/blockers/
 # statusTransitionId/transition/textComment/addComment/browseUrl/closeNote), so start.py/done.py/
-# ship.py need no branch of their own. key=None (the picker's own merged list, which has none)
-# always gets Jira, since FileIssues.list() is merged in separately (issueRows(), below).
+# ship.py need no branch of their own. key=None is the picker's Jira half (issueRows(), below),
+# asked for only when the config names Jira projects. A key whose project the config's `jira`
+# entry doesn't name is refused here, before any command changes anything.
 def jiraFrom(cfg, key=None):
     if key is not None and fileissues_mod.isFileBacked(key):
         return fileissues_mod.FileIssues({"dir": config_mod.issueStoreFrom(cfg)})
-    return Jira(
-        {
-            "baseUrl": cfg.get("baseUrl"),
-            "project": cfg.get("project"),
-            "jql": cfg.get("jql"),
-            "netrcFile": cfg.get("netrcFile"),
-        }
-    )
+    if key is not None:
+        refuseUnconfiguredProject(cfg, key)
+    return Jira(config_mod.jiraSettingsFrom(cfg))
+
+
+def refuseUnconfiguredProject(cfg, key):
+    project = projectOf(key)
+    if project not in config_mod.jiraProjects(cfg):
+        raise RuntimeError(
+            f'{key} is unknown on this Mac: {config_mod.CONFIG_FILE} has no "jira" entry naming {project}'
+        )
 
 
 # y/n on stdin, for Start's confirm(blockers) -- the terminal stand-in for the old modal dialog.
@@ -152,7 +156,8 @@ def mergeRows(jiraRows, skRows):
 
 
 # `plan list`/the picker's rows: Jira's JQL results and every open/in-progress SK file, merged by
-# mergeRows() (decision #3, 2026-11-05; `after:` interleaving, 2026-11-06).
+# mergeRows() (decision #3, 2026-11-05; `after:` interleaving, 2026-11-06). With no Jira projects
+# in the config there is no Jira half, and nothing reads the netrc file or calls Jira.
 #
 # Column alignment (2026-11-06): a plain `f'{id}\t{status}\t{subject}'` left every row's tab
 # stops wherever the terminal happened to put them, so columns drifted out of line as soon as ids
@@ -174,9 +179,8 @@ def mergeRows(jiraRows, skRows):
 # window is ("D3", or "D3, window on D4" when its window is elsewhere). With no slots at all there
 # is no column.
 def issueRows(cfg, slotLabels=None):
-    jiraRows = jiraFrom(cfg).list(cfg.get("jql"))
     skRows = fileissues_mod.FileIssues({"dir": config_mod.issueStoreFrom(cfg)}).list()
-    issues = mergeRows(jiraRows, skRows)
+    issues = mergeRows(jiraNextUp(cfg), skRows)
     slotLabels = slotLabels or {}
     columns = [lambda issue: issue["id"], lambda issue: issue["status"]]
     if slotLabels:
@@ -190,6 +194,12 @@ def issueRows(cfg, slotLabels=None):
         row["line"] = "  ".join([*padded, issue["subject"]])
         rows.append(row)
     return rows
+
+
+def jiraNextUp(cfg):
+    if not config_mod.jiraProjects(cfg):
+        return []
+    return jiraFrom(cfg).list()
 
 
 # `plan list`: the picker's rows, printed plainly -- already column-aligned (issueRows()).

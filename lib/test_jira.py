@@ -219,7 +219,7 @@ class JiraTests(unittest.TestCase):
             cleanup()
 
     def test_blockers_keeps_only_unresolved_blocks_links_naming_inward_issue(self):
-        jira = Jira()
+        jira = Jira({"baseUrl": "https://jira.example"})
         issue = {
             "fields": {
                 "issuelinks": [

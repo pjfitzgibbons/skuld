@@ -60,7 +60,8 @@ macOS only. In order:
    on `PATH`, fzf, and Xcode's Command Line Tools for `swiftc` (steps 12 and 13). A menu bar for
    the Desktops is optional: SlotBar (step 13) or SketchyBar.
 
-2. **The Jira token in `~/.netrc`**, never in a tracked file or an env var:
+2. **The Jira token in `~/.netrc`**, on a Mac that works Jira projects (step 5), never in a
+   tracked file or an env var:
 
    ```text
    machine cryoport.atlassian.net
@@ -94,11 +95,16 @@ macOS only. In order:
    {
      "issueStore": "~/issues",
      "checkouts": ["~/programming/skuld", "~/work/cryo-gitops-github"],
+     "baseUrl": "https://cryoport.atlassian.net",
      "jira": {
        "CIAM": { "repos": ["git@github.com:cryoport/cryo-gitops-github.git"] }
      }
    }
    ```
+
+   Jira is on only when `jira` names a project, and then `baseUrl` names its site. A Mac with no
+   `jira` entry never reads `~/.netrc` or calls Jira: Next up is the store's tickets alone, and a
+   Jira key is refused, naming the missing entry.
 
    `checkouts` lists this Mac's main checkouts. Each is matched to its project by its `origin`
    remote, so no path is tied to a project by hand
@@ -106,7 +112,7 @@ macOS only. In order:
 
    | Key | Default | What it sets |
    | --- | --- | --- |
-   | `jql` | `project = CIAM AND assignee = currentUser() AND statusCategory != Done ORDER BY Rank` | The Jira half of Next up |
+   | `jql` | `project in (<the jira entry's projects>) AND assignee = currentUser() AND statusCategory != Done ORDER BY Rank` | The Jira half of Next up |
    | `typeMap` | Story and Task `feat`, Bug `fix` | Issue type to branch prefix, merged over the default |
    | `pr` | `~/.local/bin/pr` | The `pr` that Ship runs, by path |
    | `disposable` | `done.py`'s list | Ignored files Done may delete with a worktree |
@@ -116,7 +122,7 @@ macOS only. In order:
    | `spacesHelper` | `macos/build/skuld-spaces` in skuld | The helper `bin/build-spaces` builds; `plan` builds the default one itself when it is missing or older than its source |
    | `reservedDesktops` | `[1]` | Desktops `plan` never takes for an issue |
    | `browserApp` | `Brave Browser` | The browser a Jira issue's page opens in, in a new window on the issue's Desktop |
-   | `netrcFile`, `baseUrl` | `~/.netrc`, `https://cryoport.atlassian.net` | Where the Jira token and site are |
+   | `netrcFile` | `~/.netrc` | Where the Jira token is, under `machine <baseUrl's host>` |
 
 6. **The skill.** Link `skills/jira-issues/` to `~/.claude/skills/jira-issues/`, so every repo
    shares one copy.
