@@ -36,7 +36,7 @@ Jira reads for picking an issue or checking its state go through the `jira` CLI'
 
 ## Picking up an issue
 
-Peter presses **Start** on the issue's row in `plan`'s Next up list. It makes the branch and its worktree, transitions the issue to "In Progress" (by looking up the transition by its target status name, never a hardcoded id, and reading the issue back to confirm the move took), and opens the worktree in a new Ghostty window with Claude Code beside it. Then, before any code:
+Person presses **Start** on the issue's row in `plan`'s Next up list. It makes the branch and its worktree, transitions the issue to "In Progress" (by looking up the transition by its target status name, never a hardcoded id, and reading the issue back to confirm the move took), and opens the worktree in the issue's own VS Code window, with the issue in one tab and Claude Code in a terminal beside it. Then, before any code:
 
 1. **Read the issue**, with `jira-get /rest/api/3/issue/<KEY>`.
 2. **Check its description** against the issue outline, Task, Guardrails, Lenses and Done, plus whatever the repo's `docs/agents/technical-writer.md` adds. Save a plain-text/Markdown rendering of the description to a file and run, from inside the repo so it finds that file:
@@ -48,7 +48,7 @@ Peter presses **Start** on the issue's row in `plan`'s Next up list. It makes th
 
 ## Shipping
 
-When the work is done and tested, write `.tmp/<KEY>/commit.txt` (ending `Assisted-by: Claude:<model>`, subject ending `(<KEY>)`) and `.tmp/<KEY>/pr-body.md`, plus any replies and ticks below. `plan` opens them as tabs/tmux panes. Peter reviews them and presses **Ship**, which checks them and runs `pr <KEY>`. Jira's dev panel picks up the PR automatically from the branch name and PR title; nothing writes a Jira field for it. Ship again runs `pr` again, for the next round. After the merge, **Done** cleans up the worktree/branch, posts an ADF comment summarizing the work, and prints "Close `<KEY>` in Jira" with the browse URL — it never transitions the issue itself.
+When the work is done and tested, write `.tmp/<KEY>/commit.txt` (ending `Assisted-by: Claude:<model>`, subject ending `(<KEY>)`) and `.tmp/<KEY>/pr-body.md`, plus any replies and ticks below. Person reviews them in the issue window and presses **Ship**, which checks them and runs `pr <KEY>` in one of its terminals. Jira's dev panel picks up the PR automatically from the branch name and PR title; nothing writes a Jira field for it. Ship again runs `pr` again, for the next round. After the merge, **Done** cleans up the worktree/branch, posts an ADF comment summarizing the work, and prints "Close `<KEY>` in Jira" with the browse URL — it never transitions the issue itself.
 
 ## Drafting a new issue
 
