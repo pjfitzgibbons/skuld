@@ -1,0 +1,9 @@
+spaces
+drag
+ws/
+menubar/slotbar
+menubar/pulse
+menubar/slots
+menubar/*.code-workspace
+menubar/SlotBar.app/Contents/MacOS/
+menubar/SlotBar.app/Contents/_CodeSignature/
