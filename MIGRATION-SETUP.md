@@ -93,20 +93,18 @@ The apply also brings the rest of the dotfiles up to date:
 
 - SketchyBar's bar shows macOS Desktops instead of AeroSpace workspaces, labelled with the issue
   on each one, and `plugins/workspaces.sh` is removed.
-- The karabiner rule that turns Left Ctrl into ctrl+opt for AeroSpace is personal-only, so Left
-  Ctrl is plain Control again here.
-- `EDITOR` is `code --wait`, since nvim isn't installed.
+- AeroSpace and Neovim are gone from the dotfiles: the karabiner rule that turned Left Ctrl into
+  ctrl+opt is removed, and `.chezmoiremove` deletes `~/.aerospace.toml`, `~/.config/nvim` and
+  `aerospace-keys`. §8 uninstalls the apps.
+- `EDITOR` is `code --wait`, and `tmux-open-path` (`\ f`, opt-click) opens paths in VS Code.
 - VS Code gets tmux-style pane keys in `keybindings.json` (opt-hjkl to move, cmd-d to split),
   opens Markdown in the plain editor, and drops gh-plan's `plan.checkouts` settings.
-
-`.aerospace.toml`, `~/.config/nvim` and `aerospace-keys` still deploy, unused, because the dotfiles
-send every file to both Macs.
 
 The apply then runs three scripts:
 
 | Script | Does |
 | --- | --- |
-| `10-brew-bundle` | `brew bundle --global`: the shared Brewfile plus `Brewfile.work`. The Brewfile now includes `python`, since `plan` needs Python 3.10 or later and `/usr/bin/python3` is 3.9. AeroSpace and Neovim are in `Brewfile.personal` now, so it doesn't install them here |
+| `10-brew-bundle` | `brew bundle --global`: the shared Brewfile plus `Brewfile.work`. The Brewfile now includes `python`, since `plan` needs Python 3.10 or later and `/usr/bin/python3` is 3.9. It no longer lists AeroSpace or Neovim |
 | `20-setup-mac` | Sets the Nerd Font in iTerm and Terminal.app |
 | `30-skuld` | Clones `skuld` and `issues` into `~/programming/skuld-project/`, writes `skuld.code-workspace` and a starting `~/.config/skuld/config.json`, and imports skuld's gh aliases. It adds only what's missing |
 
@@ -285,7 +283,7 @@ code --uninstall-extension pjfitzgibbons.worktask
 
 ```sh
 brew uninstall --cask aerospace
-brew uninstall neovim          # optional; nothing here uses it
+brew uninstall neovim
 rm -f ~/.cache/plan/workspaces # slots naming AeroSpace workspaces, from earlier plans
 ```
 
