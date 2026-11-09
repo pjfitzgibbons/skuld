@@ -347,7 +347,8 @@ prompt names the tracker: a Jira key, or the ticket file's path.
 
 Last, Start and Open switch to the issue's slot and focus the issue window with Claude's terminal in
 front, so the command finishes with the human at the issue's Claude, by running
-`code <workspace file>`. This runs after `showUrl()`. It is best-effort, like the SketchyBar trigger.
+`code <workspace file>`. This runs after `showUrl()`. It is best-effort: if it fails, Start or Open
+still succeeds and says nothing.
 
 <a id="ship"></a>
 
