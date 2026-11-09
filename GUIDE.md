@@ -134,7 +134,19 @@ macOS only. In order:
 9. **Claude's settings in a configured repo.** Each configured repo gets skuld's `claude/` as its
    `.claude/` (settings and hooks) and `claude/CLAUDE.md` as its `CLAUDE.md` (§9).
 
-10. **The LaunchAgents.** `issue-watch` watches the store and commits and pushes it, and
+10. **The plan-window extension.** Link skuld's `vscode/plan-window/` into VS Code's extensions,
+    then restart VS Code:
+
+    ```sh
+    ln -s "$(pwd)/vscode/plan-window" ~/.vscode/extensions/skuld.plan-window-0.0.1
+    ```
+
+    When an issue window opens, it opens the ticket in a tab, starts Claude with Start's prompt in
+    a terminal beside it, and opens a shell in the panel (§4). It is disabled in Restricted Mode,
+    so trust the folder that holds each configured repo with its `<repo>.worktrees/`, and the
+    ticket store's folder.
+
+11. **The LaunchAgents.** `issue-watch` watches the store and commits and pushes it, and
     the local server serves issue pages (§7). Both start at login and restart if they stop.
 
 ## 3. Commands

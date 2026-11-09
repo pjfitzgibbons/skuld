@@ -9,6 +9,7 @@
 # visible to cli.py immediately.
 #
 # Ported from lib/cli.test.js. Faithful, behavior-preserving port.
+import json
 import os
 import shutil
 import subprocess
@@ -24,56 +25,65 @@ from lib.cli import main, mergeRows, resolveDir, shellQuote
 
 
 # `start` and `open` are the same command (main() routes both to cmdStart -- a second Open on an
-# issue that already has a worktree is just Start finding "nothing to do" and reusing it), so
-# there is no separate cmdOpen to give its own file-backed branch: cmdStart's is the only one, and
-# it already runs on an Open. This test proves exactly that "Open on a SK key opens the ticket
-# pane" case, calling cmdStart through main(["open", ...]) rather than main(["start", ...]), on a
-# key fileissues.isFileBacked() reports True for, with term.openIssueWorkspace() already reporting
-# an existing session/workspace (created: False) -- the idempotent case a second Open on the same
-# issue hits.
-class CmdOpenFileBackedTests(unittest.TestCase):
-    def test_open_on_a_sk_key_opens_the_ticket_pane(self):
+# issue that already has a worktree is just Start finding "nothing to do" and reusing it), so these
+# run cmdStart through main(["open", ...]) with start.start() and the window calls stubbed, and
+# check the workspace file it writes.
+class CmdOpenTests(unittest.TestCase):
+    def runOpen(self, key, ticket):
         class FakeJira:
             def browseUrl(self, key):
-                return "/repo/issues/SK-0001-slug.md"
+                return ticket or f"https://cryoport.atlassian.net/browse/{key}"
 
-        with mock.patch.object(cli, "jiraFrom", return_value=FakeJira()), mock.patch.object(
-            term_mod, "sweepSlots"
-        ), mock.patch.object(
-            startLib, "start", return_value={"dir": "/repo.worktrees/SK-0001", "notes": []}
-        ), mock.patch.object(
-            term_mod, "openIssueWorkspace", return_value={"created": False, "workspace": "3"}
-        ) as openIssueWorkspace, mock.patch.object(
-            term_mod, "openTicketPane"
-        ) as openTicketPane, mock.patch.object(
+        tmp = tempfile.mkdtemp(prefix="skuld-open-")
+        self.addCleanup(shutil.rmtree, tmp)
+        worktree = os.path.join(tmp, "repo.worktrees", key)
+        os.makedirs(worktree)
+        cfg = {"issueStore": "/issues"}
+        with mock.patch.object(cli.config_mod, "load", return_value=cfg), mock.patch.object(
+            cli, "jiraFrom", return_value=FakeJira()
+        ), mock.patch.object(term_mod, "sweepSlots"), mock.patch.object(
+            startLib, "start", return_value={"dir": worktree, "notes": []}
+        ) as start, mock.patch.object(
+            term_mod, "openIssueWindow", return_value={"created": False, "workspace": "3"}
+        ) as openIssueWindow, mock.patch.object(
             term_mod, "openUrl"
         ) as openUrl, mock.patch.object(
             term_mod, "focusIssueWorkspace"
-        ):
-            main(["open", "SK-0001"])
-        openIssueWorkspace.assert_called_once()
-        openTicketPane.assert_called_once_with("SK-0001", "/repo.worktrees/SK-0001", "/repo/issues/SK-0001-slug.md")
-        openUrl.assert_not_called()  # a SK key has no browse URL to open in a browser
+        ) as focus:
+            main(["open", key])
+        workspaceFile = os.path.join(tmp, "repo.worktrees", f"{key}.code-workspace")
+        with open(workspaceFile, encoding="utf8") as f:
+            settings = json.load(f)["settings"]
+        openIssueWindow.assert_called_once_with(key, workspaceFile, None, None)
+        focus.assert_called_once_with("3")
+        return {"start": start, "openUrl": openUrl, "settings": settings}
+
+    def test_open_on_a_sk_key_names_the_ticket_and_opens_no_browser(self):
+        opened = self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
+        self.assertEqual(opened["settings"]["plan.ticket"], "/issues/SK-0001-slug.md")
+        self.assertIn("read /issues/SK-0001-slug.md first", opened["settings"]["plan.prompt"])
+        opened["openUrl"].assert_not_called()
+
+    def test_open_on_a_jira_key_opens_its_url_and_has_no_ticket_tab(self):
+        opened = self.runOpen("CIAM-1", None)
+        self.assertNotIn("plan.ticket", opened["settings"])
+        self.assertEqual(opened["settings"]["plan.prompt"], "Work on Jira CIAM-1")
+        self.assertEqual(opened["openUrl"].call_args.args[:2], ("https://cryoport.atlassian.net/browse/CIAM-1", "3"))
 
     def test_open_pads_a_sk_key_typed_without_its_zeros(self):
         class FakeJira:
             def browseUrl(self, key):
-                return "/repo/issues/SK-0001-slug.md"
+                return "/issues/SK-0001-slug.md"
 
         with mock.patch.object(cli, "jiraFrom", return_value=FakeJira()), mock.patch.object(
-            term_mod, "sweepSlots"
-        ), mock.patch.object(
-            startLib, "start", return_value={"dir": "/repo.worktrees/SK-0001", "notes": []}
+            cli, "writeIssueWorkspaceFile", return_value="/w/SK-0001.code-workspace"
+        ), mock.patch.object(term_mod, "sweepSlots"), mock.patch.object(
+            startLib, "start", return_value={"dir": "/w/SK-0001", "notes": []}
         ) as start, mock.patch.object(
-            term_mod, "openIssueWorkspace", return_value={"created": False, "workspace": "3"}
-        ), mock.patch.object(
-            term_mod, "openTicketPane"
-        ) as openTicketPane, mock.patch.object(
-            term_mod, "focusIssueWorkspace"
-        ):
+            term_mod, "openIssueWindow", return_value={"created": False, "workspace": "3"}
+        ), mock.patch.object(term_mod, "focusIssueWorkspace"):
             main(["open", "SK-1"])
         self.assertEqual(start.call_args.args[2], "SK-0001")
-        openTicketPane.assert_called_once_with("SK-0001", "/repo.worktrees/SK-0001", "/repo/issues/SK-0001-slug.md")
 
 
 class ResolveDirTests(unittest.TestCase):

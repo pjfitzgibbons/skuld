@@ -46,3 +46,17 @@ test("the ticket opens only when no tab has it, and never for a Jira issue", () 
   assert.equal(windowPlan.ticketNeedsOpening(plan, [plan.ticket]), false);
   assert.equal(windowPlan.ticketNeedsOpening({ ...plan, ticket: null }, []), false);
 });
+
+test("the shell terminal is a login shell in the worktree, carrying the key", () => {
+  const options = windowPlan.shellTerminalOptions(plan, "/bin/bash");
+  assert.equal(options.name, "Shell SK-9");
+  assert.equal(options.cwd, plan.worktree);
+  assert.deepEqual(options.shellArgs, ["-l"]);
+  assert.deepEqual(options.env, { PLAN_KEY: "SK-9" });
+});
+
+test("an existing shell terminal is found by name, apart from Claude's", () => {
+  const terminals = [{ name: "Claude SK-9" }, { name: "Shell SK-9" }];
+  assert.equal(windowPlan.findShellTerminal(plan, terminals), terminals[1]);
+  assert.equal(windowPlan.findShellTerminal(plan, [{ name: "Claude SK-9" }]), undefined);
+});

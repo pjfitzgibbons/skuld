@@ -1,6 +1,6 @@
-// When an issue's window opens, make sure its ticket is in a tab in the first editor group and its
-// Claude terminal is running in a second group beside it, then focus Claude. A window without
-// plan.key is left alone.
+// When an issue's window opens, make sure its ticket is in a tab in the first editor group, its
+// Claude terminal is running in a second group beside it and a shell waits in the panel, then focus
+// Claude. A window without plan.key is left alone.
 const vscode = require("vscode");
 const windowPlan = require("./plan");
 
@@ -17,6 +17,7 @@ async function setUpIssueWindow() {
   const plan = windowPlan.readPlan((name) => settings.get(name));
   if (!plan) return;
   await openTicketIfClosed(plan);
+  showShellTerminal(plan);
   showClaudeTerminal(plan);
 }
 
@@ -35,11 +36,22 @@ function showClaudeTerminal(plan) {
   terminal.show(false);
 }
 
+function showShellTerminal(plan) {
+  const terminal =
+    windowPlan.findShellTerminal(plan, vscode.window.terminals) ||
+    vscode.window.createTerminal(windowPlan.shellTerminalOptions(plan, userShell()));
+  terminal.show(true);
+}
+
 function createClaudeTerminal(plan) {
   return vscode.window.createTerminal({
-    ...windowPlan.claudeTerminalOptions(plan, vscode.env.shell || "/bin/bash"),
+    ...windowPlan.claudeTerminalOptions(plan, userShell()),
     location: { viewColumn: vscode.ViewColumn.Two },
   });
+}
+
+function userShell() {
+  return vscode.env.shell || "/bin/bash";
 }
 
 function openFilePaths() {

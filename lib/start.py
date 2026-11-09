@@ -352,7 +352,7 @@ def mainCheckout(issue, checkouts, cwd, action="Start", typeMap=None, pickRepo=N
 # Start issue key, or reopen its worktree. Safe to repeat: each step runs only when it has something
 # to do. confirm(blockers) is asked only before a new worktree; false stops with nothing changed.
 # handOff(result), when given, is the last step of setup, so a handoff that fails runs setup again
-# (it now opens the terminal: a new Ghostty window on its own Aerospace workspace, running tmux).
+# (cmdStart opens the issue window after start() returns instead, so it passes none).
 # Returns { dir, branch, created, started, notes }, or None when Peter said no. started: this Start
 # finished the worktree's setup, here or after an earlier one stopped part way.
 def start(jira, checkouts, key, confirm, handOff=None, typeMap=None, cwd=None, pickRepo=None):

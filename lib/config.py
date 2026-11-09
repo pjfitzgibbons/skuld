@@ -4,6 +4,7 @@
 # Ported from lib/config.js. Faithful, behavior-preserving port: no change in logic.
 import json
 import os
+import sys
 
 from .jira import BASE_URL, DEFAULT_JQL, DEFAULT_PROJECT
 from .start import DEFAULT_TYPE_MAP
@@ -64,8 +65,6 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #   project        The default Jira project key, used where none is otherwise known (e.g.
 #                  resolving a bare key typed without one). Default: jira.py's DEFAULT_PROJECT
 #                  ("CIAM").
-#   ghosttyApp     Path to the Ghostty.app bundle term.py launches new windows from. Default:
-#                  "/Applications/Ghostty.app".
 #   aerospaceConfig Path to the Aerospace config whose "# Workspaces: ..." comment names every
 #                  workspace an Aerospace hotkey already targets; term.py's freeWorkspace() picks
 #                  the first workspace this doesn't name and that has no windows. Default:
@@ -98,7 +97,6 @@ def defaults():
         "netrcFile": None,
         "baseUrl": BASE_URL,
         "project": DEFAULT_PROJECT,
-        "ghosttyApp": "/Applications/Ghostty.app",
         "aerospaceConfig": "~/.aerospace.toml",
         "slotsFile": "~/.cache/plan/workspaces",
         "browserApp": "Brave Browser",
@@ -125,12 +123,24 @@ def load(file=None):
     except json.JSONDecodeError as error:
         raise RuntimeError(f"{file} isn't valid JSON: {error}") from error
     refuseRetiredKeys(parsed, file)
+    warnIgnoredKeys(parsed, file)
     return withExpandedStore({**defaults(), **parsed})
 
 
 def refuseRetiredKeys(parsed, file):
     if RETIRED_STORE_KEY in parsed:
         raise RuntimeError(f"{file} sets {RETIRED_STORE_KEY}, which is now issueStore; rename the key")
+
+
+# Keys a config may still set from an earlier front end; they're read by nothing now, so a config
+# that sets one still loads, with a warning.
+IGNORED_KEYS = ("ghosttyApp",)
+
+
+def warnIgnoredKeys(parsed, file):
+    for key in IGNORED_KEYS:
+        if key in parsed:
+            print(f"{file} sets {key}, which is no longer read; remove it", file=sys.stderr)
 
 
 def withExpandedStore(cfg):
