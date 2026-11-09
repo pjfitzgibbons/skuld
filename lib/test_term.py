@@ -123,6 +123,16 @@ class IssueWorkspaceFileTests(unittest.TestCase):
     def test_the_file_sits_in_the_workspace_folder_named_for_the_issue(self):
         self.assertEqual(term.workspaceFilePath("SK-0030", "/cache/ws"), "/cache/ws/SK-0030.code-workspace")
 
+    def test_an_issue_with_a_legacy_file_keeps_it_so_its_open_window_is_reused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = os.path.join(tmp, "repo.worktrees", "SK-0030")
+            workspaceDir = os.path.join(tmp, "ws")
+            self.assertEqual(term.issueWorkspaceFilePath("SK-0030", worktree, workspaceDir), term.workspaceFilePath("SK-0030", workspaceDir))
+            legacy = term.legacyWorkspaceFilePath(worktree, "SK-0030")
+            os.makedirs(os.path.dirname(legacy))
+            open(legacy, "w").close()
+            self.assertEqual(term.issueWorkspaceFilePath("SK-0030", worktree, workspaceDir), legacy)
+
     def test_removing_takes_the_file_and_the_legacy_one_beside_the_worktree(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspaceDir = os.path.join(tmp, "ws")

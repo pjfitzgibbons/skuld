@@ -77,12 +77,10 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #                  it's missing or older than its source.
 #   reservedDesktops Desktop numbers Start never takes for an issue. Default: [1].
 #   browserApp     The browser SpacesPlacer.showUrl() opens a Jira issue's URL in -- a name `open`
-#                  resolves, not necessarily a path. On the issue's Desktop, the URL opens as a new
-#                  tab in a browserBundleId window already there (`open -a`), otherwise in a new
-#                  window (`open -na ... --args --new-window`). Default: "Brave Browser" (user
-#                  decision 2026-11-05: never a bare `open <url>`, never a terminal's link-click).
-#   browserBundleId The browser's bundle id, used to find its windows on the issue's Desktop.
-#                  Default: "com.brave.Browser".
+#                  resolves, not necessarily a path. The URL opens in a new window on the issue's
+#                  Desktop (`open -na ... --args --new-window`); a tab would go to the browser's
+#                  last-used window, on any Desktop. Default: "Brave Browser" (user decision
+#                  2026-11-05: never a bare `open <url>`, never a terminal's link-click).
 #   issueStore     The issue store's checkout: the folder of SK-<nnnn> ticket files
 #                  (lib/fileissues.py's FileIssues), its own git repo, e.g.
 #                  "~/programming/skuld-project/issues". `~` is expanded. Default: None -- the
@@ -105,7 +103,6 @@ def defaults():
         "spacesHelper": None,
         "reservedDesktops": [1],
         "browserApp": "Brave Browser",
-        "browserBundleId": "com.brave.Browser",
         "issueStore": None,
     }
 
@@ -139,7 +136,7 @@ def refuseRetiredKeys(parsed, file):
 
 # Keys a config may still set from an earlier front end; they're read by nothing now, so a config
 # that sets one still loads, with a warning.
-IGNORED_KEYS = ("ghosttyApp", "aerospaceConfig", "windowPlacer")
+IGNORED_KEYS = ("ghosttyApp", "aerospaceConfig", "windowPlacer", "browserBundleId")
 
 
 def warnIgnoredKeys(parsed, file):

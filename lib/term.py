@@ -92,6 +92,16 @@ def workspaceFilePath(key, workspaceDir=None):
     return os.path.join(expandHome(workspaceDir or DEFAULT_WORKSPACE_DIR), f"{key}.code-workspace")
 
 
+# The file Start and Open write and run `code` on. VS Code knows a window by its workspace file's
+# path, so an issue whose legacy file still exists keeps it until Done deletes it: a new path would
+# open a second window beside the one already open.
+def issueWorkspaceFilePath(key, worktree, workspaceDir=None):
+    legacy = legacyWorkspaceFilePath(worktree, key)
+    if os.path.exists(legacy):
+        return legacy
+    return workspaceFilePath(key, workspaceDir)
+
+
 # Where Start wrote the file before it moved to workspaceDir: beside the worktree, in <repo>.worktrees/.
 def legacyWorkspaceFilePath(worktree, key):
     return os.path.join(os.path.dirname(worktree), f"{key}.code-workspace")

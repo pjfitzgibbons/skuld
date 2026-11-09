@@ -271,7 +271,7 @@ def claudePrompt(key, ticket):
 
 
 def writeIssueWorkspaceFile(cfg, key, worktree, ticket):
-    path = term_mod.workspaceFilePath(key, cfg.get("workspaceDir"))
+    path = term_mod.issueWorkspaceFilePath(key, worktree, cfg.get("workspaceDir"))
     workspace = term_mod.issueWorkspace(
         key, worktree, config_mod.issueStoreFrom(cfg), claudePrompt(key, ticket), ticket
     )

@@ -46,7 +46,7 @@ class SpacesUnknown(RuntimeError):
 @dataclass
 class Snapshot:
     desktops: list  # Desktop numbers, in ^N order
-    showing: int  # the Desktop on screen, or None
+    showing: set  # the Desktops on screen, one per display when displays have separate Spaces
     windows: dict  # window id -> Desktop number, or None when not on a numbered Desktop
     front: int = None  # the app's frontmost window on screen, or None
 
@@ -66,7 +66,7 @@ def parseSnapshot(text):
     if "unknown" in data:
         raise SpacesUnknown(f"can't read Desktops: the SkyLight call {data['unknown']} is missing, so the Desktop is unknown")
     desktops = [d["number"] for d in data["desktops"]]
-    showing = next((d["number"] for d in data["desktops"] if d["showing"]), None)
+    showing = {d["number"] for d in data["desktops"] if d["showing"]}
     windows = {w["id"]: w["desktop"] for w in data["windows"]}
     return Snapshot(desktops, showing, windows, data.get("front"))
 
@@ -108,6 +108,27 @@ def shortcutFrom(parameters):
     return Shortcut(keyCode, [name for bit, name in MODIFIERS.items() if modifierMask & bit])
 
 
+# The newest window id that wasn't there before, or None.
+def newWindow(snapshot, before):
+    added = sorted(snapshot.windowIds() - before.windowIds())
+    return added[-1] if added else None
+
+
+# `code` brought an open window forward: the target Desktop was switched away from, or (with a
+# Desktop per display) the frontmost window on screen changed.
+def broughtForward(snapshot, before, desktop):
+    if snapshot.front not in snapshot.windows:
+        return False
+    return desktop not in snapshot.showing or snapshot.front != before.front
+
+
+def offTheDesktops(key):
+    return (
+        f"{key}'s window isn't on a numbered Desktop (it may be full screen): "
+        f"take it out of full screen, then run: plan open {key}"
+    )
+
+
 class SpacesPlacer:
     def __init__(self, cfg):
         self.slotsFile = cfg.get("slotsFile")
@@ -115,7 +136,6 @@ class SpacesPlacer:
         self.helper = expandHome(cfg.get("spacesHelper") or DEFAULT_HELPER)
         self.reserved = {int(d) for d in cfg.get("reservedDesktops") or []}
         self.browserApp = cfg.get("browserApp") or "Brave Browser"
-        self.browserBundleId = cfg.get("browserBundleId") or "com.brave.Browser"
         self.windowWaitTries = 40
         self.windowWaitMs = 150
 
@@ -145,17 +165,14 @@ class SpacesPlacer:
         return self.placeWindow(key, workspaceFile, snapshot)
 
     # The URL is printed first, so it stands on its own if anything after fails. Then the browser
-    # opens it on the issue's Desktop: as a tab in a browser window already there, else in a new
-    # window, which opens on the showing Desktop. Every step past the print is best-effort.
+    # opens it in a new window on the issue's Desktop, the one showing after the switch. A tab
+    # would go to the browser's last-used window, which can be on any Desktop. Every step past the
+    # print is best-effort.
     def showUrl(self, url, placement):
         print(url)
         try:
-            desktop = int(placement.slot)
-            self.switchTo(desktop, self.readShortcuts())
-            if self.browserWindowOn(desktop):
-                run("open", ["-a", self.browserApp, url], os.getcwd())
-            else:
-                run("open", ["-na", self.browserApp, "--args", "--new-window", url], os.getcwd())
+            self.switchTo(int(placement.slot), self.readShortcuts())
+            run("open", ["-na", self.browserApp, "--args", "--new-window", url], os.getcwd())
         except (RuntimeError, OSError, ValueError, KeyError):
             pass
 
@@ -180,7 +197,9 @@ class SpacesPlacer:
     def reuseWindow(self, key, windowId, snapshot):
         slot = term.lookupSlot(key, self.slotsFile)
         actual = snapshot.desktopOf(windowId)
-        if actual is None or str(actual) == slot:
+        if actual is None:
+            raise RuntimeError(offTheDesktops(key))
+        if str(actual) == slot:
             return Placement(False, slot, f"Desktop {slot}", [])
         moved = f"{key}'s window is on Desktop {actual}, not its slot's Desktop {slot}"
         return self.claimDesktop(key, actual, False, moved)
@@ -193,12 +212,15 @@ class SpacesPlacer:
         byHand = f"Switch to Desktop {desktop} and open it by hand: code {workspaceFile}"
         with term.step(f"switching to Desktop {desktop}", byHand):
             self.switchTo(desktop, shortcuts)
+            before = self.readSpaces()
         with term.step("opening the issue's VS Code window", byHand):
             run("code", [workspaceFile], os.getcwd())
         with term.step("finding the issue's VS Code window", f"Find it with: code {workspaceFile}"):
-            windowId, landed, adopted = self.issueWindow(snapshot.windowIds(), desktop)
+            windowId, landed, adopted = self.issueWindow(before, desktop)
         self.recordWindow(key, windowId)
-        if landed is None or (landed == desktop and not adopted):
+        if landed is None:
+            raise RuntimeError(offTheDesktops(key))
+        if landed == desktop and not adopted:
             return self.claimDesktop(key, desktop, True, None)
         if adopted:
             return self.claimDesktop(key, landed, False, f"{key}'s window was already open on Desktop {landed}")
@@ -264,36 +286,35 @@ class SpacesPlacer:
             )
 
     # Sends ^N and waits for the Desktop to show, so the `code` that follows opens its window there.
-    # A switch that never shows is left for the window-finding step to report where it landed.
+    # A Desktop that never shows stops here, before `code` opens a window on the wrong one.
     def switchTo(self, desktop, shortcuts):
-        if self.readSpaces().showing == desktop:
+        if desktop in self.readSpaces().showing:
             return
         run("osascript", ["-e", shortcuts[desktop].appleScript()], os.getcwd())
         for _ in range(self.windowWaitTries):
-            if self.readSpaces().showing == desktop:
+            if desktop in self.readSpaces().showing:
                 return
             self.pause()
+        raise RuntimeError(f"Desktop {desktop} didn't show within {self.waitSeconds():g}s of its shortcut")
 
-    # (window id, its Desktop, adopted) for the window `code` brought up. A new id is a new window.
-    # With no new id, a switch away from desktop means `code` brought forward a window that was
-    # already open, and the frontmost one on screen is it.
+    # (window id, its Desktop, adopted) for the window `code` brought up, given the snapshot taken
+    # just before it ran. A new id is a new window, taken once its Desktop is known. With no new id,
+    # `code` brought forward a window that was already open, and the frontmost one on screen is it.
     def issueWindow(self, before, desktop):
         for _ in range(self.windowWaitTries):
             snapshot = self.readSpaces()
-            added = sorted(snapshot.windowIds() - before)
-            if added:
-                return added[-1], snapshot.desktopOf(added[-1]), False
-            if self.broughtForward(snapshot, desktop):
+            added = newWindow(snapshot, before)
+            if added is not None and snapshot.desktopOf(added) is not None:
+                return added, snapshot.desktopOf(added), False
+            if added is None and broughtForward(snapshot, before, desktop):
                 return snapshot.front, snapshot.desktopOf(snapshot.front), True
             self.pause()
-        seconds = self.windowWaitTries * self.windowWaitMs / 1000
-        raise RuntimeError(f"no new VS Code window showed up within {seconds:g}s, and none was brought forward")
+        if added is not None:
+            return added, None, False
+        raise RuntimeError(f"no new VS Code window showed up within {self.waitSeconds():g}s, and none was brought forward")
 
-    def broughtForward(self, snapshot, desktop):
-        return snapshot.showing != desktop and snapshot.front in snapshot.windows
-
-    def browserWindowOn(self, desktop):
-        return desktop in self.readSpaces(self.browserBundleId).occupied()
+    def waitSeconds(self):
+        return self.windowWaitTries * self.windowWaitMs / 1000
 
     def pause(self):
         time.sleep(self.windowWaitMs / 1000)

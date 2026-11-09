@@ -23,9 +23,6 @@ Only a silent failure needs a fix or an *Open* row. That means one that leaves n
 work, files, commits or the tracker's state. A refusal or an error the user sees is already
 handled.
 
-Before each push, `/code-review high` runs on the branch's whole diff, review fixes included, and
-the PR body says it ran.
-
 ## Jira silently blocks a transition
 
 Jira can fail a transition two ways, and this tool's read-back guard exists because of the second,
@@ -145,7 +142,9 @@ unlikely in use, and its worst case is one an agent or the human can read and un
 | The issue's workspace is already open in a window `windowsFile` doesn't record, so `code` brings that window forward instead of opening one | Start could wait for a new window that never comes | `SpacesPlacer` adopts the frontmost VS Code window when no new id appears and VS Code has switched away from the free Desktop, records it, and rewrites the slot to its Desktop with a note |
 | An issue's window is on a Desktop that is another issue's slot | Two issues would claim one Desktop | The other issue keeps its slot. This issue's slot is dropped, and the command says to drag the window to a free Desktop and run `plan open <KEY>` |
 | Every Desktop outside `reservedDesktops` holds a VS Code window or another issue's slot | Start and Open refuse, even for a workspace that's already open, since placing starts by switching to a free Desktop | Add a Desktop in Mission Control, turn on its ^N shortcut, and run the command again |
-| A Brave popup bubble, such as "Translate this page?", counts as a Brave window on the Desktop | `showUrl()` opens the page as a tab with `open -a` instead of in a new window, and Brave may put that tab in a window on another Desktop | **UNVERIFIED**, left **open**. The URL is printed first; close the popup and run Open again |
+| The ^N shortcut runs but its Desktop never shows | `code` would open the window on the wrong Desktop | Start stops at the switching step, before `code` runs, and says to switch and open the window by hand |
+| The issue's window is full screen, so it is on no numbered Desktop | Its slot can't be checked, and the page would open on the wrong Desktop | Start and Open stop and say to take the window out of full screen, then run `plan open <KEY>` |
+| An issue window opened before the workspace file moved to `workspaceDir` | Running `code` on the new path opens a second window, since VS Code knows a window by its workspace file's path | Start and Open keep using the file beside the worktree while it exists; Done deletes it |
 | A subject with no ASCII letters or digits | The branch is named `feat/CIAM-123-` | Rename the branch |
 | An issue started in repo A, then `plan open CIAM-123` run from a different repo B | **Resolved** when A is listed under `checkouts.<PROJECT>` (user decision 2026-11-05): `mainCheckout()` searches the cwd repo (B) *and* every listed repo, including A, for an existing worktree/branch before falling back to cwd for new work — found in A, it's used, not B. Still open if A is **not** listed anywhere in config: nothing but cwd (B) is searched, so a second worktree is made there, duplicating the first. **Recovery:** remove the duplicate worktree/branch in B by hand, or add A to `checkouts.<PROJECT>` beforehand |
 | An issue's worktree or branch exists in more than one of cwd/the listed repos at once (e.g. started by hand in two places, or two listed repos both happen to have a same-named branch) | `mainCheckout()` refuses outright, naming every repo it was found in, rather than silently picking one | None needed — it's a refusal, not a silent failure; the human picks and removes the extra one. **OPEN:** whether one Jira issue may legitimately span two repos in the same round is not answered here; today it's always a refusal |

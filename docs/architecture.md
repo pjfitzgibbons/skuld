@@ -281,7 +281,9 @@ Either way, Start reads the issue back and refuses if its status isn't the targe
 window (§2). Start writes the workspace file `<KEY>.code-workspace`, listing the worktree and the
 ticket store, to `workspaceDir` (config, default `~/.cache/plan/code-workspaces`), outside every
 repo, and the `WindowPlacer` opens it in a VS Code window on the issue's slot. The file is a
-throwaway that Start rewrites each time. A window is always found by its window id, never
+throwaway that Start rewrites each time. VS Code knows a window by its workspace file's path, so
+an issue whose file is still at `<repo>.worktrees/<KEY>.code-workspace` keeps using it until Done
+deletes it. A window is always found by its window id, never
 by its title. Claude runs in one integrated
 terminal, started with a prompt naming the issue, and a shell in another. Both terminals carry the
 issue's key in their environment, so a command run in either knows its issue.
@@ -307,9 +309,11 @@ sweep know which window is the issue's.
 
 To place a window, `SpacesPlacer` sends the free Desktop's ^N shortcut through System Events, as the
 shortcut is bound in `com.apple.symbolichotkeys`, waits until that Desktop shows, and runs
-`code <workspace file>`. A window id that wasn't there before is the issue's new window. When no new
-id appears and VS Code has switched to another Desktop, the workspace was already open there, and
-the frontmost VS Code window becomes the issue's. To find a recorded window again,
+`code <workspace file>`. With a Desktop per display, more than one shows at once. A Desktop that
+never shows stops Start before `code` runs. A window id that wasn't there before is the issue's
+new window. When no new id appears and VS Code has switched away from that Desktop or brought a
+different window to the front, the workspace was already open, and the frontmost VS Code window
+becomes the issue's. To find a recorded window again,
 `code <workspace file>` switches to its Desktop and brings it forward.
 
 - **Free Desktop.** The issue's own slot when its Desktop holds no VS Code window, else the first
@@ -320,6 +324,8 @@ the frontmost VS Code window becomes the issue's. To find a recorded window agai
 - **Wrong Desktop.** A window that lands on a Desktop other than the one switched to, an adopted
   window, or an open window found on a Desktop other than its slot gets its slot rewritten to where
   it is, and the command says so. The window is never moved.
+- **Full screen.** A window on no numbered Desktop, such as a full-screen one, stops Start and
+  Open, which say to take it out of full screen and run `plan open` again.
 - **Taken Desktop.** When a window is on another issue's slot, the command leaves that slot alone,
   drops the issue's own slot, and says to drag the window to a free Desktop and run `plan open`
   again.

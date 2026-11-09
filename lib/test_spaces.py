@@ -35,7 +35,7 @@ class ParserTests(unittest.TestCase):
     def test_the_recorded_output_gives_desktops_the_showing_one_and_each_windows_desktop(self):
         snapshot = parseSnapshot(RECORDED_HELPER_OUTPUT)
         self.assertEqual(snapshot.desktops, [1, 2, 3, 4])
-        self.assertEqual(snapshot.showing, 2)
+        self.assertEqual(snapshot.showing, {2})
         self.assertEqual(snapshot.desktopOf(12058), 2)
         self.assertEqual(snapshot.occupied(), {1, 2})
         self.assertEqual(snapshot.front, 12058)
@@ -62,10 +62,12 @@ class ParserTests(unittest.TestCase):
 # A Mac with numbered Desktops, VS Code and browser windows on them, and the ^N shortcuts that are
 # on. ^N switches the showing Desktop. `code <workspace>` on a workspace in openWindows switches to
 # that window's Desktop and brings it to the front; on any other workspace it opens window
-# newWindowId on landOn, or on the showing Desktop when landOn is None.
+# newWindowId on landOn, or on the showing Desktop when landOn is None. secondDisplay is a Desktop
+# that shows all the time on another display. A stuck Mac ignores ^N; a fullScreen one opens the new
+# window on no numbered Desktop.
 class FakeMac:
     def __init__(self, desktops=4, windows=None, shortcutsOn=(1, 2, 3, 4), newWindowId=900, landOn=None, unknown=None,
-                 openWindows=None, browserWindows=None):
+                 openWindows=None, secondDisplay=None, stuck=False, fullScreen=False):
         self.desktops = list(range(1, desktops + 1))
         self.windows = dict(windows or {})
         self.shortcutsOn = shortcutsOn
@@ -75,7 +77,9 @@ class FakeMac:
         self.landOn = landOn
         self.unknown = unknown
         self.openWindows = dict(openWindows or {})
-        self.browserWindows = dict(browserWindows or {})
+        self.secondDisplay = secondDisplay
+        self.stuck = stuck
+        self.fullScreen = fullScreen
         self.calls = []
 
     def run(self, command, args, cwd):
@@ -85,7 +89,8 @@ class FakeMac:
         if command == "defaults":
             return shortcutsPlist(self.shortcutsOn)
         if command == "osascript":
-            self.showing = int(args[1].split("key code ")[1].split()[0]) - 17
+            if not self.stuck:
+                self.showing = int(args[1].split("key code ")[1].split()[0]) - 17
             return ""
         if command == "code":
             self.code(args[0])
@@ -97,17 +102,17 @@ class FakeMac:
     def code(self, workspace):
         if workspace in self.openWindows:
             self.front = self.openWindows[workspace]
-            self.showing = self.windows[self.front]
+            if self.windows[self.front] != self.secondDisplay:
+                self.showing = self.windows[self.front]
             return
-        self.windows[self.newWindowId] = self.landOn or self.showing
+        self.windows[self.newWindowId] = None if self.fullScreen else (self.landOn or self.showing)
         self.openWindows[workspace] = self.front = self.newWindowId
 
     def helper(self, bundleId):
         if self.unknown:
             raise RuntimeError(f'/x/skuld-spaces {bundleId}: {{"unknown":"{self.unknown}"}}')
-        appWindows = self.windows if bundleId == "com.microsoft.VSCode" else self.browserWindows
-        desktops = [{"display": "d", "number": n, "showing": n == self.showing} for n in self.desktops]
-        windows = [{"id": wid, "desktop": d} for wid, d in appWindows.items()]
+        desktops = [{"display": "d", "number": n, "showing": n in (self.showing, self.secondDisplay)} for n in self.desktops]
+        windows = [{"id": wid, "desktop": d} for wid, d in self.windows.items()]
         front = self.front if bundleId == "com.microsoft.VSCode" else None
         return json.dumps({"desktops": desktops, "windows": windows, "front": front})
 
@@ -241,6 +246,37 @@ class SpacesPlacerTests(FakeMacCase):
         with self.assertRaisesRegex(RuntimeError, "no free Desktop has its shortcut on: .* 4 "):
             self.placer(mac).openWindow("SK-0044", "/w/k.code-workspace")
 
+    def test_a_desktop_that_never_shows_stops_start_before_code_runs(self):
+        mac = FakeMac(stuck=True)
+        with self.assertRaisesRegex(RuntimeError, "switching to Desktop 2 failed: Desktop 2 didn't show"):
+            self.placer(mac).openWindow("SK-0044", "/w/k.code-workspace")
+        self.assertFalse(mac.ran("code"))
+
+    def test_with_a_desktop_per_display_the_switch_is_seen_on_either(self):
+        mac = FakeMac(secondDisplay=4)
+        placement = self.placer(mac).openWindow("SK-0044", "/w/k.code-workspace")
+        self.assertEqual((placement.created, placement.slot), (True, "2"))
+
+    def test_a_window_already_open_on_another_displays_desktop_is_adopted(self):
+        mac = FakeMac(windows={70: 4}, openWindows={"/w/k.code-workspace": 70}, secondDisplay=4)
+        placement = self.placer(mac).openWindow("SK-0044", "/w/k.code-workspace")
+        self.assertEqual((placement.created, placement.slot), (False, "4"))
+        self.assertEqual(self.windowsOnRecord(), "SK-0044=70\n")
+
+    def test_a_new_window_on_no_numbered_desktop_stops_start(self):
+        mac = FakeMac(fullScreen=True)
+        with self.assertRaisesRegex(RuntimeError, "isn't on a numbered Desktop .* plan open SK-0044"):
+            self.placer(mac).openWindow("SK-0044", "/w/k.code-workspace")
+        self.assertIsNone(term.lookupSlot("SK-0044", self.slots))
+
+    def test_open_on_a_full_screen_window_stops_and_keeps_the_slot(self):
+        self.write(self.slots, "3=SK-0044\n")
+        self.write(self.windowsFile, "SK-0044=55\n")
+        mac = FakeMac(windows={55: None})
+        with self.assertRaisesRegex(RuntimeError, "take it out of full screen"):
+            self.placer(mac).openWindow("SK-0044", "/w/k.code-workspace")
+        self.assertEqual(term.lookupSlot("SK-0044", self.slots), "3")
+
     def test_sweep_drops_slots_whose_window_is_gone_and_keeps_the_rest(self):
         self.write(self.slots, "2=SK-0001\n3=SK-0002\n4=SK-0003\n")
         self.write(self.windowsFile, "SK-0001=55\nSK-0002=56\n")
@@ -267,18 +303,12 @@ class ShowUrlTests(FakeMacCase):
             self.placer(mac).showUrl("https://x/browse/CIAM-1", Placement(True, slot, f"Desktop {slot}"))
         printed.assert_called_once_with("https://x/browse/CIAM-1")
 
-    def test_the_url_opens_as_a_tab_in_a_browser_window_on_the_issues_desktop(self):
-        mac = FakeMac(browserWindows={5: 3})
-        mac.showing = 3
-        self.show(mac)
-        self.assertTrue(mac.ran("open", "-a", "Brave Browser", "https://x/browse/CIAM-1"))
-        self.assertFalse(mac.ran("osascript"))
-
-    def test_with_no_browser_window_there_it_switches_first_and_opens_a_new_window(self):
-        mac = FakeMac(browserWindows={5: 2})
+    def test_it_switches_to_the_issues_desktop_and_opens_a_new_window_there(self):
+        mac = FakeMac()
         self.show(mac)
         self.assertEqual(mac.showing, 3)
         self.assertTrue(mac.ran("open", "-na", "Brave Browser", "--args", "--new-window", "https://x/browse/CIAM-1"))
+        self.assertFalse(mac.ran("open", "-a"))
 
     def test_a_failure_after_the_print_is_swallowed(self):
         self.show(FakeMac(unknown="CGSMainConnectionID"))

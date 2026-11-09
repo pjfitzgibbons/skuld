@@ -114,7 +114,7 @@ macOS only. In order:
    | `workspaceDir` | `~/.cache/plan/code-workspaces` | Where each issue window's throwaway `<KEY>.code-workspace` goes; Done deletes it |
    | `spacesHelper` | `macos/build/skuld-spaces` in skuld | The helper `bin/build-spaces` builds; `plan` builds the default one itself when it is missing or older than its source |
    | `reservedDesktops` | `[1]` | Desktops `plan` never takes for an issue |
-   | `browserApp`, `browserBundleId` | `Brave Browser`, `com.brave.Browser` | The browser a Jira issue's page opens in, on the issue's Desktop |
+   | `browserApp` | `Brave Browser` | The browser a Jira issue's page opens in, in a new window on the issue's Desktop |
    | `netrcFile`, `baseUrl` | `~/.netrc`, `https://cryoport.atlassian.net` | Where the Jira token and site are |
 
 6. **The skill.** Link `skills/jira-issues/` to `~/.claude/skills/jira-issues/`, so every repo
@@ -256,7 +256,7 @@ runs only when it has something to do:
    environment. When the window is already open, Open reuses it, rewrites the slot when the
    window sits on another Desktop, and never moves it.
 9. **Put the issue beside Claude.** A Jira issue's browse URL is printed, then opens in
-   `browserApp` on the issue's Desktop: as a tab in its window there, or in a new window. Each
+   a new `browserApp` window on the issue's Desktop. Each
    step after the print is best-effort. A store ticket opens in an editor tab, on the ticket file in the window's store
    folder. The URL or file path is printed either way.
 10. **Focus the issue.** Switch to the slot and focus the issue window with Claude's terminal
