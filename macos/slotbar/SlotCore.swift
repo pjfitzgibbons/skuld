@@ -92,3 +92,27 @@ func enabledShortcut(_ entry: Any?) -> DesktopShortcut? {
           let parameters = value["parameters"] as? [NSNumber], parameters.count == 3 else { return nil }
     return DesktopShortcut(keyCode: parameters[1].uint16Value, modifierMask: parameters[2].uint64Value)
 }
+
+// How many Desktops there are and which are showing, one per display at most.
+struct DesktopState: Equatable {
+    let count: Int
+    let showing: Set<Int>
+}
+
+// SkyLight's space type for a Desktop; a full-screen app's space has another type.
+let desktopSpaceType = 0
+
+// Numbers Desktops from CGSCopyManagedDisplaySpaces' output the way ^N and SK-0044's
+// macos/spaces.swift count them: across every display in order, skipping full-screen spaces.
+func desktopState(fromDisplays displays: [[String: Any]]) -> DesktopState {
+    var count = 0
+    var showing: Set<Int> = []
+    for display in displays {
+        let current = (display["Current Space"] as? [String: Any])?["ManagedSpaceID"] as? Int
+        for space in display["Spaces"] as? [[String: Any]] ?? [] where space["type"] as? Int == desktopSpaceType {
+            count += 1
+            if let id = space["ManagedSpaceID"] as? Int, id == current { showing.insert(count) }
+        }
+    }
+    return DesktopState(count: count, showing: showing)
+}

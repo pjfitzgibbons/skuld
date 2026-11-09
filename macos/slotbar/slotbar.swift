@@ -10,19 +10,9 @@ typealias Conn = Int32
 @_silgen_name("CGSMainConnectionID") func CGSMainConnectionID() -> Conn
 @_silgen_name("CGSCopyManagedDisplaySpaces") func CGSCopyManagedDisplaySpaces(_ cid: Conn) -> CFArray
 
-struct DesktopState {
-    let count: Int
-    let showing: Int
-}
-
-// The first display's Desktops and which one is showing, through a read-only SkyLight call.
+// Every display's Desktops and which are showing, through a read-only SkyLight call.
 func readDesktops() -> DesktopState {
-    let displays = CGSCopyManagedDisplaySpaces(CGSMainConnectionID()) as? [[String: Any]] ?? []
-    guard let main = displays.first,
-          let spaces = main["Spaces"] as? [[String: Any]] else { return DesktopState(count: 0, showing: 0) }
-    let currentID = (main["Current Space"] as? [String: Any])?["ManagedSpaceID"] as? Int
-    let showingIndex = spaces.firstIndex { $0["ManagedSpaceID"] as? Int == currentID } ?? -1
-    return DesktopState(count: spaces.count, showing: showingIndex + 1)
+    desktopState(fromDisplays: CGSCopyManagedDisplaySpaces(CGSMainConnectionID()) as? [[String: Any]] ?? [])
 }
 
 struct LivePulse {
@@ -121,7 +111,7 @@ final class SlotBar: NSObject {
         for desktop in 1...max(desktops.count, 1) {
             title.append(segment(desktop: desktop,
                                  hasSlot: slot(on: desktop, in: slots) != nil,
-                                 showing: desktop == desktops.showing))
+                                 showing: desktops.showing.contains(desktop)))
         }
         item.button?.attributedTitle = title
         reportBar(title.string, showing: desktops.showing)
@@ -142,8 +132,8 @@ final class SlotBar: NSObject {
     // One entry per Desktop, `N  KEY` for a slot and `N` otherwise. A Desktop whose shortcut is
     // off in System Settings can't be reached, so its entry is disabled.
     // Logs the bar's text when it changes, so its state can be checked without seeing it.
-    func reportBar(_ text: String, showing: Int) {
-        let line = "bar [\(text)] showing=\(showing)"
+    func reportBar(_ text: String, showing: Set<Int>) {
+        let line = "bar [\(text)] showing=\(showing.sorted().map(String.init).joined(separator: ","))"
         guard line != lastBar else { return }
         log(line)
         lastBar = line

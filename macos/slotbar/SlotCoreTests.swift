@@ -16,6 +16,7 @@ struct SlotCoreTests {
         pulseValidation()
         pulseRoundTrip()
         shortcutParsing()
+        desktopNumbering()
         print(failures == 0 ? "all passed" : "\(failures) failed")
         exit(failures == 0 ? 0 : 1)
     }
@@ -78,5 +79,26 @@ struct SlotCoreTests {
         check(parseDesktopShortcuts([:]).isEmpty, "an empty domain has no shortcuts")
         check(enabledShortcut(["enabled": true, "value": ["parameters": [65535, 18]]]) == nil,
               "rejects a malformed entry")
+    }
+
+    static func space(_ id: Int, type: Int = 0) -> [String: Any] {
+        ["ManagedSpaceID": id, "type": type]
+    }
+
+    static func display(_ spaces: [[String: Any]], current: Int) -> [String: Any] {
+        ["Spaces": spaces, "Current Space": ["ManagedSpaceID": current]]
+    }
+
+    static func desktopNumbering() {
+        let one = desktopState(fromDisplays: [display([space(10), space(11), space(12)], current: 11)])
+        check(one == DesktopState(count: 3, showing: [2]), "numbers one display's Desktops")
+        let fullScreen = desktopState(fromDisplays: [display([space(10), space(90, type: 4), space(12)], current: 12)])
+        check(fullScreen == DesktopState(count: 2, showing: [2]), "skips a full-screen app's space")
+        let onFullScreen = desktopState(fromDisplays: [display([space(10), space(90, type: 4)], current: 90)])
+        check(onFullScreen == DesktopState(count: 1, showing: []), "a full-screen space showing underlines no Desktop")
+        let two = desktopState(fromDisplays: [display([space(10), space(11)], current: 10),
+                                              display([space(20), space(21)], current: 21)])
+        check(two == DesktopState(count: 4, showing: [1, 4]), "numbers on across a second display, one showing each")
+        check(desktopState(fromDisplays: []) == DesktopState(count: 0, showing: []), "no displays, no Desktops")
     }
 }
