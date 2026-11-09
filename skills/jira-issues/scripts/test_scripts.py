@@ -816,6 +816,12 @@ class PrDone(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("run plan done CIAM-9 to clean up", result.stdout)
 
+            # The flags come in any order before the key.
+            result = subprocess.run([str(SCRIPTS / "pr.sh"), "--no-copilot", "done", "CIAM-9"], cwd=root,
+                                    env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("run plan done CIAM-9 to clean up", result.stdout)
+
     def test_merged_pr_tells_to_run_plan_done_unprefixed_branch(self):
         # L2: pr.sh's key-from-branch sed required a <prefix>/ segment before KEY-slug; a bare
         # CIAM-9-x branch (no feat/, fix/, chore/, ...) must resolve its key the same way
@@ -1222,6 +1228,51 @@ class GhBody(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("looks like a Jira smart commit", result.stderr)
             self.assertNotIn("gh pr create", result.stdout)
+
+
+    def test_pr_create_leaves_copilot_off_with_no_copilot(self):
+        with tempfile.TemporaryDirectory() as d:
+            outer = Path(d)
+            root = new_pr_branch(outer)
+            for no_copilot, asked in (("", True), ("1", False)):
+                env = fake_gh_env(outer, GHBODY_DRY="1", GHBODY_NO_COPILOT=no_copilot)
+                result = subprocess.run([str(SCRIPTS / "ghbody.sh"), "pr-create"], cwd=root, env=env,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("gh pr create", result.stdout)
+                self.assertEqual("--add-reviewer @copilot" in result.stdout, asked)
+
+
+# A repo on branch CIAM-9-x, one commit ahead of a local origin/main, with a drafted PR body.
+def new_pr_branch(outer):
+    root = outer / "repo"
+    root.mkdir()
+    run_git = lambda *a: subprocess.run(["git", *a], cwd=root, check=True, capture_output=True, text=True)
+    run_git("init", "-q", "-b", "main")
+    run_git("config", "user.email", "t@t.com")
+    run_git("config", "user.name", "t")
+    (root / "f.txt").write_text("x\n")
+    run_git("add", "-A")
+    run_git("commit", "-q", "-m", "init")
+    run_git("update-ref", "refs/remotes/origin/main", run_git("rev-parse", "HEAD").stdout.strip())
+    run_git("checkout", "-q", "-b", "CIAM-9-x")
+    (root / "f.txt").write_text("changed\n")
+    run_git("commit", "-qam", "Fix the bug (CIAM-9)")
+    tmp_dir = root / ".tmp" / "CIAM-9"
+    tmp_dir.mkdir(parents=True)
+    (tmp_dir / "pr-body.md").write_text("an ordinary body\n")
+    return root
+
+
+# The environment for a gh that answers only `gh repo view` (the default branch, main).
+def fake_gh_env(outer, **extra):
+    bindir = outer / "bin"
+    bindir.mkdir(exist_ok=True)
+    fake_gh = bindir / "gh"
+    fake_gh.write_text("#!/usr/bin/env python3\nimport sys\n"
+                       "if sys.argv[1:3] == ['repo', 'view']:\n    print('main')\n")
+    fake_gh.chmod(0o755)
+    return {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", **extra}
 
 
 if __name__ == "__main__":

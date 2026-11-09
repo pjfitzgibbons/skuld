@@ -65,22 +65,22 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #   project        The default Jira project key, used where none is otherwise known (e.g.
 #                  resolving a bare key typed without one). Default: jira.py's DEFAULT_PROJECT
 #                  ("CIAM").
-#   aerospaceConfig Path to the Aerospace config whose "# Workspaces: ..." comment names every
-#                  workspace an Aerospace hotkey already targets; term.py's freeWorkspace() picks
-#                  the first workspace this doesn't name and that has no windows. Default:
-#                  "~/.aerospace.toml".
-#   slotsFile      Path to the "<workspace>=<KEY>" file term.py writes so SketchyBar's
-#                  workspaces.sh plugin can label a workspace with the issue it holds. Default:
-#                  "~/.cache/plan/workspaces".
-#   browserApp     The browser openUrl() opens the issue's URL in -- a name `open` resolves (as
-#                  plan-open does), not necessarily a path. If a browserBundleId window is already
-#                  on the target workspace, the URL opens as a new tab in it (`open -a`); otherwise
-#                  a new window opens (`open -na ... --args --new-window`) and is moved there.
-#                  Default: "Brave Browser" (user decision 2026-11-05: Brave, launched explicitly
-#                  this way, never a bare `open <url>` and never a terminal's own link-click).
-#   browserBundleId The launched browser's bundle id, used both to find an existing window on the
-#                  target workspace to reuse as a tab, and for the before/after window-id diff that
-#                  finds a newly-opened window. Default: "com.brave.Browser" (Brave's bundle id).
+#   slotsFile      Path to the "<Desktop number>=<KEY>" file the placer writes so SketchyBar's
+#                  desktops.sh plugin can label a Desktop with the issue it holds.
+#                  Default: "~/.cache/plan/workspaces".
+#   windowsFile    Path to the "<KEY>=<window id>" file that says which VS Code window is each
+#                  issue's. Default: "~/.cache/plan/windows".
+#   workspaceDir   Folder for each issue window's throwaway <KEY>.code-workspace file, outside
+#                  every repo; Done deletes the issue's. Default: "~/.cache/plan/code-workspaces".
+#   spacesHelper   Path to the skuld-spaces helper (macos/spaces.swift). Default:
+#                  macos/build/skuld-spaces in this repo, which the placer builds with swiftc when
+#                  it's missing or older than its source.
+#   reservedDesktops Desktop numbers Start never takes for an issue. Default: [1].
+#   browserApp     The browser SpacesPlacer.showUrl() opens a Jira issue's URL in -- a name `open`
+#                  resolves, not necessarily a path. The URL opens in a new window on the issue's
+#                  Desktop (`open -na ... --args --new-window`); a tab would go to the browser's
+#                  last-used window, on any Desktop. Default: "Brave Browser" (user decision
+#                  2026-11-05: never a bare `open <url>`, never a terminal's link-click).
 #   issueStore     The issue store's checkout: the folder of SK-<nnnn> ticket files
 #                  (lib/fileissues.py's FileIssues), its own git repo, e.g.
 #                  "~/programming/skuld-project/issues". `~` is expanded. Default: None -- the
@@ -97,10 +97,12 @@ def defaults():
         "netrcFile": None,
         "baseUrl": BASE_URL,
         "project": DEFAULT_PROJECT,
-        "aerospaceConfig": "~/.aerospace.toml",
         "slotsFile": "~/.cache/plan/workspaces",
+        "windowsFile": "~/.cache/plan/windows",
+        "workspaceDir": "~/.cache/plan/code-workspaces",
+        "spacesHelper": None,
+        "reservedDesktops": [1],
         "browserApp": "Brave Browser",
-        "browserBundleId": "com.brave.Browser",
         "issueStore": None,
     }
 
@@ -134,7 +136,7 @@ def refuseRetiredKeys(parsed, file):
 
 # Keys a config may still set from an earlier front end; they're read by nothing now, so a config
 # that sets one still loads, with a warning.
-IGNORED_KEYS = ("ghosttyApp",)
+IGNORED_KEYS = ("ghosttyApp", "aerospaceConfig", "windowPlacer", "browserBundleId")
 
 
 def warnIgnoredKeys(parsed, file):

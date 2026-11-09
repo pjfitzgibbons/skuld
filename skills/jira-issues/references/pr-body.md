@@ -16,7 +16,6 @@ CIAM-<n>.
 
 - <Each suite run, and its result: `npm test` in `plan/` (or `node --test`), `uv run pytest`.>
 - <What has no test, and why.>
-- `/code-review high` ran on the branch's whole diff, review fixes included.
 - Any mechanical coverage check a reviewer wrote for this PR, and its output, belongs with the
   reviewer's disposition (GUIDE.md §5, "Review: co-signing and dispositions"), not here.
 

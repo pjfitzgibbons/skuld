@@ -5,7 +5,7 @@ The [architecture](docs/architecture.md) says what the system is and the rules i
 links to it for the reasons and doesn't repeat them.
 
 Skuld plans and ships work from the terminal. `plan` lists what's next, and starts, opens, ships and
-finishes an issue, each in its own VS Code window on an Aerospace workspace. `pr` commits, pushes,
+finishes an issue, each in its own VS Code window on its own macOS Desktop. `pr` commits, pushes,
 opens or updates the pull request and answers its review. Issues live in the ticket store, a git
 repo of Markdown files, or in Jira Cloud (`cryoport.atlassian.net`).
 
@@ -57,7 +57,7 @@ macOS only. In order:
 
 1. **Tools.** `git`, `gh` (signed in with `gh auth login`), Python 3.10 or later on `PATH` as
    `python3` (`/usr/bin/python3` is 3.9 and can't run the scripts), VS Code with its `code` command
-   on `PATH`, Aerospace and fzf. SketchyBar is optional.
+   on `PATH`, fzf, and Xcode's Command Line Tools for `swiftc` (step 12). SketchyBar is optional.
 
 2. **The Jira token in `~/.netrc`**, never in a tracked file or an env var:
 
@@ -109,8 +109,12 @@ macOS only. In order:
    | `typeMap` | Story and Task `feat`, Bug `fix` | Issue type to branch prefix, merged over the default |
    | `pr` | `~/.local/bin/pr` | The `pr` that Ship runs, by path |
    | `disposable` | `done.py`'s list | Ignored files Done may delete with a worktree |
-   | `aerospaceConfig` | `~/.aerospace.toml` | Where the `# Workspaces:` comment names the workspaces `plan` never takes |
-   | `slotsFile` | `~/.cache/plan/workspaces` | The `<workspace>=<KEY>` lines that place issues on workspaces |
+   | `slotsFile` | `~/.cache/plan/workspaces` | The `<slot>=<KEY>` lines that place issues on Desktops |
+   | `windowsFile` | `~/.cache/plan/windows` | The `<KEY>=<window id>` lines that say which window is each issue's |
+   | `workspaceDir` | `~/.cache/plan/code-workspaces` | Where each issue window's throwaway `<KEY>.code-workspace` goes; Done deletes it |
+   | `spacesHelper` | `macos/build/skuld-spaces` in skuld | The helper `bin/build-spaces` builds; `plan` builds the default one itself when it is missing or older than its source |
+   | `reservedDesktops` | `[1]` | Desktops `plan` never takes for an issue |
+   | `browserApp` | `Brave Browser` | The browser a Jira issue's page opens in, in a new window on the issue's Desktop |
    | `netrcFile`, `baseUrl` | `~/.netrc`, `https://cryoport.atlassian.net` | Where the Jira token and site are |
 
 6. **The skill.** Link `skills/jira-issues/` to `~/.claude/skills/jira-issues/`, so every repo
@@ -149,6 +153,23 @@ macOS only. In order:
 11. **The LaunchAgents.** `issue-watch` watches the store and commits and pushes it, and
     the local server serves issue pages (§7). Both start at login and restart if they stop.
 
+12. **Native Desktops.** Each issue window gets its own macOS Desktop. SIP stays on and nothing is
+    installed beyond the helper:
+    1. Run no other window manager. Aerospace, for one, holds every window on one Desktop.
+    2. In System Settings → Desktop & Dock → Mission Control, turn off "Automatically rearrange
+       Spaces based on most recent use", and leave "Displays have separate Spaces" and "When
+       switching to an application, switch to a Space with open windows" on.
+    3. In System Settings → Keyboard → Keyboard Shortcuts → Mission Control, turn on "Switch to
+       Desktop 1" through the highest Desktop an issue may use (^1 to ^N).
+    4. In Mission Control, add Desktops up to that number. `plan` never creates one.
+    5. Allow VS Code to control the computer through System Events when macOS asks, on the first
+       Start.
+    6. Build the helper with `bin/build-spaces`, or let the first Start build it. It needs
+       `swiftc` alone and no permission grant.
+    7. For SketchyBar, give each Desktop a `space` item with `associated_space=N`, and subscribe it
+       to `plan_workspaces_change` so it relabels from the slots file. Run `sketchybar --reload`
+       after adding a Desktop.
+
 ## 3. Commands
 
 `plan` with no arguments shows Next up in an fzf picker, with the issue's detail in the preview
@@ -178,7 +199,7 @@ decides the repo (§4).
 | `plan serve start\|stop\|restart\|status` | Control the local server's LaunchAgent (§7); `status` prints the server's URL and whether it answers |
 | `plan archive` | Move closed tickets past `archiveAfterDays` to `archive/` |
 | `plan init-store` | Make an empty store's folders |
-| `pr [done] [KEY]` | Send a round (§5) |
+| `pr [done] [--no-copilot] [KEY]` | Send a round (§5) |
 | `issue-check [PATH…]` | Check ticket files, or the whole store; exits non-zero naming file, line and rule |
 | `issue-watch` | The store's watcher; launchd runs it |
 | `jira-get <path>` | One read-only Jira GET with `~/.netrc` auth, so an agent can read Jira without seeing the token |
@@ -211,28 +232,41 @@ runs only when it has something to do:
    and refuses if the read-back `statusCategory` isn't `indeterminate`. Store: `FileStore` sets
    `status: in-progress` and reads the file back. Then "Started" is logged: an ADF comment in
    Jira, a `## Log` line in the ticket.
-7. **Place the issue on a workspace.** Aerospace workspaces keep the hotkeys `~/.aerospace.toml`
-   gives them; `plan` never renames or creates one. `term.openIssueWorkspace()` looks up the key in
-   the slots file and reuses that workspace if it still has windows. Otherwise
-   `term.freeWorkspace()` takes the first workspace that the config's `# Workspaces:` comment
-   doesn't name and that has no windows, and `term.writeSlot()` records `<workspace>=<KEY>` through
-   a temp file and a rename. SketchyBar is told to relabel its bar
-   (`sketchybar --trigger plan_workspaces_change`, skipped when it isn't installed). Every command
-   that touches workspaces first sweeps the slots file, dropping lines whose workspace has no
-   windows.
-8. **Open the issue window.** Write `<repo>.worktrees/<KEY>.code-workspace`, listing the worktree
-   and the ticket store, and open it in a new window with `code`. Its Aerospace window id is found
-   by diffing VS Code's windows in `aerospace list-windows` before and after, never by its title,
-   and the window moves to the issue's workspace. Claude starts in one integrated terminal with a
-   prompt naming the issue, and a shell waits in another; both carry the issue's key in their
-   environment. When the window is already open, Open reuses it.
-9. **Put the issue beside Claude.** A Jira issue's browse URL opens through `openUrl()` with the
-   issue's key (§7). A store ticket opens in an editor tab, on the ticket file in the window's store
+7. **Place the issue on a slot.** `SpacesPlacer` does this, and
+   `term.writeSlot()` records `<slot>=<KEY>` through a temp file and a rename. SketchyBar is told
+   to relabel its bar (`sketchybar --trigger plan_workspaces_change`, skipped when it isn't
+   installed). Every command that touches slots first sweeps the slots file through the placer,
+   dropping lines whose issue window is gone.
+   `SpacesPlacer` reads the Desktops and VS Code's windows through `skuld-spaces`. It reuses the
+   issue's slot if that Desktop holds no VS Code window. Otherwise it takes the first Desktop
+   that exists, isn't in `reservedDesktops`, holds no VS Code window and is no other issue's
+   slot. Start refuses, with nothing opened, when there is no such Desktop, when the Desktop
+   doesn't exist, when its ^N shortcut is off (naming the setting), or when the helper reports a
+   SkyLight call missing.
+8. **Open the issue window.** Write `<KEY>.code-workspace` to `workspaceDir`, listing the
+   worktree and the ticket store. Start sends the Desktop's ^N shortcut through System Events, waits until
+   that Desktop shows, and runs `code` on the workspace file. A window id that wasn't there before
+   is the new window, recorded in `windowsFile`; it is never found by its title. When no new
+   window appears and VS Code has switched to another Desktop instead, the workspace was already
+   open there, and Start takes the frontmost VS Code window as the issue's. A window on a Desktop
+   other than the one switched to is left there, and its slot is rewritten to that Desktop, with
+   a note. When that Desktop is another issue's slot, the note says to drag the window to a free
+   Desktop and run `plan open <KEY>`. Claude starts in one integrated terminal with a prompt
+   naming the issue, and a shell waits in another; both carry the issue's key in their
+   environment. When the window is already open, Open reuses it, rewrites the slot when the
+   window sits on another Desktop, and never moves it.
+9. **Put the issue beside Claude.** A Jira issue's browse URL is printed, then opens in
+   a new `browserApp` window on the issue's Desktop. Each
+   step after the print is best-effort. A store ticket opens in an editor tab, on the ticket file in the window's store
    folder. The URL or file path is printed either way.
-10. **Focus the issue.** Switch to the workspace and focus the issue window with Claude's terminal
-    in front, so the command ends with the human at the issue's Claude.
+10. **Focus the issue.** Switch to the slot and focus the issue window with Claude's terminal
+    in front, so the command ends with the human at the issue's Claude: `code <workspace file>`
+    switches to the window's Desktop.
 
-Open on an issue whose window or workspace is gone recreates what's missing
+`plan list` and the picker show each issue's slot (`D3`), and both Desktops when
+the window has moved off its slot (`D3, window on D4`).
+
+Open on an issue whose window or slot is gone recreates what's missing
 ([failure-modes.md, *Open*](docs/failure-modes.md)).
 
 ## 5. Ship and the review round
@@ -283,7 +317,7 @@ in an integrated terminal of the issue window, so its output shows as it runs.
 `pr` writes no tracker field to link the PR; the key in the branch name and PR title does that.
 Ship again is the next round, and with nothing left to send, `pr` sends nothing.
 
-### `pr [done] [KEY]`
+### `pr [done] [--no-copilot] [KEY]`
 
 `KEY` defaults to the key in the branch name (`fix/CIAM-88-go-requests` is `CIAM-88`). Each step
 runs only when it has something to do, so `pr` is safe to repeat:
@@ -299,7 +333,8 @@ runs only when it has something to do, so `pr` is safe to repeat:
 | round | `replies/` or `issue.md` exist | `pr_threads.py --post`, then `checklist.py`, after the push |
 | hand-off | always | records the PR on the branch's git config and prints its URL |
 
-`pr done` runs the merged-PR step and refuses an unmerged PR.
+`pr done` runs the merged-PR step and refuses an unmerged PR. `--no-copilot` skips the Copilot step,
+and `gh pc` then doesn't ask Copilot to review a new PR either.
 
 ### Review: co-signing and dispositions
 
@@ -339,7 +374,7 @@ clean, holds no ignored files outside `disposable`, and its HEAD is the PR's mer
 it; no round files are left unsent; the worktree isn't locked; the main checkout's base can
 fast-forward to `origin/<base>`.
 
-The changes: fast-forward the base, `git worktree remove`, delete the workspace file, delete every
+The changes: fast-forward the base, `git worktree remove`, delete the workspace file (a warning if it won't go), delete every
 branch named for the issue whose tip is in the PR, note the PR and merge commit on the issue (an ADF
 comment in Jira, a `## Log` line in a ticket), free the issue's workspace slot, and print the close
 note:
@@ -385,15 +420,16 @@ Every page's header links the issue (its Jira browse URL, or `/issues/<KEY>` for
 and its pull request; before a PR exists, the header says so. Pages show commands to copy and have
 no buttons that act. A page is always opened at its server URL, never as a `file://` path.
 
-### `plan browse` and `openUrl()`
+### `plan browse`
 
 `plan browse` takes a key (the issue's page), `pr#N` (the pull request) or a URL. `[KEY]` names the
 issue whose window the page belongs in when neither the target nor the terminal names one.
-Start and Open use the same `openUrl()`.
+`plan browse` and the integrated browser are SK-0031's work and not built yet; until then Start
+and Open open a Jira page in `browserApp` (§4, step 9).
 
-`openUrl()` prints the URL, then picks the issue window: an explicit key (Start passes its own),
-else the key in the calling terminal's environment, else the issue window on the focused workspace
-([architecture §7.6.1](docs/architecture.md#open-url)). The page opens in that window's integrated
+`plan browse` will print the URL, then pick the issue window: an explicit key (Start passes its own),
+else the key in the calling terminal's environment, else the issue window on the Desktop that is showing
+([architecture §7.6.1](docs/architecture.md#open-url)). The page will open in that window's integrated
 browser, and a link clicked in one of its terminals opens there too.
 
 Every step is best-effort; the printed URL stands on its own. System `open` is never used for a
@@ -474,7 +510,8 @@ These recur through the code, and they're worth taking away even without the too
    GitHub credentials.
 8. **A refusal that names its fix** instead of recovery code.
 9. **Outside systems behind ports.** Each tracker, GitHub and git remote is reached through its
-   port's adapter, and `lib/term.py` alone runs `code` and Aerospace, so the rest of `lib/`
+   port's adapter, and the `WindowPlacer` (`lib/placer.py`, `lib/spaces.py`)
+   alone runs `code`, `skuld-spaces` and System Events, so the rest of `lib/`
    tests without a real terminal ([architecture §6](docs/architecture.md#components)).
 10. **A gate that fails loudly.** The watcher commits nothing that fails the checker, and says so
     in a notification and a log.
@@ -499,7 +536,7 @@ and the exit code out.
 
 ## 12. Limits
 
-- **macOS only:** Aerospace, launchd and the Keychain-free `~/.netrc` setup
+- **macOS only:** native Desktops, launchd and the Keychain-free `~/.netrc` setup
   all assume it.
 - **One user and one Jira site:** `cryoport.atlassian.net`, with the `netrc` machine name in
   config.
@@ -516,6 +553,8 @@ bin/
   plan                     plan's entry point
   jira-get                 one read-only Jira GET with ~/.netrc auth
   gh-aliases.yml           gh pc and gh pb
+  build-spaces             builds macos/build/skuld-spaces with swiftc
+macos/spaces.swift         skuld-spaces: read-only SkyLight calls listing Desktops and VS Code windows
 lib/
   cli.py                   subcommand dispatch and the fzf picker
   config.py                reads the machine config and store.yml
@@ -523,7 +562,9 @@ lib/
   start.py                 Start and Open: repo resolution, names, worktrees, the lock
   ship.py                  Ship's checks and round-file naming
   done.py                  Done: checks, then changes, then the close note
-  term.py                  VS Code, Aerospace and SketchyBar; the slots file; openUrl()
+  term.py                  the workspace file, the slots file, SketchyBar's trigger, Ship's tmux window
+  placer.py                the WindowPlacer port, Placement and placerFrom()
+  spaces.py                SpacesPlacer: native Desktops through skuld-spaces and System Events
   test_*.py                the unit tests
   (the FileStore adapter, the checker, issue-watch and the local server also live in lib/)
 templates/issue.md         what plan new fills in

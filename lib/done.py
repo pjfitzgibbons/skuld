@@ -229,7 +229,7 @@ def checkMerged(dir, pr, removing, disposable):
 # FIRST here, and the PR lookup (prFromBranch) moves after it, inside finishIn, once a branch name
 # is in hand. If no worktree and no branch for the key can be found at all, there is nothing to
 # resolve a PR from, and finish() must refuse rather than guess at a branch name.
-def finish(jira, checkouts, key, view=None, disposable=None, typeMap=None, slotsFile=None, cwd=None, pickRepo=None):
+def finish(jira, checkouts, key, view=None, disposable=None, typeMap=None, slotsFile=None, cwd=None, pickRepo=None, workspaceDir=None):
     if view is None:
         view = prFromBranch
     if disposable is None:
@@ -260,7 +260,7 @@ def finish(jira, checkouts, key, view=None, disposable=None, typeMap=None, slots
     release = lock(common, key, "Done")
     result = {"dir": None, "notes": []}
     try:
-        finishIn(jira, key, project, checkout, common, pr, found, porcelain, result, disposable, typeMap, slotsFile)
+        finishIn(jira, key, project, checkout, common, pr, found, porcelain, result, disposable, typeMap, slotsFile, workspaceDir)
         return result
     except Exception as error:
         error.result = result
@@ -288,7 +288,15 @@ def branchForKey(checkout, key, typeMap=None):
     return refs("refs/heads") or refs("refs/remotes/origin")
 
 
-def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result, disposable, typeMap=None, slotsFile=None):
+# The issue's worktree path: the one Done resolved, where Start and Open wrote the legacy workspace
+# file beside it, else the one Start would make.
+def issueWorktreePath(resolved, checkout, key):
+    if resolved and not resolved["main"]:
+        return resolved["dir"]
+    return worktreeDir(checkout, key)
+
+
+def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result, disposable, typeMap=None, slotsFile=None, workspaceDir=None):
     if typeMap is None:
         typeMap = DEFAULT_TYPE_MAP
     notes = result["notes"]
@@ -468,3 +476,5 @@ def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result,
     # refreshed, the same way Start/Open label it (term.writeSlot). Done opens no browser -- only
     # the "Close KEY in Jira" note above, once, ever points Peter at the issue.
     term.removeSlot(key, slotsFile)
+    # The issue window's workspace file is a throwaway: one that won't delete is a warning, not a failure.
+    notes.extend(term.removeWorkspaceFiles(key, issueWorktreePath(resolved, checkout, key), workspaceDir))

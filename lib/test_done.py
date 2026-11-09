@@ -19,6 +19,7 @@ import unittest
 from unittest import mock
 
 from lib import done as done_mod
+from lib import term
 from lib.done import DISPOSABLE, branchForKey, doneNote, finish
 from lib.start import worktreeDir
 
@@ -221,6 +222,35 @@ class FinishTests(unittest.TestCase):
         self.assertRegex(jira.comments[0][1]["text"], r"Done: \[origin#1\]")
         self.assertTrue(any(f"Close {KEY} in Jira" in n for n in result["notes"]))
         self.assertTrue(any(f"Close {KEY} in Jira: https://cryoport.atlassian.net/browse/{KEY}" in n for n in result["notes"]))
+
+    def test_deletes_the_issue_windows_workspace_files(self):
+        s = self.sandbox()
+        workspaceDir = os.path.join(s["root"], "ws")
+        current = term.workspaceFilePath(KEY, workspaceDir)
+        legacy = term.legacyWorkspaceFilePath(s["dir"], KEY)
+        term.writeWorkspaceFile(current, {})
+        open(legacy, "w").close()
+        finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"], workspaceDir=workspaceDir)
+        self.assertFalse(os.path.exists(current) or os.path.exists(legacy))
+
+    def test_deletes_the_legacy_file_beside_a_worktree_moved_from_its_usual_place(self):
+        s = self.sandbox()
+        moved = os.path.join(s["root"], "elsewhere", KEY)
+        os.makedirs(os.path.dirname(moved))
+        git(s["checkout"], "worktree", "move", s["dir"], moved)
+        legacy = term.legacyWorkspaceFilePath(moved, KEY)
+        open(legacy, "w").close()
+        finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"], workspaceDir=os.path.join(s["root"], "ws"))
+        self.assertFalse(os.path.exists(moved))
+        self.assertFalse(os.path.exists(legacy))
+
+    def test_a_workspace_file_that_wont_delete_warns_and_done_still_finishes(self):
+        s = self.sandbox()
+        workspaceDir = os.path.join(s["root"], "ws")
+        os.makedirs(os.path.join(workspaceDir, f"{KEY}.code-workspace"))  # a folder: os.remove refuses it
+        result = finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"], workspaceDir=workspaceDir)
+        self.assertFalse(os.path.exists(s["dir"]))
+        self.assertTrue(any(n.startswith("Warning: couldn't delete") for n in result["notes"]))
 
     def test_is_idempotent_second_run_changes_nothing_and_posts_no_second_comment(self):
         s = self.sandbox()

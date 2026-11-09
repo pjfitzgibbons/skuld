@@ -1,8 +1,8 @@
 # jira-plan — repo instructions
 
 **Jira Plan** plans work in Jira Cloud (project CIAM, https://cryoport.atlassian.net — see
-GUIDE.md), with a VS Code front end (`plan/`, opening one VS Code window per issue on an Aerospace
-workspace) that starts, ships and finishes each issue. It does not use GitHub Issues; pull requests
+GUIDE.md), with a VS Code front end (`plan/`, opening one VS Code window per issue on its own macOS
+Desktop) that starts, ships and finishes each issue. It does not use GitHub Issues; pull requests
 are its one GitHub integration. Nothing is inherited from a parent directory's `CLAUDE.md` or
 settings: what this repo needs is here or in `.claude/`.
 
@@ -28,8 +28,7 @@ settings: what this repo needs is here or in `.claude/`.
   mitigated.
 - **Reviewing a PR:** how dispositions, re-review and verbatim-fix resolution work is GUIDE.md §5,
   "Review: co-signing and dispositions."
-- **Before each push:** `/code-review high` on the branch's whole diff, review fixes included. The
-  PR body says it ran.
+- **Review:** GitHub Copilot reviews each PR. `pr` asks it again whenever a push adds commits.
 - **Browser checks:** a test script in Chrome or Chromium, run with the suite. The
   `chrome-devtools` MCP server (Chrome, `--isolated`) is for investigating an issue, never for
   checking a change, and never drives an issue window's integrated browser.

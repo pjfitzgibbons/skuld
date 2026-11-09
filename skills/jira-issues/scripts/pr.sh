@@ -1,5 +1,5 @@
 #!/bin/sh
-# pr [done] [KEY]: commit, push and open or update the PR for the current branch, in one step that is
+# pr [done] [--no-copilot] [KEY]: commit, push and open or update the PR for the current branch, in one step that is
 # safe to repeat. Each step runs only when it has something to do:
 #
 #   commit  when the tree has changes: stages everything (.tmp/ is ignored) and commits with the
@@ -8,7 +8,8 @@
 #   PR      gh pc when the branch has no PR, else gh pb, which replaces the body with
 #           .tmp/KEY/pr-body.md
 #   Copilot when the push moved the PR's branch: asks Copilot to review it again, so each round of
-#           review fixes is reviewed in turn (gh pc asks for a new PR)
+#           review fixes is reviewed in turn (gh pc asks for a new PR). --no-copilot skips both
+#           requests
 #   replies when .tmp/KEY/replies/ holds <comment id>.md files: posts each to its review thread,
 #           resolves the thread and deletes the file (pr_threads.py --post)
 #   ticks   when .tmp/KEY/issue.md exists: applies its checkbox changes to the issue's description in
@@ -91,7 +92,17 @@ refuse_smart_commits_range() {
 }
 
 finish=0
-[ "${1:-}" != done ] || { finish=1; shift; }
+copilot=1
+while [ $# -gt 0 ]; do
+  case $1 in
+    done) finish=1 ;;
+    --no-copilot) copilot=0 ;;
+    *) break ;;
+  esac
+  shift
+done
+# gh pc reads it, so a new PR isn't sent to Copilot either.
+[ "$copilot" = 1 ] || export GHBODY_NO_COPILOT=1
 
 root=$(git rev-parse --show-toplevel)
 cd "$root"
@@ -162,7 +173,9 @@ GIT_TERMINAL_PROMPT=0 git push -u origin HEAD
 if [ -n "$state" ]; then
   # Straight after the push, so a later step that fails can't leave pushed commits unreviewed. A pr
   # stopped between the push and this request still can: the next one finds nothing new to ask about.
-  if [ "$head_before" != "$(git rev-parse HEAD)" ]; then
+  if [ "$copilot" = 0 ]; then
+    echo "pr: --no-copilot; Copilot isn't asked"
+  elif [ "$head_before" != "$(git rev-parse HEAD)" ]; then
     echo "pr: asking Copilot to review the new commits"
     gh pr edit "$branch" --add-reviewer @copilot >/dev/null ||
       echo "pr: Copilot wasn't asked to review the PR; ask under Reviewers" >&2
@@ -179,7 +192,7 @@ fi
 send_round
 
 # The PR's URL. There's no VS Code Pull Requests extension here to open it in; this is the
-# openUrl() seam's shell-side equivalent — printing it is all this script does. Opening it in a
+# showUrl() seam's shell-side equivalent — printing it is all this script does. Opening it in a
 # terminal browser is out of scope (see GUIDE.md).
 url=$(gh pr view "$branch" --json url --jq .url)
 echo "$url"

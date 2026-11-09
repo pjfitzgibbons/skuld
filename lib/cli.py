@@ -10,6 +10,7 @@ import sys
 from . import config as config_mod
 from . import done as done_mod
 from . import fileissues as fileissues_mod
+from . import placer as placer_mod
 from . import ship as ship_mod
 from . import start as startLib
 from . import term as term_mod
@@ -167,25 +168,34 @@ def mergeRows(jiraRows, skRows):
 # way it did under the old tab-delimited `--delimiter \t`/`--with-nth 1,2,3` setup. cmdPicker
 # below no longer passes either option: it isn't needed to extract `{1}`, and dropping it avoids
 # re-introducing a tab-joined display when fzf re-renders the (now space-padded) fields.
-def issueRows(cfg):
+#
+# slotLabels ({KEY: label}, from the WindowPlacer) adds a column after status: where each issue's
+# window is ("D3", or "D3, window on D4" when its window is elsewhere). With no slots at all there
+# is no column.
+def issueRows(cfg, slotLabels=None):
     jiraRows = jiraFrom(cfg).list(cfg.get("jql"))
     skRows = fileissues_mod.FileIssues({"dir": config_mod.issueStoreFrom(cfg)}).list()
     issues = mergeRows(jiraRows, skRows)
-    idWidth = max((len(issue["id"]) for issue in issues), default=0)
-    statusWidth = max((len(issue["status"]) for issue in issues), default=0)
+    slotLabels = slotLabels or {}
+    columns = [lambda issue: issue["id"], lambda issue: issue["status"]]
+    if slotLabels:
+        columns.append(lambda issue: slotLabels.get(issue["id"], ""))
+    widths = [max((len(column(issue)) for issue in issues), default=0) for column in columns]
     rows = []
     for issue in issues:
         row = dict(issue)
         row["key"] = issue["id"]
-        row["line"] = f'{issue["id"].ljust(idWidth)}  {issue["status"].ljust(statusWidth)}  {issue["subject"]}'
+        padded = [column(issue).ljust(width) for column, width in zip(columns, widths)]
+        row["line"] = "  ".join([*padded, issue["subject"]])
         rows.append(row)
     return rows
 
 
 # `plan list`: the picker's rows, printed plainly -- already column-aligned (issueRows()).
 def cmdList(cfg):
-    term_mod.sweepSlots(cfg.get("slotsFile"))
-    rows = issueRows(cfg)
+    placer = placer_mod.placerFrom(cfg)
+    placer.sweep()
+    rows = issueRows(cfg, placer.slotLabels())
     for row in rows:
         print(row["line"])
 
@@ -219,13 +229,15 @@ def cmdView(cfg, key):
     print(jira.browseUrl(key))
 
 
-# `plan start`/`plan open <KEY>`: start.start(), then open or focus the issue's VS Code window on its
-# Aerospace workspace. Open is the same call as Start (start.py's ACTION/startIn already handle
-# "already has a worktree" by reusing it); the terminal tool doesn't need two code paths.
+# `plan start`/`plan open <KEY>`: start.start(), then open or focus the issue's VS Code window
+# through the configured WindowPlacer (lib/placer.py). Open is the same call as Start (start.py's
+# ACTION/startIn already handle "already has a worktree" by reusing it); the terminal tool doesn't
+# need two code paths.
 def cmdStart(cfg, key):
     startLib.checkId(key, "Start")
     jira = jiraFrom(cfg, key)
-    term_mod.sweepSlots(cfg.get("slotsFile"))
+    placer = placer_mod.placerFrom(cfg)
+    placer.sweep()
     result = startLib.start(jira, cfg.get("checkouts"), key, confirmBlockers, typeMap=cfg.get("typeMap"))
     if not result:
         print("Not started.")
@@ -234,22 +246,17 @@ def cmdStart(cfg, key):
         print(note)
     ticket = jira.browseUrl(key) if fileissues_mod.isFileBacked(key) else None
     workspaceFile = writeIssueWorkspaceFile(cfg, key, result["dir"], ticket)
-    outcome = term_mod.openIssueWindow(key, workspaceFile, cfg.get("aerospaceConfig"), cfg.get("slotsFile"))
-    print(f'Workspace {outcome["workspace"]} ready.')
+    placement = placer.openWindow(key, workspaceFile)
+    for note in placement.notes:
+        print(note)
+    print(f"{placement.where} ready.")
     if ticket:
         print(ticket)  # the plan-window extension opens it in a tab
     else:
-        # Start runs in whatever terminal invoked `plan start`, not the new issue's own
-        # workspace, so it must name that workspace explicitly rather than let openUrl() infer
-        # the caller's own.
-        term_mod.openUrl(
-            jira.browseUrl(key),
-            outcome["workspace"],
-            cfg.get("browserApp"),
-            cfg.get("browserBundleId"),
-            cfg.get("slotsFile"),
-        )
-    term_mod.focusIssueWorkspace(outcome["workspace"])
+        # Start runs in whatever terminal invoked `plan start`, not the new issue's own window,
+        # so the placer is handed the placement rather than inferring the caller's own.
+        placer.showUrl(jira.browseUrl(key), placement)
+    placer.focus(placement, workspaceFile)
 
 
 # What Claude is first asked to do. A store issue names its ticket file: "Work on Jira SK-0003"
@@ -264,7 +271,7 @@ def claudePrompt(key, ticket):
 
 
 def writeIssueWorkspaceFile(cfg, key, worktree, ticket):
-    path = term_mod.workspaceFilePath(worktree, key)
+    path = term_mod.issueWorkspaceFilePath(key, worktree, cfg.get("workspaceDir"))
     workspace = term_mod.issueWorkspace(
         key, worktree, config_mod.issueStoreFrom(cfg), claudePrompt(key, ticket), ticket
     )
@@ -306,7 +313,7 @@ def cmdDone(cfg, key):
         key = keyFromBranch(currentBranch(dir))
     startLib.checkId(key, "Done")
     jira = jiraFrom(cfg, key)
-    term_mod.sweepSlots(cfg.get("slotsFile"))
+    placer_mod.placerFrom(cfg).sweep()
     result = done_mod.finish(
         jira,
         cfg.get("checkouts"),
@@ -314,6 +321,7 @@ def cmdDone(cfg, key):
         disposable=cfg.get("disposable"),
         typeMap=cfg.get("typeMap"),
         slotsFile=cfg.get("slotsFile"),
+        workspaceDir=cfg.get("workspaceDir"),
         cwd=dir,
     )
     for note in result["notes"]:
@@ -355,10 +363,11 @@ def cmdPicker(cfg, argv0=None):
         "--bind",
         f"ctrl-r:reload({self_} list)",
     ]
-    term_mod.sweepSlots(cfg.get("slotsFile"))
+    placer = placer_mod.placerFrom(cfg)
+    placer.sweep()
     fzf = subprocess.Popen(["fzf", *args], stdin=subprocess.PIPE, stdout=None, stderr=None)
     try:
-        rows = issueRows(cfg)
+        rows = issueRows(cfg, placer.slotLabels())
         fzf.stdin.write("\n".join(r["line"] for r in rows).encode("utf8"))
         fzf.stdin.close()
     except Exception as error:
