@@ -32,8 +32,36 @@ function findClaudeTerminal(plan, terminals) {
   return terminals.find((terminal) => terminal.name === claudeTerminalName(plan));
 }
 
+function shellTerminalName(plan) {
+  return `Shell ${plan.key}`;
+}
+
+// A plain login shell in the worktree, beside Claude's terminal.
+function shellTerminalOptions(plan, shell) {
+  return {
+    name: shellTerminalName(plan),
+    cwd: plan.worktree,
+    shellPath: shell,
+    shellArgs: ["-l"],
+    env: { PLAN_KEY: plan.key },
+    isTransient: true,
+  };
+}
+
+function findShellTerminal(plan, terminals) {
+  return terminals.find((terminal) => terminal.name === shellTerminalName(plan));
+}
+
 function ticketNeedsOpening(plan, openFilePaths) {
   return plan.ticket !== null && !openFilePaths.includes(plan.ticket);
 }
 
-module.exports = { readPlan, claudeTerminalName, claudeTerminalOptions, findClaudeTerminal, ticketNeedsOpening };
+module.exports = {
+  readPlan,
+  claudeTerminalName,
+  claudeTerminalOptions,
+  findClaudeTerminal,
+  shellTerminalOptions,
+  findShellTerminal,
+  ticketNeedsOpening,
+};

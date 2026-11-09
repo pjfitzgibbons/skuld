@@ -1,7 +1,9 @@
+import io
 import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from . import config
 
@@ -21,6 +23,13 @@ class ConfigTest(unittest.TestCase):
     def test_a_missing_file_is_the_defaults(self):
         missing = os.path.join(tempfile.mkdtemp(prefix="skuld-config-"), "config.json")
         self.assertEqual(config.load(missing), config.defaults())
+
+    def test_a_config_with_ghosttyApp_loads_with_a_warning(self):
+        path = writeConfig({"ghosttyApp": "/Applications/Ghostty.app"})
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            cfg = config.load(path)
+        self.assertIn("ghosttyApp, which is no longer read", stderr.getvalue())
+        self.assertEqual(cfg["issueStore"], None)
 
     def test_a_malformed_file_fails_loudly(self):
         path = writeConfig({})

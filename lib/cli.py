@@ -219,7 +219,7 @@ def cmdView(cfg, key):
     print(jira.browseUrl(key))
 
 
-# `plan start`/`plan open <KEY>`: start.start(), then open or focus the issue's tmux/Ghostty/
+# `plan start`/`plan open <KEY>`: start.start(), then open or focus the issue's VS Code window on its
 # Aerospace workspace. Open is the same call as Start (start.py's ACTION/startIn already handle
 # "already has a worktree" by reusing it); the terminal tool doesn't need two code paths.
 def cmdStart(cfg, key):
@@ -232,25 +232,12 @@ def cmdStart(cfg, key):
         return
     for note in result["notes"]:
         print(note)
-    prompt = None
-    if fileissues_mod.isFileBacked(key):
-        prompt = (
-            f"Work on {key}. It is a local file-backed issue, not a Jira ticket: read "
-            f"{jira.browseUrl(key)} first. Its status and log live in that file."
-        )
-    outcome = term_mod.openIssueWorkspace(
-        key, result["dir"], cfg.get("ghosttyApp"), cfg.get("aerospaceConfig"), cfg.get("slotsFile"), prompt
-    )
+    ticket = jira.browseUrl(key) if fileissues_mod.isFileBacked(key) else None
+    workspaceFile = writeIssueWorkspaceFile(cfg, key, result["dir"], ticket)
+    outcome = term_mod.openIssueWindow(key, workspaceFile, cfg.get("aerospaceConfig"), cfg.get("slotsFile"))
     print(f'Workspace {outcome["workspace"]} ready.')
-    if fileissues_mod.isFileBacked(key):
-        # User decision 2026-11-05 (revised 2026-11-05): a file-backed issue has no browse URL to
-        # open in a browser -- instead a tmux pane split off the issue's "claude" window opens the
-        # issue's own file (the issues/ copy FileIssues reads and writes, not the worktree's) in
-        # nvim, and the path still prints. Start and Open share this same call (both run cmdStart),
-        # so a second Open on an issue already started reuses the pane rather than splitting
-        # another one -- openTicketPane()'s own tagged-pane check.
-        term_mod.openTicketPane(key, result["dir"], jira.browseUrl(key))
-        print(jira.browseUrl(key))
+    if ticket:
+        print(ticket)  # the plan-window extension opens it in a tab
     else:
         # Start runs in whatever terminal invoked `plan start`, not the new issue's own
         # workspace, so it must name that workspace explicitly rather than let openUrl() infer
@@ -262,7 +249,28 @@ def cmdStart(cfg, key):
             cfg.get("browserBundleId"),
             cfg.get("slotsFile"),
         )
-    term_mod.focusIssueWorkspace(outcome["workspace"], key)
+    term_mod.focusIssueWorkspace(outcome["workspace"])
+
+
+# What Claude is first asked to do. A store issue names its ticket file: "Work on Jira SK-0003"
+# sent Claude looking for a Jira ticket (2026-11-05).
+def claudePrompt(key, ticket):
+    if not ticket:
+        return f"Work on Jira {key}"
+    return (
+        f"Work on {key}. It is a local file-backed issue, not a Jira ticket: read "
+        f"{ticket} first. Its status and log live in that file."
+    )
+
+
+def writeIssueWorkspaceFile(cfg, key, worktree, ticket):
+    path = term_mod.workspaceFilePath(worktree, key)
+    workspace = term_mod.issueWorkspace(
+        key, worktree, config_mod.issueStoreFrom(cfg), claudePrompt(key, ticket), ticket
+    )
+    with term_mod.step("writing the issue's workspace file", f"Check that {os.path.dirname(path)} is writable."):
+        term_mod.writeWorkspaceFile(path, workspace)
+    return path
 
 
 # `plan ship [KEY]`: ship.check()'s pre-flight, then `pr <KEY>` visibly in a tmux window. KEY, when
