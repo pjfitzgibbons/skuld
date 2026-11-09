@@ -36,6 +36,7 @@ final class SlotBar: NSObject {
     var slots: [Slot] = []
     var pulses: [Int: LivePulse] = [:]
     var lastPlacement = ""
+    var lastBar = ""
     let fadeSeconds = 3.0
     let heldAlpha = 0.6
 
@@ -59,7 +60,10 @@ final class SlotBar: NSObject {
     }
 
     @objc func receivePulse(_ note: Notification) {
-        guard let pulse = validatePulse(slot: note.userInfo?["slot"], color: note.userInfo?["color"]) else { return }
+        guard let pulse = validatePulse(slot: note.userInfo?["slot"], color: note.userInfo?["color"]) else {
+            log("ignored a pulse that isn't a Desktop 1-\(maxDesktop) and red, green or off")
+            return
+        }
         switch pulse.color {
         case .red: pulses[pulse.desktop] = LivePulse(color: .systemRed, started: Date())
         case .green: pulses[pulse.desktop] = LivePulse(color: .systemGreen, started: Date())
@@ -106,6 +110,7 @@ final class SlotBar: NSObject {
                                  showing: desktop == desktops.showing))
         }
         item.button?.attributedTitle = title
+        reportBar(title.string, showing: desktops.showing)
         reportPlacement()
     }
 
@@ -116,13 +121,20 @@ final class SlotBar: NSObject {
         let frame = window?.frame ?? .zero
         let line = "item frame=\(frame) placed=\(frame.height > 0) visible=\(window?.isVisible ?? false)"
         guard line != lastPlacement else { return }
-        print(line)
-        fflush(stdout)
+        log(line)
         lastPlacement = line
     }
 
     // One entry per Desktop, `N  KEY` for a slot and `N` otherwise. A Desktop whose shortcut is
     // off in System Settings can't be reached, so its entry is disabled.
+    // Logs the bar's text when it changes, so its state can be checked without seeing it.
+    func reportBar(_ text: String, showing: Int) {
+        let line = "bar [\(text)] showing=\(showing)"
+        guard line != lastBar else { return }
+        log(line)
+        lastBar = line
+    }
+
     func menu(desktops: Int, slots: [Slot], shortcuts: [Int: DesktopShortcut]) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
@@ -145,13 +157,18 @@ final class SlotBar: NSObject {
     @objc func switchToDesktop(_ sender: NSMenuItem) {
         guard let shortcut = readDesktopShortcuts()[sender.tag] else { return }
         guard AXIsProcessTrusted() else {
-            print("switch to Desktop \(sender.tag): no Accessibility grant")
+            log("switch to Desktop \(sender.tag): no Accessibility grant")
             requestAccessibility()
             return
         }
         // The menu is still closing; a shortcut sent now can land on it instead of the Dock.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { sendKey(shortcut) }
     }
+}
+
+func log(_ line: String) {
+    print(line)
+    fflush(stdout)
 }
 
 func readDesktopShortcuts() -> [Int: DesktopShortcut] {
