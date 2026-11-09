@@ -89,12 +89,26 @@ final class SlotBar: NSObject {
         return pulse.color.withAlphaComponent(abs(sin(elapsed * .pi * 2)))
     }
 
+    // Numbers are filled and outlined in the opposite colour, so they stay readable over a
+    // translucent menu bar on any wallpaper. A negative stroke width draws both fill and outline,
+    // as a percentage of the font size.
+    // The letters are full white or black rather than labelColor, which macOS draws slightly
+    // translucent, and bold rather than the menu bar's regular weight.
+    let outlineWidth = -3.0
+    let letterColor = NSColor(name: nil) { isDark($0) ? .white : .black }
+    // Desktops that aren't showing are drawn at 70% of the showing one's strength.
+    let dimLetterColor = NSColor(name: nil) { NSColor(white: isDark($0) ? 0.7 : 0.3, alpha: 1) }
+    let outlineColor = NSColor(name: nil) { isDark($0) ? .black : .white }
+    let letterFont = NSFont.systemFont(ofSize: NSFont.menuBarFont(ofSize: 0).pointSize, weight: .bold)
+
     // A slot is marked with a dot and the showing Desktop with an underline, so neither depends on
     // colour (L7). Issue keys stay in the menu to keep the item narrow.
     func segment(desktop: Int, hasSlot: Bool, showing: Bool) -> NSAttributedString {
         var attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.menuBarFont(ofSize: 0),
-            .foregroundColor: showing ? NSColor.labelColor : NSColor.secondaryLabelColor,
+            .font: letterFont,
+            .foregroundColor: showing ? letterColor : dimLetterColor,
+            .strokeColor: outlineColor,
+            .strokeWidth: outlineWidth,
         ]
         if showing { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
         if let tint = tint(for: desktop) { attrs[.backgroundColor] = tint }
@@ -164,6 +178,10 @@ final class SlotBar: NSObject {
         // The menu is still closing; a shortcut sent now can land on it instead of the Dock.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { sendKey(shortcut) }
     }
+}
+
+func isDark(_ appearance: NSAppearance) -> Bool {
+    appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
 }
 
 func log(_ line: String) {
