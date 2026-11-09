@@ -12,6 +12,7 @@ from . import done as done_mod
 from . import fileissues as fileissues_mod
 from . import placer as placer_mod
 from . import ship as ship_mod
+from . import slotbar as slotbar_mod
 from . import start as startLib
 from . import term as term_mod
 from .jira import KEY_RE, Jira
@@ -343,6 +344,12 @@ def shellQuote(value):
     return "'" + str(value).replace("'", "'\\''") + "'"
 
 
+# `plan pulse <KEY> <red|green|off>`: pulse the issue's Desktop in SlotBar, or clear its tint.
+def cmdPulse(cfg, key, color):
+    startLib.checkId(key, "Pulse")
+    slotbar_mod.pulse(key, color, cfg.get("slotsFile"))
+
+
 def cmdPicker(cfg, argv0=None):
     if argv0 is None:
         argv0 = sys.argv[0]
@@ -396,6 +403,8 @@ def main(argv=None):
         return cmdShip(cfg, rest[0] if rest else None)
     if cmd == "done":
         return cmdDone(cfg, rest[0] if rest else None)
+    if cmd == "pulse":
+        return cmdPulse(cfg, rest[0] if rest else None, rest[1] if len(rest) > 1 else None)
     if KEY_RE.match(cmd):  # `plan CIAM-123` is shorthand for view
         return cmdView(cfg, fileissues_mod.canonicalKey(cmd))
-    raise RuntimeError(f'unknown command "{cmd}"; try: list, view, start, open, ship, done')
+    raise RuntimeError(f'unknown command "{cmd}"; try: list, view, start, open, ship, done, pulse')

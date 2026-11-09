@@ -204,6 +204,7 @@ through its adapter.
 | Auth | `~/.netrc` for Jira, read per call; `gh`'s and git's own credentials for GitHub and the store's remote |
 | Front end | VS Code, one issue window per issue, opened by the `code` CLI on a workspace file and placed by the `WindowPlacer` on a native Desktop, all via `subprocess`; fzf for the picker; ticket files in an editor tab |
 | Spaces helper | `skuld-spaces`, built from `macos/spaces.swift` with `swiftc` alone: read-only SkyLight calls, resolved with `dlsym`, that list Desktops and each VS Code window's Desktop as JSON |
+| Menu bar | SlotBar or SketchyBar, whichever has its LaunchAgent loaded. SlotBar is a menu-bar extra built from `macos/slotbar/` with `swiftc` alone and signed with a local self-signed certificate. It reads the slots file and Desktops through read-only SkyLight calls, takes pulses as the distributed notification `skuld.pulse` (a Desktop 1 to 16 and `red`, `green` or `off`, anything else ignored) from `plan pulse`, and switches Desktops by posting ^N, which needs the Accessibility grant |
 | Browser | The issue window's integrated browser, reached by the placer's `showUrl()` (§7.6.1); never system `open`. Browser automation and browser tests run in Chrome, never in an issue window |
 | Pages | One local Flask server on `127.0.0.1`, run by a LaunchAgent from login and controlled by `plan serve start\|stop\|restart\|status`, rendering an issue's pages from Jinja templates (§7.6.1) |
 | Pull requests | `gh`; Jira linkage through Jira's development panel, not a custom field |
@@ -346,7 +347,8 @@ prompt names the tracker: a Jira key, or the ticket file's path.
 
 Last, Start and Open switch to the issue's slot and focus the issue window with Claude's terminal in
 front, so the command finishes with the human at the issue's Claude, by running
-`code <workspace file>`. This runs after `showUrl()`. It is best-effort, like the SketchyBar trigger.
+`code <workspace file>`. This runs after `showUrl()`. It is best-effort: if it fails, Start or Open
+still succeeds and says nothing.
 
 <a id="ship"></a>
 

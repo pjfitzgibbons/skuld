@@ -1,0 +1,215 @@
+// SlotBar: a menu-bar extra that shows each Desktop, marks issue slots, pulses a slot on request
+// and switches to a Desktop chosen from its menu. Switching sends the Desktop's "Switch to Desktop
+// N" shortcut, which needs the Accessibility grant; nothing else does.
+// Usage: SlotBar <slots file>
+//   slots file: `N=KEY` lines (SlotCore.swift).
+import AppKit
+import ApplicationServices
+
+typealias Conn = Int32
+@_silgen_name("CGSMainConnectionID") func CGSMainConnectionID() -> Conn
+@_silgen_name("CGSCopyManagedDisplaySpaces") func CGSCopyManagedDisplaySpaces(_ cid: Conn) -> CFArray
+
+// Every display's Desktops and which are showing, through a read-only SkyLight call.
+func readDesktops() -> DesktopState {
+    desktopState(fromDisplays: CGSCopyManagedDisplaySpaces(CGSMainConnectionID()) as? [[String: Any]] ?? [])
+}
+
+struct LivePulse {
+    let color: NSColor
+    let started: Date
+}
+
+final class SlotBar: NSObject {
+    let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    let slotsPath: String
+    var slots: [Slot] = []
+    var pulses: [Int: LivePulse] = [:]
+    var lastPlacement = ""
+    var lastBar = ""
+    let fadeSeconds = 3.0
+    let heldAlpha = 0.6
+
+    init(slotsPath: String) {
+        self.slotsPath = slotsPath
+        super.init()
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(drawTitle), name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(receivePulse(_:)), name: pulseNotification, object: nil)
+        Timer.scheduledTimer(withTimeInterval: 1.0 / 20, repeats: true) { [weak self] _ in self?.animatePulses() }
+        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.reloadSlots() }
+        reloadSlots()
+    }
+
+    // The 5 s timer is how slots-file changes reach the bar.
+    func reloadSlots() {
+        slots = readSlots(atPath: slotsPath)
+        item.menu = menu(desktops: readDesktops().count, slots: slots, shortcuts: readDesktopShortcuts())
+        drawTitle()
+    }
+
+    @objc func receivePulse(_ note: Notification) {
+        guard let pulse = validatePulse(slot: note.userInfo?["slot"], color: note.userInfo?["color"]) else {
+            log("ignored a pulse that isn't a Desktop 1-\(maxDesktop) and red, green or off")
+            return
+        }
+        switch pulse.color {
+        case .red: pulses[pulse.desktop] = LivePulse(color: .systemRed, started: Date())
+        case .green: pulses[pulse.desktop] = LivePulse(color: .systemGreen, started: Date())
+        case .off: pulses[pulse.desktop] = nil
+        }
+        drawTitle()
+    }
+
+    func animatePulses() {
+        if pulses.values.contains(where: isFading) { drawTitle() }
+    }
+
+    func isFading(_ pulse: LivePulse) -> Bool {
+        Date().timeIntervalSince(pulse.started) < fadeSeconds
+    }
+
+    // A pulse fades in and out once a second for fadeSeconds, then holds a steady tint until the
+    // next pulse or `off`.
+    func tint(for desktop: Int) -> NSColor? {
+        guard let pulse = pulses[desktop] else { return nil }
+        guard isFading(pulse) else { return pulse.color.withAlphaComponent(heldAlpha) }
+        let elapsed = Date().timeIntervalSince(pulse.started)
+        return pulse.color.withAlphaComponent(abs(sin(elapsed * .pi * 2)))
+    }
+
+    // Numbers are filled and outlined in the opposite colour, so they stay readable over a
+    // translucent menu bar on any wallpaper. A negative stroke width draws both fill and outline,
+    // as a percentage of the font size.
+    // The letters are full white or black rather than labelColor, which macOS draws slightly
+    // translucent, and bold rather than the menu bar's regular weight.
+    let outlineWidth = -3.0
+    let letterColor = NSColor(name: nil) { isDark($0) ? .white : .black }
+    // Desktops that aren't showing are drawn at 70% of the showing one's strength.
+    let dimLetterColor = NSColor(name: nil) { NSColor(white: isDark($0) ? 0.7 : 0.3, alpha: 1) }
+    let outlineColor = NSColor(name: nil) { isDark($0) ? .black : .white }
+    let letterFont = NSFont.systemFont(ofSize: NSFont.menuBarFont(ofSize: 0).pointSize, weight: .bold)
+
+    // A slot is marked with a dot and the showing Desktop with an underline, so neither depends on
+    // colour (L7). Issue keys stay in the menu to keep the item narrow.
+    func segment(desktop: Int, hasSlot: Bool, showing: Bool) -> NSAttributedString {
+        var attrs: [NSAttributedString.Key: Any] = [
+            .font: letterFont,
+            .foregroundColor: showing ? letterColor : dimLetterColor,
+            .strokeColor: outlineColor,
+            .strokeWidth: outlineWidth,
+        ]
+        if showing { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+        if let tint = tint(for: desktop) { attrs[.backgroundColor] = tint }
+        return NSAttributedString(string: hasSlot ? " \(desktop)• " : " \(desktop) ", attributes: attrs)
+    }
+
+    @objc func drawTitle() {
+        let desktops = readDesktops()
+        let title = NSMutableAttributedString()
+        for desktop in 1...max(desktops.count, 1) {
+            title.append(segment(desktop: desktop,
+                                 hasSlot: slot(on: desktop, in: slots) != nil,
+                                 showing: desktops.showing.contains(desktop)))
+        }
+        item.button?.attributedTitle = title
+        reportBar(title.string, showing: desktops.showing)
+        reportPlacement()
+    }
+
+    // Prints where macOS put the item when that changes. A height of 0 means macOS hasn't placed
+    // it in the menu bar; bin/install-slotbar reads this line from the log.
+    func reportPlacement() {
+        let window = item.button?.window
+        let frame = window?.frame ?? .zero
+        let line = "item frame=\(frame) placed=\(frame.height > 0) visible=\(window?.isVisible ?? false)"
+        guard line != lastPlacement else { return }
+        log(line)
+        lastPlacement = line
+    }
+
+    // One entry per Desktop, `N  KEY` for a slot and `N` otherwise. A Desktop whose shortcut is
+    // off in System Settings can't be reached, so its entry is disabled.
+    // Logs the bar's text when it changes, so its state can be checked without seeing it.
+    func reportBar(_ text: String, showing: Set<Int>) {
+        let line = "bar [\(text)] showing=\(showing.sorted().map(String.init).joined(separator: ","))"
+        guard line != lastBar else { return }
+        log(line)
+        lastBar = line
+    }
+
+    func menu(desktops: Int, slots: [Slot], shortcuts: [Int: DesktopShortcut]) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for desktop in 1...max(desktops, 1) {
+            let key = slot(on: desktop, in: slots)?.key
+            let entry = NSMenuItem(title: key.map { "\(desktop)  \($0)" } ?? "\(desktop)",
+                                   action: #selector(switchToDesktop(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.tag = desktop
+            entry.isEnabled = shortcuts[desktop] != nil
+            menu.addItem(entry)
+        }
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Quit SlotBar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        return menu
+    }
+
+    // Sends the Desktop's shortcut, read fresh in case it changed in System Settings. Switching
+    // brings no window forward, so a dialog on that Desktop stays on top.
+    @objc func switchToDesktop(_ sender: NSMenuItem) {
+        guard let shortcut = readDesktopShortcuts()[sender.tag] else { return }
+        guard AXIsProcessTrusted() else {
+            log("switch to Desktop \(sender.tag): no Accessibility grant")
+            requestAccessibility()
+            return
+        }
+        // The menu is still closing; a shortcut sent now can land on it instead of the Dock.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { sendKey(shortcut) }
+    }
+}
+
+func isDark(_ appearance: NSAppearance) -> Bool {
+    appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+}
+
+func log(_ line: String) {
+    print(line)
+    fflush(stdout)
+}
+
+func readDesktopShortcuts() -> [Int: DesktopShortcut] {
+    parseDesktopShortcuts(UserDefaults.standard.persistentDomain(forName: "com.apple.symbolichotkeys") ?? [:])
+}
+
+func sendKey(_ shortcut: DesktopShortcut) {
+    let source = CGEventSource(stateID: .hidSystemState)
+    for isDown in [true, false] {
+        let event = CGEvent(keyboardEventSource: source, virtualKey: shortcut.keyCode, keyDown: isDown)
+        event?.flags = CGEventFlags(rawValue: shortcut.modifierMask)
+        event?.post(tap: .cghidEventTap)
+    }
+}
+
+// Shows macOS's prompt to grant Accessibility when SlotBar doesn't have it yet.
+func requestAccessibility() {
+    let prompt = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+    _ = AXIsProcessTrustedWithOptions([prompt: true] as CFDictionary)
+}
+
+@main
+struct SlotBarApp {
+    static func main() {
+        let args = CommandLine.arguments
+        guard args.count == 2 else {
+            print("usage: SlotBar <slots file>")
+            exit(2)
+        }
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        if !AXIsProcessTrusted() { requestAccessibility() }
+        let bar = SlotBar(slotsPath: args[1])
+        withExtendedLifetime(bar) { app.run() }
+    }
+}

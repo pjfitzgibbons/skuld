@@ -1,10 +1,10 @@
 # The issue window's plumbing: the VS Code workspace file, the issue-label slots file that
-# SketchyBar reads, SketchyBar's refresh trigger, and Ship's tmux window. All via subprocess, like
+# SlotBar reads, and Ship's tmux window. All via subprocess, like
 # start.py's run(); no vscode import, no new deps. Where an issue's window goes on screen is the
 # WindowPlacer's job (lib/placer.py, lib/spaces.py); this module only reads and writes the files.
 #
 # The slots file (~/.cache/plan/workspaces by default) holds `<Desktop number>=<KEY>` lines, so
-# SketchyBar can show "3 #CIAM-123" on the bar. See docs/architecture.md §7.1 and GUIDE.md §4.
+# SlotBar (macos/slotbar/) can mark Desktop 3 as CIAM-123's. See docs/architecture.md §7.1 and GUIDE.md §4.
 import json
 import os
 from contextlib import contextmanager
@@ -38,7 +38,7 @@ def writeSlotsLines(path, lines):
 
 
 # The slot (a Desktop number) currently labelled for key, or None: the line ending "=<key>" in the
-# slots file, as SketchyBar's workspaces.sh plugin reads it.
+# slots file.
 def lookupSlot(key, slotsFile=None):
     for slot, k in slotEntries(slotsFile):
         if k == key:
@@ -53,34 +53,21 @@ def slotEntries(slotsFile=None):
 
 
 # Write `<slot>=<KEY>`, replacing any existing line for that slot (a slot labels one issue at a
-# time) and the key's own old line (an issue has one slot), via write-temp-then-rename, then
-# refresh SketchyBar.
+# time) and the key's own old line (an issue has one slot), via write-temp-then-rename. SlotBar
+# rereads the file on its own.
 def writeSlot(key, slot, slotsFile=None):
     path, lines = readSlots(slotsFile)
     kept = [line for line in lines if not line.startswith(f"{slot}=") and not line.endswith(f"={key}")]
     kept.append(f"{slot}={key}")
     writeSlotsLines(path, kept)
-    triggerSketchybar()
 
 
-# Drop key's line (if any) and refresh SketchyBar. A no-op write is skipped.
+# Drop key's line (if any). A no-op write is skipped.
 def removeSlot(key, slotsFile=None):
     path, lines = readSlots(slotsFile)
     kept = [line for line in lines if not line.endswith(f"={key}")]
     if kept != lines:
         writeSlotsLines(path, kept)
-        triggerSketchybar()
-
-
-# (verified) `sketchybar --trigger plan_workspaces_change` fires the custom event
-# ~/.config/sketchybar/plugins/workspaces.sh listens for. If sketchybar isn't installed or isn't
-# running, run() raises (an OSError from a missing binary, or a nonzero exit); this skips it
-# silently rather than failing a Start/Open/Done over a bar refresh.
-def triggerSketchybar():
-    try:
-        run("sketchybar", ["--trigger", "plan_workspaces_change"], os.getcwd())
-    except RuntimeError:
-        pass
 
 
 # The issue window's workspace file is a throwaway, kept outside every repo in one folder,

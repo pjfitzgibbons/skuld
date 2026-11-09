@@ -1,0 +1,18 @@
+#!/bin/bash
+# Starts SlotBar through its LaunchAgent, e.g. after Quit SlotBar. Does nothing if it's running.
+# Quit exits cleanly, and the agent restarts SlotBar only after a crash, so Quit stays quit until
+# this or the next login.
+set -euo pipefail
+label=dev.skuld.slotbar
+service="gui/$(id -u)/$label"
+
+if ! launchctl print "$service" >/dev/null 2>&1; then
+  echo "start-slotbar: SlotBar's LaunchAgent isn't loaded; run bin/install-slotbar" >&2
+  exit 1
+fi
+if pgrep -x SlotBar >/dev/null; then
+  echo "SlotBar is already running."
+  exit 0
+fi
+launchctl kickstart "$service"
+echo "SlotBar started."
