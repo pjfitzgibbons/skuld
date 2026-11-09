@@ -407,7 +407,6 @@ class SpacesPlacer:
 
     def writeSlots(self, entries):
         term.writeSlotsLines(self.slotsPath(), [f"{slot}={key}" for slot, key in entries])
-        term.triggerSketchybar()
 
     def slotsPath(self):
         return term.resolveSlotsFile(self.slotsFile)

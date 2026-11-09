@@ -1,6 +1,6 @@
 # M3: tmux's `-t <name>` (no leading "=") prefix-matches, so `has-session -t CIAM-1` also matches
 # a session named CIAM-12. term.py must target every tmux call with the exact-match "=name" form.
-# term.py talks to tmux and sketchybar through start.py's run() (subprocess), so these tests patch
+# term.py talks to tmux through start.py's run() (subprocess), so these tests patch
 # `lib.term.run` directly (term.py did `from .start import run`, binding its own name at import
 # time), and assert the exact argv each tool would see, never spawning a real process. The slots
 # file itself is a real temp file, since its write-temp-then-rename logic is what's under test.
@@ -62,13 +62,13 @@ class TermTests(unittest.TestCase):
                 term.writeSlot("CIAM-1", "4", slots)
             self.assertEqual(term.slotEntries(slots), [("4", "CIAM-1")])
 
-    def test_writeSlot_triggers_sketchybar(self):
+    def test_writeSlot_runs_no_command(self):
         calls = []
         with tempfile.TemporaryDirectory() as tmp:
             slots = os.path.join(tmp, "workspaces")
             with mock.patch.object(term, "run", side_effect=lambda c, a, cwd: calls.append([c, *a])):
                 term.writeSlot("CIAM-1", "3", slots)
-        self.assertIn(["sketchybar", "--trigger", "plan_workspaces_change"], calls)
+        self.assertEqual(calls, [])
 
     def test_removeSlot_drops_only_the_matching_line(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -90,10 +90,6 @@ class TermTests(unittest.TestCase):
                 term.removeSlot("CIAM-1", slots)
             self.assertEqual(calls, [])
             self.assertEqual(term.lookupSlot("CIAM-2", slots), "4")
-
-    def test_triggerSketchybar_swallows_a_missing_sketchybar(self):
-        with mock.patch.object(term, "run", side_effect=RuntimeError("sketchybar: not found")):
-            term.triggerSketchybar()  # must not raise
 
     # Ship and Go used to be separate terminal windows -- a "ship" window with nvim+lazygit for a
     # standalone review step, and a "go" window that ran `pr`. The review step is removed (DECIDED,

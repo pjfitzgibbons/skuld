@@ -472,8 +472,8 @@ def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result,
         notes.append(f"Added the note to {key}.")
     notes.append(jira.closeNote(key))
 
-    # Rule 4: the issue is finished, so its workspace slot (if any) is freed, and SketchyBar
-    # refreshed, the same way Start/Open label it (term.writeSlot). Done opens no browser -- only
+    # Rule 4: the issue is finished, so its workspace slot (if any) is freed, the same way
+    # Start/Open label it (term.writeSlot). Done opens no browser -- only
     # the "Close KEY in Jira" note above, once, ever points Peter at the issue.
     term.removeSlot(key, slotsFile)
     # The issue window's workspace file is a throwaway: one that won't delete is a warning, not a failure.

@@ -65,8 +65,8 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #   project        The default Jira project key, used where none is otherwise known (e.g.
 #                  resolving a bare key typed without one). Default: jira.py's DEFAULT_PROJECT
 #                  ("CIAM").
-#   slotsFile      Path to the "<Desktop number>=<KEY>" file the placer writes so SketchyBar's
-#                  desktops.sh plugin can label a Desktop with the issue it holds.
+#   slotsFile      Path to the "<Desktop number>=<KEY>" file the placer writes so SlotBar
+#                  can mark a Desktop with the issue it holds.
 #                  Default: "~/.cache/plan/workspaces".
 #   windowsFile    Path to the "<KEY>=<window id>" file that says which VS Code window is each
 #                  issue's. Default: "~/.cache/plan/windows".
