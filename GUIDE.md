@@ -57,7 +57,8 @@ macOS only. In order:
 
 1. **Tools.** `git`, `gh` (signed in with `gh auth login`), Python 3.10 or later on `PATH` as
    `python3` (`/usr/bin/python3` is 3.9 and can't run the scripts), VS Code with its `code` command
-   on `PATH`, fzf, and Xcode's Command Line Tools for `swiftc` (step 12). SketchyBar is optional.
+   on `PATH`, fzf, and Xcode's Command Line Tools for `swiftc` (steps 12 and 13). A menu bar for
+   the Desktops is optional: SlotBar (step 13) or SketchyBar.
 
 2. **The Jira token in `~/.netrc`**, never in a tracked file or an env var:
 
@@ -168,7 +169,37 @@ macOS only. In order:
        `swiftc` alone and no permission grant.
     7. For SketchyBar, give each Desktop a `space` item with `associated_space=N`, and subscribe it
        to `plan_workspaces_change` so it relabels from the slots file. Run `sketchybar --reload`
-       after adding a Desktop.
+       after adding a Desktop. For SlotBar, see step 13.
+
+13. **SlotBar**, optional. A menu-bar item that shows each Desktop, a dot on each issue's Desktop
+    and an underline under the one showing. `plan pulse` pulses a Desktop red or green, and
+    choosing a Desktop from its menu switches to it. It reads the slots file. SlotBar and
+    SketchyBar are alternatives: whichever has its LaunchAgent loaded is the bar.
+    1. Set the menu bar to never hide: System Settings → Control Center → "Automatically hide and
+       show the menu bar" → Never. From a shell, `defaults write NSGlobalDomain _HIHideMenuBar
+       -bool false` and `defaults write com.apple.controlcenter AutoHideMenuBarOption -int 3`. A
+       SketchyBar setup that hides the menu bar hides SlotBar with it.
+    2. Stop SketchyBar if it runs: `brew services stop sketchybar`. `brew services start
+       sketchybar` brings it back, after `bin/install-slotbar --uninstall`.
+    3. Make the signing certificate once per Mac: `bin/slotbar-signing-identity`. It puts a
+       self-signed "SlotBar Local Signing" code-signing certificate in the login keychain. With it,
+       a rebuilt SlotBar keeps its Accessibility grant; signed ad-hoc, every build needs the grant
+       again.
+    4. Build, install and start it: `bin/install-slotbar`. It builds with `swiftc` into
+       `macos/build/`, installs `~/Applications/SlotBar.app` and the LaunchAgent
+       `~/Library/LaunchAgents/dev.skuld.slotbar.plist`, starts it, and says whether macOS put the
+       item in the menu bar. The first build may ask to let `codesign` use the key: choose Always
+       Allow. The agent starts SlotBar at login and restarts it after a crash; Quit SlotBar stays
+       quit until `bin/start-slotbar` or the next login. Its log is `~/Library/Logs/SlotBar.log`.
+    5. If the item doesn't appear, allow SlotBar under System Settings → Menu Bar.
+    6. Grant Accessibility when SlotBar asks, so it can send ^N: System Settings → Privacy &
+       Security → Device Control and Data Access on macOS 27, Accessibility before it. Desktops
+       whose ^N shortcut is off (step 12.3) are greyed out in its menu. If the grant is on but
+       SlotBar keeps asking, the entry is from an earlier signature:
+       `tccutil reset Accessibility dev.skuld.slotbar`, then `bin/start-slotbar` and grant again.
+
+    To rebuild after pulling `main`, run `bin/install-slotbar` again from the main checkout. It
+    replaces the running SlotBar, and the grant carries over. `bin/test-slotbar` runs its tests.
 
 ## 3. Commands
 
@@ -197,6 +228,7 @@ decides the repo (§4).
 | `plan done [KEY]` | Done (§6) |
 | `plan browse <KEY \| pr#N \| url> [KEY]` | Open a page in the issue window's browser (§7) |
 | `plan serve start\|stop\|restart\|status` | Control the local server's LaunchAgent (§7); `status` prints the server's URL and whether it answers |
+| `plan pulse <KEY> red\|green\|off` | Pulse the issue's Desktop in SlotBar, or clear its tint (§2, step 13); exits non-zero when SlotBar isn't running |
 | `plan archive` | Move closed tickets past `archiveAfterDays` to `archive/` |
 | `plan init-store` | Make an empty store's folders |
 | `pr [done] [--no-copilot] [KEY]` | Send a round (§5) |
@@ -554,7 +586,15 @@ bin/
   jira-get                 one read-only Jira GET with ~/.netrc auth
   gh-aliases.yml           gh pc and gh pb
   build-spaces             builds macos/build/skuld-spaces with swiftc
+  build-slotbar            builds and signs macos/build/SlotBar.app, slotbar-pulse inside it
+  install-slotbar          installs SlotBar and its LaunchAgent, or --uninstall removes them
+  start-slotbar            starts SlotBar through its LaunchAgent after Quit
+  slotbar-signing-identity makes SlotBar's self-signed code-signing certificate, once per Mac
+  test-slotbar             builds and runs SlotBar's core tests
 macos/spaces.swift         skuld-spaces: read-only SkyLight calls listing Desktops and VS Code windows
+macos/slotbar/             SlotBar: SlotCore.swift (slots, pulses, shortcuts, Desktop numbering;
+                           Foundation only) and its tests, slotbar.swift (the menu-bar item),
+                           pulse.swift (slotbar-pulse), Info.plist
 lib/
   cli.py                   subcommand dispatch and the fzf picker
   config.py                reads the machine config and store.yml
@@ -565,6 +605,7 @@ lib/
   term.py                  the workspace file, the slots file, SketchyBar's trigger, Ship's tmux window
   placer.py                the WindowPlacer port, Placement and placerFrom()
   spaces.py                SpacesPlacer: native Desktops through skuld-spaces and System Events
+  slotbar.py               plan pulse: a key's Desktop from the slots file, sent to slotbar-pulse
   test_*.py                the unit tests
   (the FileStore adapter, the checker, issue-watch and the local server also live in lib/)
 templates/issue.md         what plan new fills in
