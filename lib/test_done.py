@@ -120,6 +120,9 @@ def sandbox(merged=True):
     git(seed, "config", "user.name", "T")
     with open(os.path.join(seed, "a.txt"), "w") as f:
         f.write("a\n")
+    # A configured repo ignores .tmp/, where pr's round files live.
+    with open(os.path.join(seed, ".gitignore"), "w") as f:
+        f.write(".tmp/\n")
     git(seed, "add", "-A")
     git(seed, "commit", "-q", "-m", "init")
     git(seed, "push", "-q", "origin", "main")
