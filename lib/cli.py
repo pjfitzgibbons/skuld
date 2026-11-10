@@ -61,26 +61,16 @@ def currentBranch(dir):
     return startLib.git(dir, "branch", "--show-current").strip()
 
 
-# M4: Ship's dir used to be a blind os.getcwd() -- fine when Peter types `plan ship` inside
-# the issue's own worktree, but wrong for the picker's ctrl-s bind (cmdPicker, below), which
-# shells out `plan ship {1}` from wherever `plan` itself was launched, not from the issue's
-# worktree. When cwd's current branch doesn't already match key, this resolves the
-# issue's actual worktree the same way Start/Done do (mainCheckout + existingWorktree, from the
-# key), instead of operating on whatever directory happened to be current.
+# Ship's dir: the issue's worktree, found the way Start/Open/Done find it (mainCheckout +
+# existingWorktree, from the key), so Ship follows docs/architecture.md §7.0 like they do. A cwd on
+# the issue's branch gets no shortcut: an unlisted repo is refused, and work in two listed repos is
+# refused by name. Ship never asks for a repo, since only a repo holding the work can be shipped.
 def resolveDir(cfg, jira, key):
-    cwd = os.getcwd()
-    try:
-        branch = currentBranch(cwd)
-    except RuntimeError:
-        branch = ""
-    if branch and startLib.issueBranch(key, cfg.get("typeMap")).match(branch):
-        return cwd
+    typeMap = cfg.get("typeMap")
     issue = jira.issue(key)
-    mc = startLib.mainCheckout(issue, cfg.get("checkouts"), cwd, "Start", cfg.get("typeMap"))
-    checkout = mc["checkout"]
+    checkout = startLib.mainCheckout(issue, cfg.get("checkouts"), os.getcwd(), "Ship", typeMap, refuseRepoPick)["checkout"]
     porcelain = startLib.git(checkout, "worktree", "list", "--porcelain")
-    dir = startLib.worktreeDir(checkout, key)
-    found = startLib.existingWorktree(porcelain, key, dir, "Start", cfg.get("typeMap"))
+    found = startLib.existingWorktree(porcelain, key, startLib.worktreeDir(checkout, key), "Ship", typeMap)
     if not found:
         raise RuntimeError(f"no worktree found for {key}; run plan start {key} first")
     return found["dir"]

@@ -1,9 +1,8 @@
 # M4: cmdShip used os.getcwd() as the worktree dir unconditionally. That's right when Peter types
 # `plan ship` from inside the issue's own worktree, but wrong for the picker's ctrl-s bind
 # (cmdPicker shells out `plan ship {1}` from wherever `plan` itself was launched -- never
-# necessarily the issue's worktree). resolveDir() is the fix: it keeps cwd when cwd is already on
-# a branch for the key, and otherwise resolves the issue's real worktree the same way Start/Done do
-# (mainCheckout + existingWorktree, from the key alone). These tests mock lib.start's module
+# necessarily the issue's worktree). resolveDir() is the fix: it resolves the issue's real worktree
+# the same way Start/Done do (mainCheckout + existingWorktree, from the key alone). These tests mock lib.start's module
 # functions directly -- cli.py calls them as `startLib.git(...)`/`startLib.mainCheckout(...)`
 # (module attribute access, not imported names), so patching the shared module's attributes is
 # visible to cli.py immediately.
@@ -24,6 +23,7 @@ from lib import start as startLib
 from lib import term as term_mod
 from lib.cli import main, mergeRows, resolveDir, shellQuote
 from lib.placer import Placement
+from lib.test_start import sandbox as start_sandbox
 
 # A config with Jira on: one project and a site that no test ever reaches.
 JIRA_ON = {"jira": {"CIAM": {"repos": []}}, "baseUrl": "https://jira.example"}
@@ -264,24 +264,35 @@ class IssueRowsSlotColumnTests(unittest.TestCase):
 
 
 class ResolveDirTests(unittest.TestCase):
-    def test_keeps_cwd_when_already_on_branch_for_key(self):
-        def fake_git(cwd, *args):
-            self.assertEqual(list(args), ["branch", "--show-current"])
-            return "feat/CIAM-5-go-requests\n"
+    def test_refuses_an_unlisted_repo_even_when_cwd_is_on_the_keys_branch(self):
+        unlisted = self.repoOnBranch("feat/CIAM-5-x")
+        with self.assertRaisesRegex(RuntimeError, "project CIAM lists no repo in checkouts"):
+            self.resolveFrom(unlisted["checkout"], {})
 
-        def fake_main_checkout(*a, **k):
-            raise RuntimeError("resolveDir should not need mainCheckout when cwd already matches")
+    def test_resolves_cwd_on_the_keys_branch_in_a_listed_repo(self):
+        listed = self.repoOnBranch("feat/CIAM-5-x")
+        dir = self.resolveFrom(listed["checkout"], {"CIAM": listed["checkout"]})
+        self.assertEqual(os.path.realpath(dir), os.path.realpath(listed["checkout"]))
 
+    def test_refuses_when_the_keys_branch_is_in_two_listed_repos(self):
+        repoA = self.repoOnBranch("feat/CIAM-5-x")
+        repoB = self.repoOnBranch("feat/CIAM-5-x")
+        with self.assertRaisesRegex(RuntimeError, "more than one repo"):
+            self.resolveFrom(repoA["checkout"], {"CIAM": [repoA["checkout"], repoB["checkout"]]})
+
+    def repoOnBranch(self, branch):
+        repo = start_sandbox()
+        self.addCleanup(shutil.rmtree, repo["root"], True)
+        repo["git"](repo["checkout"], "checkout", "-q", "-b", branch)
+        return repo
+
+    def resolveFrom(self, cwd, checkouts):
         class FakeJira:
             def issue(self, key):
-                raise RuntimeError("resolveDir should not need jira.issue when cwd already matches")
+                return {"key": key}
 
-        with mock.patch.object(startLib, "git", side_effect=fake_git), mock.patch.object(
-            startLib, "mainCheckout", side_effect=fake_main_checkout
-        ) as mc:
-            dir = resolveDir({"checkouts": {}}, FakeJira(), "CIAM-5")
-            self.assertEqual(dir, os.getcwd())
-            self.assertEqual(mc.call_count, 0)
+        with mock.patch.object(os, "getcwd", return_value=cwd):
+            return resolveDir({"checkouts": checkouts}, FakeJira(), "CIAM-5")
 
     def test_resolves_real_worktree_when_cwd_not_on_branch_for_key(self):
         porcelain = "\n".join(
@@ -353,24 +364,19 @@ class ResolveDirTests(unittest.TestCase):
 # never runs), a passing check must call it with the exact argv a tmux-visible `pr <key>` needs,
 # and `plan go` itself must now be reported as an unknown command.
 class CmdShipTests(unittest.TestCase):
-    def _onBranch(self, branch):
-        def fake_git(cwd, *args):
-            self.assertEqual(list(args), ["branch", "--show-current"])
-            return f"{branch}\n"
-
-        return fake_git
+    DIR = "/repo.worktrees/CIAM-5"
 
     def test_failing_check_refuses_and_never_runs_pr(self):
-        with mock.patch.object(startLib, "git", side_effect=self._onBranch("feat/CIAM-5-x")), mock.patch.object(
+        with mock.patch.object(cli, "resolveDir", return_value=self.DIR), mock.patch.object(
             ship_mod, "check", return_value={"branch": "feat/CIAM-5-x", "dirty": False, "problems": [".tmp/CIAM-5/pr-body.md is missing"]}
         ) as check, mock.patch.object(term_mod, "shipWindow") as shipWindow:
             code = cli.cmdShip({**JIRA_ON, "checkouts": {}}, "CIAM-5")
         self.assertEqual(code, 1)
-        check.assert_called_once_with(os.getcwd(), "CIAM-5")
+        check.assert_called_once_with(self.DIR, "CIAM-5")
         shipWindow.assert_not_called()
 
     def test_passing_check_runs_pr_in_tmux_with_correct_argv(self):
-        with mock.patch.object(startLib, "git", side_effect=self._onBranch("feat/CIAM-5-x")), mock.patch.object(
+        with mock.patch.object(cli, "resolveDir", return_value=self.DIR), mock.patch.object(
             ship_mod, "check", return_value={"branch": "feat/CIAM-5-x", "dirty": False, "problems": []}
         ), mock.patch.object(startLib, "expandHome", return_value="/Users/t/.local/bin/pr") as expandHome, mock.patch.object(
             term_mod, "shipWindow"
@@ -378,7 +384,7 @@ class CmdShipTests(unittest.TestCase):
             code = cli.cmdShip({**JIRA_ON, "checkouts": {}, "pr": "~/.local/bin/pr"}, "CIAM-5")
         self.assertIsNone(code)
         expandHome.assert_called_once_with("~/.local/bin/pr")
-        shipWindow.assert_called_once_with("CIAM-5", os.getcwd(), "/Users/t/.local/bin/pr")
+        shipWindow.assert_called_once_with("CIAM-5", self.DIR, "/Users/t/.local/bin/pr")
 
     def test_plan_go_is_an_unknown_command_now(self):
         with self.assertRaisesRegex(RuntimeError, r'unknown command "go"; try: list, view, start, open, browse, ship, done'):

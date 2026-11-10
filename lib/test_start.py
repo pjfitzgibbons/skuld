@@ -288,8 +288,31 @@ class StartTests(unittest.TestCase):
         jira = FakeJira({"OTHER-1": toDoIssue("OTHER-1")})
         notARepo = tempfile.mkdtemp(prefix="jira-plan-norepo-")
         self.addCleanup(shutil.rmtree, notARepo, True)
-        with self.assertRaisesRegex(RuntimeError, "Run plan from the repo the work belongs in"):
+        with self.assertRaisesRegex(RuntimeError, "project OTHER lists no repo in checkouts; set checkouts.OTHER"):
             start(jira, {}, "OTHER-1", lambda blockers: True, cwd=notARepo)
+
+    def test_refuses_from_an_unlisted_repo_before_any_branch_worktree_or_status_change(self):
+        jira = FakeJira({"OTHER-1": toDoIssue("OTHER-1")})
+        branchesBefore = self.s["git"](self.s["checkout"], "branch", "--list")
+        with self.assertRaisesRegex(RuntimeError, "project OTHER lists no repo in checkouts"):
+            start(jira, self.s["checkouts"], "OTHER-1", lambda blockers: True, cwd=self.s["checkout"])
+        self.assertEqual(self.s["git"](self.s["checkout"], "branch", "--list"), branchesBefore)
+        self.assertFalse(os.path.exists(self.s["checkout"] + ".worktrees"))
+        self.assertEqual(jira.transitions, [])
+        self.assertEqual(jira.comments, [])
+
+    def test_new_work_run_from_an_unlisted_repo_goes_in_the_listed_one(self):
+        # The issue store case: `plan start` run from a repo the project doesn't list.
+        unlisted = sandbox()
+        self.addCleanup(shutil.rmtree, unlisted["root"], True)
+        jira = FakeJira({"CIAM-9": toDoIssue("CIAM-9")})
+        result = start(jira, self.s["checkouts"], "CIAM-9", lambda blockers: True, cwd=unlisted["checkout"])
+        self.assertEqual(
+            os.path.realpath(result["dir"]),
+            os.path.realpath(os.path.join(self.s["checkout"] + ".worktrees", "CIAM-9")),
+        )
+        self.assertFalse(os.path.exists(unlisted["checkout"] + ".worktrees"))
+        self.assertEqual(unlisted["git"](unlisted["checkout"], "branch", "--list"), "* main\n")
 
     def test_resumable_after_worktree_add_succeeds_but_jira_transition_fails(self):
         issues = {"CIAM-9": toDoIssue("CIAM-9")}
@@ -335,7 +358,7 @@ class LockTests(unittest.TestCase):
 class MainCheckoutTests(unittest.TestCase):
     def test_resolves_project_root_and_git_dir_from_configured_checkout_path_when_cwd_isnt_a_repo(self):
         # cwd isn't inside any git repo, and exactly one repo is listed for the project's
-        # checkouts, so mainCheckout() falls back to it without prompting (no pickRepo needed).
+        # checkouts, so mainCheckout() uses it without prompting (no pickRepo needed).
         s = sandbox()
         self.addCleanup(shutil.rmtree, s["root"], True)
         notARepo = tempfile.mkdtemp(prefix="jira-plan-norepo-")
@@ -345,16 +368,42 @@ class MainCheckoutTests(unittest.TestCase):
         self.assertEqual(result["project"], "CIAM")
         self.assertEqual(os.path.realpath(result["checkout"]), os.path.realpath(s["checkout"]))
 
-    def test_cwds_own_repo_is_used_for_new_work_even_when_a_different_repo_is_listed(self):
-        # DECIDED: for new work, the repo is the one `plan` is run from -- cwd's own main
-        # checkout -- not whatever `checkouts` lists for the project, as long as cwd is a repo.
+    def test_unlisted_cwd_repo_is_not_used_for_new_work_when_another_repo_is_listed(self):
         cwdRepo = sandbox()
         self.addCleanup(shutil.rmtree, cwdRepo["root"], True)
         listedRepo = sandbox()
         self.addCleanup(shutil.rmtree, listedRepo["root"], True)
         issue = toDoIssue("CIAM-9")
         result = mainCheckout(issue, {"CIAM": listedRepo["checkout"]}, cwdRepo["checkout"])
-        self.assertEqual(os.path.realpath(result["checkout"]), os.path.realpath(cwdRepo["checkout"]))
+        self.assertEqual(os.path.realpath(result["checkout"]), os.path.realpath(listedRepo["checkout"]))
+
+    def test_cwd_inside_a_listed_repo_resolves_that_repo_without_a_pick(self):
+        repoA = sandbox()
+        self.addCleanup(shutil.rmtree, repoA["root"], True)
+        repoB = sandbox()
+        self.addCleanup(shutil.rmtree, repoB["root"], True)
+
+        def refusePick(options):
+            raise AssertionError("no pick expected when cwd is a listed repo")
+
+        issue = toDoIssue("CIAM-9")
+        result = mainCheckout(issue, {"CIAM": [repoA["checkout"], repoB["checkout"]]}, repoB["checkout"], pickRepo=refusePick)
+        self.assertEqual(os.path.realpath(result["checkout"]), os.path.realpath(repoB["checkout"]))
+
+    def test_cwd_in_a_linked_worktree_of_a_listed_repo_resolves_its_main_checkout(self):
+        repoA = sandbox()
+        self.addCleanup(shutil.rmtree, repoA["root"], True)
+        repoB = sandbox()
+        self.addCleanup(shutil.rmtree, repoB["root"], True)
+        linked = os.path.join(repoB["root"], "demo.worktrees", "other")
+        repoB["git"](repoB["checkout"], "worktree", "add", "-q", "-b", "other", linked)
+
+        def refusePick(options):
+            raise AssertionError("no pick expected when cwd is in a listed repo's worktree")
+
+        issue = toDoIssue("CIAM-9")
+        result = mainCheckout(issue, {"CIAM": [repoA["checkout"], repoB["checkout"]]}, linked, pickRepo=refusePick)
+        self.assertEqual(os.path.realpath(result["checkout"]), os.path.realpath(repoB["checkout"]))
 
     def test_existing_work_in_a_listed_repo_wins_over_cwds_own_repo(self):
         # The "started in A, opened from B" case: CIAM-9 already has a worktree in the listed
@@ -423,8 +472,15 @@ class MainCheckoutTests(unittest.TestCase):
         notARepo = tempfile.mkdtemp(prefix="jira-plan-norepo-")
         self.addCleanup(shutil.rmtree, notARepo, True)
         issue = toDoIssue("OTHER-1")
-        with self.assertRaisesRegex(RuntimeError, "Run plan from the repo the work belongs in"):
+        with self.assertRaisesRegex(RuntimeError, "project OTHER lists no repo in checkouts; set checkouts.OTHER"):
             mainCheckout(issue, {}, notARepo)
+
+    def test_refuses_when_cwd_is_an_unlisted_repo_and_nothing_is_listed(self):
+        s = sandbox()
+        self.addCleanup(shutil.rmtree, s["root"], True)
+        issue = toDoIssue("OTHER-1")
+        with self.assertRaisesRegex(RuntimeError, "project OTHER lists no repo in checkouts; set checkouts.OTHER"):
+            mainCheckout(issue, {}, s["checkout"])
 
 
 if __name__ == "__main__":
