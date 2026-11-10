@@ -31,6 +31,14 @@ class ConfigTest(unittest.TestCase):
         self.assertIn("ghosttyApp, which is no longer read", stderr.getvalue())
         self.assertEqual(cfg["issueStore"], None)
 
+    def test_a_config_with_browserApp_or_browserBundleId_loads_with_a_warning(self):
+        path = writeConfig({"browserApp": "Brave Browser", "browserBundleId": "com.brave.Browser"})
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            cfg = config.load(path)
+        self.assertIn("browserApp, which is no longer read", stderr.getvalue())
+        self.assertIn("browserBundleId, which is no longer read", stderr.getvalue())
+        self.assertNotIn("browserApp", config.defaults())
+
     def test_a_malformed_file_fails_loudly(self):
         path = writeConfig({})
         with open(path, "w", encoding="utf8") as f:

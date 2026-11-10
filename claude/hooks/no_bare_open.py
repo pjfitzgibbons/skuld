@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """PreToolUse hook (matcher: Bash). Refuses system `open` on a page.
 
-`open <url>`, `open -a "Brave Browser" <url>` and `open page.html` hand the
-page to whichever Brave window was used last. An agent's session often runs
-while another Desktop is on screen, so the page lands in the wrong Desktop's
-browser and has to be moved by hand. A page opens through `plan browse`, which
-adds it to the browser on the issue's own Desktop (docs/architecture.md §7.6.1,
-§10 rule 7).
+`open <url>`, `open -a <browser> <url>` and `open page.html` hand the page to
+the default browser, outside every issue window. A page opens through
+`plan browse`, which opens it in the issue window's integrated browser
+(docs/architecture.md §7.6.1, §10 rule 7).
 
 `open` on anything that isn't a page (a folder, a PDF, an app) is allowed.
 
@@ -30,10 +28,9 @@ PAGE_URL = re.compile(r"^(?:https?|file)://", re.IGNORECASE)
 HTML_FILE = re.compile(r"\.html?(?:[?#].*)?$", re.IGNORECASE)
 
 BLOCKED = (
-    "BLOCKED: system `open` sends a page to whichever Brave window was used last, "
-    "often on another Desktop. Open it with "
-    "`plan browse <KEY | pr#N | url> [KEY]`, which adds it to the browser on "
-    "the issue's Desktop (docs/architecture.md §7.6.1). Where `plan browse` isn't "
+    "BLOCKED: system `open` sends a page to the default browser, outside every "
+    "issue window. Open it with `plan browse <KEY | pr#N | url> [KEY]`, which "
+    "opens it in the issue window's integrated browser (docs/architecture.md §7.6.1). Where `plan browse` isn't "
     "available, print the URL for the person to open instead.\n"
 )
 

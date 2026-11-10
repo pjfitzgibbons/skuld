@@ -10,6 +10,7 @@ import json
 import os
 import tempfile
 import unittest
+import urllib.parse
 from unittest import mock
 
 from lib import term
@@ -177,6 +178,73 @@ class IssueWorkspaceFileTests(unittest.TestCase):
             with open(path, encoding="utf8") as f:
                 self.assertEqual(json.load(f), workspace)
             self.assertEqual(os.listdir(tmp), ["CIAM-1.code-workspace"])
+
+
+
+# showUrl()'s two `code` calls, built by browseCommands() and browseLink(), which are pure; run is
+# patched so no `code` ever runs.
+# The query plan-window's handler reads: VS Code percent-decodes a link's query once first.
+def handlerQuery(link):
+    return urllib.parse.unquote(urllib.parse.urlsplit(link).query)
+
+
+class BrowseTests(unittest.TestCase):
+    def test_the_link_names_plan_windows_browse_handler_and_the_key(self):
+        self.assertEqual(
+            term.browseLink("https://example.com/", "SK-0031"),
+            "vscode://skuld.plan-window/browse?url%3Dhttps%253A%252F%252Fexample.com%252F%26key%3DSK-0031",
+        )
+
+    def test_with_no_key_the_link_carries_only_the_url(self):
+        self.assertEqual(handlerQuery(term.browseLink("http://127.0.0.1/")), "url=http%3A%2F%2F127.0.0.1%2F")
+
+    # The handler's side of this round trip is plan.test.js's "a page's own query, and a key inside
+    # it, stay in the url", which reads this same query.
+    def test_a_query_and_a_key_inside_the_url_stay_inside_it_after_vs_codes_decode(self):
+        link = term.browseLink("https://example.com/?a=1&key=SK-10&b=2", "SK-9")
+        self.assertEqual(handlerQuery(link), "url=https%3A%2F%2Fexample.com%2F%3Fa%3D1%26key%3DSK-10%26b%3D2&key=SK-9")
+
+    # L1: quotes, spaces, & and ; stay inside the url parameter, and the link has no shell
+    # metacharacter left in it; it is passed as one argv item, never through a shell.
+    def test_a_url_with_quotes_and_spaces_is_percent_encoded_into_one_argument(self):
+        url = """https://example.com/a b?q='x'&r="y";$(rm -rf ~)#frag"""
+        commands = term.browseCommands(url, "SK-0031", "/ws/SK-0031.code-workspace")
+        self.assertEqual(commands[0], ("code", ["/ws/SK-0031.code-workspace"]))
+        command, args = commands[1]
+        self.assertEqual((command, args[0], len(args)), ("code", "--open-url", 2))
+        link = args[1]
+        self.assertRegex(link, r"^vscode://skuld\.plan-window/browse\?[A-Za-z0-9%._~-]+$")
+        query = urllib.parse.parse_qs(handlerQuery(link))
+        self.assertEqual(query, {"url": [url], "key": ["SK-0031"]})
+
+    def test_with_no_workspace_file_only_the_link_is_sent(self):
+        self.assertEqual(term.browseCommands("https://x/", None, None), [("code", ["--open-url", term.browseLink("https://x/")])])
+
+    def test_showUrl_prints_then_focuses_the_window_then_sends_the_link(self):
+        calls = []
+        with mock.patch.object(term, "run", side_effect=lambda c, a, cwd: calls.append((c, a))), mock.patch("builtins.print") as printed:
+            term.showUrl("https://x/", "SK-0031", "/ws/SK-0031.code-workspace")
+        printed.assert_called_once_with("https://x/")
+        self.assertEqual(calls, term.browseCommands("https://x/", "SK-0031", "/ws/SK-0031.code-workspace"))
+
+    # L3: a missing `code` or a failed call leaves the printed URL and raises nothing.
+    def test_a_failing_call_still_prints_the_url(self):
+        for failure in (RuntimeError("code: not found"), OSError(2, "No such file")):
+            with self.subTest(failure=failure), mock.patch.object(term, "run", side_effect=failure), mock.patch(
+                "builtins.print"
+            ) as printed:
+                term.showUrl("https://x/", "SK-0031", "/ws/SK-0031.code-workspace")
+            printed.assert_called_once_with("https://x/")
+
+    def test_a_url_that_isnt_http_is_printed_and_never_sent(self):
+        with mock.patch.object(term, "run") as run, mock.patch("builtins.print") as printed:
+            term.showUrl("/issues/SK-0031-x.md", "SK-0031")
+        printed.assert_called_once_with("/issues/SK-0031-x.md")
+        run.assert_not_called()
+
+    def test_the_issue_window_sends_clicked_localhost_links_to_its_integrated_browser(self):
+        settings = term.issueWorkspace("SK-0031", "/w", "/issues", "p")["settings"]
+        self.assertIs(settings["workbench.browser.openLocalhostLinks"], True)
 
 
 if __name__ == "__main__":

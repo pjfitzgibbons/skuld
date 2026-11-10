@@ -77,11 +77,6 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #                  macos/build/skuld-spaces in this repo, which the placer builds with swiftc when
 #                  it's missing or older than its source.
 #   reservedDesktops Desktop numbers Start never takes for an issue. Default: [1].
-#   browserApp     The browser SpacesPlacer.showUrl() opens a Jira issue's URL in -- a name `open`
-#                  resolves, not necessarily a path. The URL opens in a new window on the issue's
-#                  Desktop (`open -na ... --args --new-window`); a tab would go to the browser's
-#                  last-used window, on any Desktop. Default: "Brave Browser" (user decision
-#                  2026-11-05: never a bare `open <url>`, never a terminal's link-click).
 #   issueStore     The issue store's checkout: the folder of SK-<nnnn> ticket files
 #                  (lib/fileissues.py's FileIssues), its own git repo, e.g.
 #                  "~/programming/skuld-project/issues". `~` is expanded. Default: None -- the
@@ -103,7 +98,6 @@ def defaults():
         "workspaceDir": "~/.cache/plan/code-workspaces",
         "spacesHelper": None,
         "reservedDesktops": [1],
-        "browserApp": "Brave Browser",
         "issueStore": None,
     }
 
@@ -137,7 +131,7 @@ def refuseRetiredKeys(parsed, file):
 
 # Keys a config may still set from an earlier front end; they're read by nothing now, so a config
 # that sets one still loads, with a warning.
-IGNORED_KEYS = ("ghosttyApp", "aerospaceConfig", "windowPlacer", "browserBundleId", "project")
+IGNORED_KEYS = ("ghosttyApp", "aerospaceConfig", "windowPlacer", "browserApp", "browserBundleId", "project")
 
 
 def warnIgnoredKeys(parsed, file):

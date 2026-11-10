@@ -121,7 +121,6 @@ macOS only. In order:
    | `workspaceDir` | `~/.cache/plan/code-workspaces` | Where each issue window's throwaway `<KEY>.code-workspace` goes; Done deletes it |
    | `spacesHelper` | `macos/build/skuld-spaces` in skuld | The helper `bin/build-spaces` builds; `plan` builds the default one itself when it is missing or older than its source |
    | `reservedDesktops` | `[1]` | Desktops `plan` never takes for an issue |
-   | `browserApp` | `Brave Browser` | The browser a Jira issue's page opens in, in a new window on the issue's Desktop |
    | `netrcFile` | `~/.netrc` | Where the Jira token is, under `machine <baseUrl's host>` |
 
 6. **The skill.** Link `skills/jira-issues/` to `~/.claude/skills/jira-issues/`, so every repo
@@ -153,7 +152,8 @@ macOS only. In order:
     ```
 
     When an issue window opens, it opens the ticket in a tab, starts Claude with Start's prompt in
-    a terminal beside it, and opens a shell in the panel (§4). It is disabled in Restricted Mode,
+    a terminal beside it, and opens a shell in the panel (§4). It also handles the
+    `vscode://skuld.plan-window/browse` links that `plan browse` sends (§7). It is disabled in Restricted Mode,
     so trust the folder that holds each configured repo with its `<repo>.worktrees/`, and the
     ticket store's folder.
 
@@ -293,9 +293,9 @@ runs only when it has something to do:
    naming the issue, and a shell waits in another; both carry the issue's key in their
    environment. When the window is already open, Open reuses it, rewrites the slot when the
    window sits on another Desktop, and never moves it.
-9. **Put the issue beside Claude.** A Jira issue's browse URL is printed, then opens in
-   a new `browserApp` window on the issue's Desktop. Each
-   step after the print is best-effort. A store ticket opens in an editor tab, on the ticket file in the window's store
+9. **Put the issue beside Claude.** A Jira issue's browse URL is printed, then opens in the
+   issue window's integrated browser, as `plan browse` opens it (§7). Each step after the print
+   is best-effort. A store ticket opens in an editor tab, on the ticket file in the window's store
    folder. The URL or file path is printed either way.
 10. **Focus the issue.** Switch to the slot and focus the issue window with Claude's terminal
     in front, so the command ends with the human at the issue's Claude: `code <workspace file>`
@@ -460,15 +460,23 @@ no buttons that act. A page is always opened at its server URL, never as a `file
 
 ### `plan browse`
 
-`plan browse` takes a key (the issue's page), `pr#N` (the pull request) or a URL. `[KEY]` names the
-issue whose window the page belongs in when neither the target nor the terminal names one.
-`plan browse` and the integrated browser are SK-0031's work and not built yet; until then Start
-and Open open a Jira page in `browserApp` (§4, step 9).
+`plan browse` takes a Jira key (the issue's page), `pr#N` (the pull request, as `gh` finds it
+from the current folder) or an http(s) URL. A store ticket's key is refused, naming its file, until
+the local server serves its page. `[KEY]` names the issue whose window the page belongs in when the
+target doesn't.
 
-`plan browse` will print the URL, then pick the issue window: an explicit key (Start passes its own),
-else the key in the calling terminal's environment, else the issue window on the Desktop that is showing
-([architecture §7.6.1](docs/architecture.md#open-url)). The page will open in that window's integrated
-browser, and a link clicked in one of its terminals opens there too.
+`plan browse` prints the URL, then picks the issue window: the target's key, else `[KEY]`, else the
+calling terminal's `PLAN_KEY`, else whichever VS Code window has focus
+([architecture §7.6.1](docs/architecture.md#open-url)). It runs `code <workspace file>` to focus
+that window, then `code --open-url` with a `vscode://skuld.plan-window/browse?url=…&key=<KEY>`
+link. VS Code hands the link to the focused window, and plan-window opens the page in its
+integrated browser. A window whose `plan.key` isn't the link's key refuses it with a
+`plan window: …` notice, so a page never opens in another issue's window when focus moves between
+the two commands. Run `plan browse` again from the issue's window.
+
+A localhost or loopback link clicked in an issue window's terminal opens in its integrated browser
+too: Start writes `workbench.browser.openLocalhostLinks` into the window's workspace file. Any other
+clicked link goes to the system browser; open it with `plan browse <url>`.
 
 Every step is best-effort; the printed URL stands on its own. System `open` is never used for a
 page, since it sends the page to the default browser, outside every issue window. The
@@ -624,7 +632,7 @@ claude/
   hooks/                   no_ai_attribution.py, no_terminal_jira_transition.py,
                            no_bare_open.py, and a test for each
 vscode/plan-window/        the VS Code extension that opens an issue window's ticket and Claude
-                           terminal: extension.js (the VS Code calls), plan.js (what they
+                           terminal, and plan browse's pages: extension.js (the VS Code calls), plan.js (what they
                            need, from the plan.* settings), plan.test.js
 docs/
   architecture.md          what the system is, and its rules (§10)

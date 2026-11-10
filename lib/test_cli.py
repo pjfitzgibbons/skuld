@@ -49,15 +49,14 @@ class CmdOpenTests(unittest.TestCase):
             cli, "jiraFrom", return_value=FakeJira()
         ), mock.patch.object(cli.placer_mod, "placerFrom", return_value=placer), mock.patch.object(
             startLib, "start", return_value={"dir": worktree, "notes": []}
-        ) as start, mock.patch("builtins.print"):
+        ) as start, mock.patch.object(term_mod, "showUrl") as showUrl, mock.patch("builtins.print"):
             main(["open", key])
         workspaceFile = os.path.join(tmp, "ws", f"{key}.code-workspace")
         with open(workspaceFile, encoding="utf8") as f:
             settings = json.load(f)["settings"]
         self.assertIn(("openWindow", key, workspaceFile), placer.calls)
         self.assertEqual(placer.calls[-1], ("focus", "3", workspaceFile))
-        shown = [call for call in placer.calls if call[0] == "showUrl"]
-        return {"start": start, "shown": shown, "settings": settings}
+        return {"start": start, "shown": [call.args for call in showUrl.call_args_list], "settings": settings}
 
     def test_open_on_a_sk_key_names_the_ticket_and_opens_no_browser(self):
         opened = self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
@@ -69,7 +68,9 @@ class CmdOpenTests(unittest.TestCase):
         opened = self.runOpen("CIAM-1", None)
         self.assertNotIn("plan.ticket", opened["settings"])
         self.assertEqual(opened["settings"]["plan.prompt"], "Work on Jira CIAM-1")
-        self.assertEqual(opened["shown"], [("showUrl", "https://cryoport.atlassian.net/browse/CIAM-1", "3")])
+        workspaceFile = opened["shown"][0][2]
+        self.assertEqual(opened["shown"], [("https://cryoport.atlassian.net/browse/CIAM-1", "CIAM-1", workspaceFile)])
+        self.assertTrue(workspaceFile.endswith("CIAM-1.code-workspace"))
 
     def test_open_pads_a_sk_key_typed_without_its_zeros(self):
         class FakeJira:
@@ -102,9 +103,6 @@ class FakePlacer:
         self.calls.append(("openWindow", key, workspaceFile))
         return self.placement
 
-    def showUrl(self, url, placement):
-        self.calls.append(("showUrl", url, placement.slot))
-
     def focus(self, placement, workspaceFile):
         self.calls.append(("focus", placement.slot, workspaceFile))
 
@@ -121,9 +119,9 @@ class CmdStartWithFakePlacerTests(unittest.TestCase):
             cli, "jiraFrom", return_value=FakeJira()
         ), mock.patch.object(cli.placer_mod, "placerFrom", return_value=placer), mock.patch.object(
             cli, "writeIssueWorkspaceFile", return_value=f"/w/{key}.code-workspace"
-        ), mock.patch.object(startLib, "start", return_value={"dir": f"/w/{key}", "notes": []}), mock.patch(
-            "sys.stdout", out
-        ):
+        ), mock.patch.object(startLib, "start", return_value={"dir": f"/w/{key}", "notes": []}), mock.patch.object(
+            term_mod, "showUrl", side_effect=lambda url, key, workspaceFile: placer.calls.append(("showUrl", url, key, workspaceFile))
+        ), mock.patch("sys.stdout", out):
             main(["start", key])
         return placer.calls, out.getvalue()
 
@@ -142,10 +140,101 @@ class CmdStartWithFakePlacerTests(unittest.TestCase):
         self.assertIn(note, out)
         self.assertIn("Desktop 4 ready.", out)
 
-    def test_a_jira_issue_hands_its_url_to_the_placer_before_focus(self):
+    def test_a_jira_issue_shows_its_url_in_its_own_window_before_focus(self):
         calls, _ = self.runStart("CIAM-1", Placement(True, "5", "Desktop 5"))
-        self.assertEqual(calls[2], ("showUrl", "https://cryoport.atlassian.net/browse/CIAM-1", "5"))
+        self.assertEqual(calls[2], ("showUrl", "https://cryoport.atlassian.net/browse/CIAM-1", "CIAM-1", "/w/CIAM-1.code-workspace"))
         self.assertEqual(calls[3][0], "focus")
+
+
+# `plan browse`: which URL and which window. term.showUrl() is stubbed; what it runs is term's tests'.
+class CmdBrowseTests(unittest.TestCase):
+    def browse(self, *args, env=None, workspaceFiles=(), cfg=None, worktree=None):
+        tmp = tempfile.mkdtemp(prefix="skuld-browse-")
+        self.addCleanup(shutil.rmtree, tmp)
+        cfg = {**(cfg or JIRA_ON), "workspaceDir": tmp}
+        for key in workspaceFiles:
+            open(term_mod.workspaceFilePath(key, tmp), "w").close()
+        with mock.patch.object(cli.config_mod, "load", return_value=cfg), mock.patch.object(
+            cli, "issueWorktree", return_value=worktree
+        ), mock.patch.dict(
+            os.environ, env or {}, clear=False
+        ), mock.patch.object(term_mod, "showUrl") as showUrl:
+            if "PLAN_KEY" not in (env or {}):
+                os.environ.pop("PLAN_KEY", None)
+            main(["browse", *args])
+        url, key, workspaceFile = showUrl.call_args.args
+        return url, key, workspaceFile and os.path.basename(workspaceFile)
+
+    def test_a_jira_key_opens_its_page_in_its_own_window(self):
+        shown = self.browse("CIAM-1", env={"PLAN_KEY": "CIAM-2"}, workspaceFiles=["CIAM-1"])
+        self.assertEqual(shown, ("https://jira.example/browse/CIAM-1", "CIAM-1", "CIAM-1.code-workspace"))
+
+    def test_an_issue_with_a_legacy_workspace_file_is_focused_through_it(self):
+        tmp = tempfile.mkdtemp(prefix="skuld-legacy-")
+        self.addCleanup(shutil.rmtree, tmp)
+        worktree = os.path.join(tmp, "repo.worktrees", "CIAM-1")
+        os.makedirs(worktree)
+        legacy = term_mod.legacyWorkspaceFilePath(worktree, "CIAM-1")
+        open(legacy, "w").close()
+        shown = self.browse("CIAM-1", workspaceFiles=["CIAM-1"], worktree=worktree)
+        self.assertEqual(shown[2], os.path.basename(legacy))
+        self.assertEqual(term_mod.issueWorkspaceFilePath("CIAM-1", worktree), legacy)
+
+    def test_a_url_goes_to_the_named_key_before_the_terminals(self):
+        shown = self.browse("https://example.com/x", "CIAM-3", env={"PLAN_KEY": "CIAM-2"})
+        self.assertEqual(shown, ("https://example.com/x", "CIAM-3", None))
+
+    def test_a_url_goes_to_the_terminals_key_when_none_is_named(self):
+        shown = self.browse("https://example.com/x", env={"PLAN_KEY": "SK-0031"}, workspaceFiles=["SK-0031"])
+        self.assertEqual(shown, ("https://example.com/x", "SK-0031", "SK-0031.code-workspace"))
+
+    def test_a_url_with_no_key_anywhere_goes_to_the_focused_window(self):
+        self.assertEqual(self.browse("http://127.0.0.1:8737/"), ("http://127.0.0.1:8737/", None, None))
+
+    def test_pr_n_opens_the_pull_request(self):
+        with mock.patch.object(ship_mod, "pullRequest", return_value={"url": "https://github.com/o/r/pull/9"}) as pr:
+            shown = self.browse("pr#9", env={"PLAN_KEY": "SK-0031"})
+        self.assertEqual(pr.call_args.args[1:], ("9", "url"))
+        self.assertEqual(shown[:2], ("https://github.com/o/r/pull/9", "SK-0031"))
+
+    def test_a_store_ticket_key_is_refused_naming_its_file(self):
+        class FakeStore:
+            def browseUrl(self, key):
+                return "/issues/SK-0031-x.md"
+
+        with mock.patch.object(cli, "jiraFrom", return_value=FakeStore()):
+            with self.assertRaisesRegex(RuntimeError, "SK-0031 is a store ticket.*open /issues/SK-0031-x.md"):
+                self.browse("SK-31")
+
+    def test_anything_else_is_refused(self):
+        for target in ("file:///etc/passwd", "javascript:alert(1)", "pr#x"):
+            with self.subTest(target=target), self.assertRaisesRegex(RuntimeError, "a key, pr#N or an http\\(s\\) URL"):
+                self.browse(target)
+
+    def test_no_target_says_how(self):
+        with self.assertRaisesRegex(RuntimeError, "usage: plan browse"):
+            self.browse()
+
+
+class IssueWorktreeTests(unittest.TestCase):
+    PORCELAIN = "worktree /repo\nHEAD a\nbranch refs/heads/main\n\nworktree /repo.worktrees/CIAM-5\nHEAD b\nbranch refs/heads/feat/CIAM-5-x\n"
+
+    def lookup(self, mainCheckout):
+        with mock.patch.object(startLib, "mainCheckout", side_effect=mainCheckout) as mc, mock.patch.object(
+            startLib, "git", return_value=self.PORCELAIN
+        ):
+            return cli.issueWorktree({}, "CIAM-5"), mc
+
+    def test_finds_the_issues_worktree_from_the_key_alone(self):
+        found, mc = self.lookup(lambda *a: {"checkout": "/repo"})
+        self.assertEqual(found, "/repo.worktrees/CIAM-5")
+        self.assertEqual(mc.call_args.args[0], {"key": "CIAM-5"})
+
+    def test_a_repo_it_cant_choose_is_no_worktree_and_never_asks(self):
+        def mainCheckout(issue, checkouts, cwd, action, typeMap, pickRepo):
+            pickRepo(["/a", "/b"])
+
+        self.assertIsNone(self.lookup(mainCheckout)[0])
 
 
 class IssueRowsSlotColumnTests(unittest.TestCase):
@@ -292,7 +381,7 @@ class CmdShipTests(unittest.TestCase):
         shipWindow.assert_called_once_with("CIAM-5", os.getcwd(), "/Users/t/.local/bin/pr")
 
     def test_plan_go_is_an_unknown_command_now(self):
-        with self.assertRaisesRegex(RuntimeError, r'unknown command "go"; try: list, view, start, open, ship, done'):
+        with self.assertRaisesRegex(RuntimeError, r'unknown command "go"; try: list, view, start, open, browse, ship, done'):
             main(["go", "CIAM-5"])
 
 
