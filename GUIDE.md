@@ -181,7 +181,7 @@ macOS only. In order:
        after adding a Desktop. For SlotBar, see step 13.
 
 13. **SlotBar**, optional. A menu-bar item that shows each Desktop, a dot on each issue's Desktop
-    and an underline under the one showing. `plan pulse` pulses a Desktop red or green, and
+    and an underline under the one showing. `plan pulse` pulses a Desktop orange or green, and
     choosing a Desktop from its menu switches to it. It reads the slots file. SlotBar and
     SketchyBar are alternatives: whichever has its LaunchAgent loaded is the bar.
     1. Set the menu bar to never hide: System Settings → Control Center → "Automatically hide and
@@ -209,14 +209,16 @@ macOS only. In order:
 
     7. Install the Claude status engine: `bin/install-agents`, from the main checkout. Its
        LaunchAgent `~/Library/LaunchAgents/dev.skuld.agents.plist` runs `plan agents tick --watch`
-       from login and restarts it if it stops. Every few seconds it pulses each issue's Desktop red
+       from login and restarts it if it stops. Every few seconds it pulses each issue's Desktop orange
        while its Claude waits on a person, green once its Claude is idle with a
        `.tmp/<KEY>/report.html` newer than the branch's last commit, and clears it otherwise.
        Switching to or from a Desktop clears its colour until its Claude's state changes again.
        It also adds `bin/claude-waiting` to `~/.claude/settings.json` as a hook on Notification,
        UserPromptSubmit, PreToolUse, PostToolUse, Stop and SessionEnd, keeping your other hooks: a
-       Claude that stops for a permission, a question or input turns its Desktop red as its system
-       notification shows. Its log is `~/Library/Logs/plan-agents.log`;
+       Claude that stops for a permission, a question or input turns its Desktop orange as its system
+       notification shows. Once a minute it also checks each slotted issue's PR with `gh`, and
+       turns the Desktop orange while Copilot's review is on the PR's head commit, until the next
+       push. Its log is `~/Library/Logs/plan-agents.log`;
        `bin/install-agents --uninstall` removes the agent and the hook.
 
     To rebuild after pulling `main`, run `bin/install-slotbar` and `bin/install-agents` again from
@@ -250,7 +252,7 @@ decides the repo (§4).
 | `plan done [KEY]` | Done (§6) |
 | `plan browse <KEY \| pr#N \| url> [KEY]` | Open a page in the issue window's browser (§7) |
 | `plan serve start\|stop\|restart\|status` | Control the local server's LaunchAgent (§7); `status` prints the server's URL and whether it answers |
-| `plan pulse <KEY> red\|green\|off` | Pulse the issue's Desktop in SlotBar, or clear its tint (§2, step 13); exits non-zero when SlotBar isn't running |
+| `plan pulse <KEY> orange\|green\|off` | Pulse the issue's Desktop in SlotBar, or clear its tint (§2, step 13); exits non-zero when SlotBar isn't running |
 | `plan agents [list]` | Every Claude session, most urgent first: its state, Desktop (`-` when it can't be placed), key, issue title and name |
 | `plan agents status` | The same sessions on one line, as symbols on each Desktop: `⏳` waiting, `◆` done, `●` busy, `■` blocked, `○` idle |
 | `plan agents --json` | The listing as JSON: each session's key, Desktop, state, title, name and cwd |
@@ -647,6 +649,7 @@ lib/
   agents.py                plan agents: each Claude session's issue, Desktop and state, and the
                            pulses that show them in SlotBar
   waiting.py               the waiting markers bin/claude-waiting keeps, one per session
+  reviews.py               which slotted issues' PRs have a Copilot review on their head commit
   claude_hooks.py          adds and removes bin/claude-waiting in ~/.claude/settings.json
   test_*.py                the unit tests
   (the FileStore adapter, the checker, issue-watch and the local server also live in lib/)

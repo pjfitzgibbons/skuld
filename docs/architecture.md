@@ -204,8 +204,8 @@ through its adapter.
 | Auth | `~/.netrc` for Jira, read per call; `gh`'s and git's own credentials for GitHub and the store's remote |
 | Front end | VS Code, one issue window per issue, opened by the `code` CLI on a workspace file and placed by the `WindowPlacer` on a native Desktop, all via `subprocess`; fzf for the picker; ticket files in an editor tab |
 | Spaces helper | `skuld-spaces`, built from `macos/spaces.swift` with `swiftc` alone: read-only SkyLight calls, resolved with `dlsym`, that list Desktops and each VS Code window's Desktop as JSON |
-| Menu bar | SlotBar or SketchyBar, whichever has its LaunchAgent loaded. SlotBar is a menu-bar extra built from `macos/slotbar/` with `swiftc` alone and signed with a local self-signed certificate. It reads the slots file and Desktops through read-only SkyLight calls, takes pulses as the distributed notification `skuld.pulse` (a Desktop 1 to 16 and `red`, `green` or `off`, anything else ignored) from `plan pulse` and the Claude status engine, and switches Desktops by posting ^N, which needs the Accessibility grant |
-| Claude status | `lib/agents.py`, run every few seconds by a LaunchAgent as `plan agents tick --watch`, and at once when a waiting marker changes: reads `claude agents --json`, the waiting markers in `~/.cache/plan/waiting` that the Claude Code hook `bin/claude-waiting` keeps, the slots file and git, and pulses each issue's Desktop through `slotbar-pulse` only when its colour changes (§7.1) |
+| Menu bar | SlotBar or SketchyBar, whichever has its LaunchAgent loaded. SlotBar is a menu-bar extra built from `macos/slotbar/` with `swiftc` alone and signed with a local self-signed certificate. It reads the slots file and Desktops through read-only SkyLight calls, takes pulses as the distributed notification `skuld.pulse` (a Desktop 1 to 16 and `orange`, `green` or `off`, anything else ignored) from `plan pulse` and the Claude status engine, and switches Desktops by posting ^N, which needs the Accessibility grant |
+| Claude status | `lib/agents.py`, run every few seconds by a LaunchAgent as `plan agents tick --watch`, and at once when a waiting marker changes: reads `claude agents --json`, the waiting markers in `~/.cache/plan/waiting` that the Claude Code hook `bin/claude-waiting` keeps, the slots file and git, once a minute each slotted issue's PR through `gh`, and pulses each issue's Desktop through `slotbar-pulse` only when its colour changes (§7.1) |
 | Browser | The issue window's integrated browser, reached by `showUrl()` (§7.6.1); never system `open`. Browser automation and browser tests run in Chrome, never in an issue window |
 | Pages | One local Flask server on `127.0.0.1`, run by a LaunchAgent from login and controlled by `plan serve start\|stop\|restart\|status`, rendering an issue's pages from Jinja templates (§7.6.1) |
 | Pull requests | `gh`; Jira linkage through Jira's development panel, not a custom field |
@@ -296,9 +296,9 @@ never registers, so `claude agents --json` wouldn't list it.
 **Each issue's Desktop shows its Claude's state.** The status engine, `lib/agents.py`, places each
 session from `claude agents --json` by its cwd: a cwd in `<repo>.worktrees/<KEY>` gives the key,
 and the slots file gives the key's Desktop. A session it can't place shows on `-` and pulses
-nothing. A Desktop pulses red while one of its Claudes waits on a person (a question, a
+nothing. A Desktop pulses orange while one of its Claudes waits on a person (a question, a
 permission), green while one is idle with `.tmp/<KEY>/report.html` newer than the branch's last
-commit, and is cleared (`off`) otherwise, or when its issue leaves the slots file. Red outranks
+commit, and is cleared (`off`) otherwise, or when its issue leaves the slots file. Orange outranks
 green. A tick sends a pulse only when a Desktop's colour changes, and reads no store or Jira; a
 failed pulse makes the next tick send every Desktop's colour again, so a restarted SlotBar gets them
 all back.
@@ -310,11 +310,13 @@ on a Notification that holds it for a person (a permission prompt, a question, a
 the same one that shows the system notification, and removes it on the session's next prompt, tool
 call, Stop or end. A marked session is waiting, except an idle one with a fresh report, which stays
 done. The watch loop checks the directory's mtime four times a second and ticks as soon as it
-changes, so the Desktop turns red as the notification shows. The hook prints nothing and always
+changes, so the Desktop turns orange as the notification shows. The hook prints nothing and always
 exits 0; a dead session's marker is ignored, since the engine places only the sessions `claude
 agents --json` lists. Switching to or from a Desktop clears its colour in SlotBar, and the engine pulses it
 again only when that Desktop's colour changes. `plan agents` lists the same sessions with each issue's title, from the store for a store
 key and from Jira only when the machine config names the key's project.
+
+**A Copilot review on an issue's PR turns its Desktop orange too.** Once a minute, the watch loop runs `gh pr view` in the worktree of each issue that has a Desktop and a Claude (`lib/reviews.py`). If the PR is open and Copilot has reviewed its head commit, the review is waiting, and the Desktop pulses orange even over green. The next push moves the head and clears it, so nothing is kept between checks. A worktree with no PR, or a `gh` that fails, counts as no review. The LaunchAgent's PATH includes the directory of the `gh` that `bin/install-agents` found.
 
 **Which issue sits on which slot is tracked in a slots file**, not inferred from a workspace's or
 Desktop's name. `term.writeSlot(key, slot)` writes a `<slot>=<KEY>` line to `slotsFile` (config,

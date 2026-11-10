@@ -1,4 +1,4 @@
-// slotbar-pulse <desktop> <red|green|off>: asks SlotBar to pulse a slot, or to clear its tint.
+// slotbar-pulse <desktop> <orange|green|off>: asks SlotBar to pulse a slot, or to clear its tint.
 // Exits 2 on bad arguments and 1 when SlotBar isn't running, since nobody would see the pulse (L5).
 import AppKit
 
@@ -7,7 +7,7 @@ struct PulseCommand {
     static func main() {
         let args = CommandLine.arguments
         guard args.count == 3, let pulse = validatePulse(slot: args[1], color: args[2]) else {
-            fail("usage: slotbar-pulse <desktop 1-\(maxDesktop)> <red|green|off>", status: 2)
+            fail("usage: slotbar-pulse <desktop 1-\(maxDesktop)> <orange|green|off>", status: 2)
         }
         guard slotBarIsRunning() else {
             fail("slotbar-pulse: SlotBar isn't running (bundle \(slotBarBundleID)); see GUIDE §2", status: 1)

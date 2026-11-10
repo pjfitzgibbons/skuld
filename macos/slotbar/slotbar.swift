@@ -53,11 +53,11 @@ final class SlotBar: NSObject {
 
     @objc func receivePulse(_ note: Notification) {
         guard let pulse = validatePulse(slot: note.userInfo?["slot"], color: note.userInfo?["color"]) else {
-            log("ignored a pulse that isn't a Desktop 1-\(maxDesktop) and red, green or off")
+            log("ignored a pulse that isn't a Desktop 1-\(maxDesktop) and orange, green or off")
             return
         }
         switch pulse.color {
-        case .red: pulses[pulse.desktop] = LivePulse(color: .systemRed, started: Date())
+        case .orange: pulses[pulse.desktop] = LivePulse(color: .systemOrange, started: Date())
         case .green: pulses[pulse.desktop] = LivePulse(color: .systemGreen, started: Date())
         case .off: pulses[pulse.desktop] = nil
         }

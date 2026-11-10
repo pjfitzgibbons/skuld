@@ -1,4 +1,4 @@
-# SlotBar's side of plan: `plan pulse <KEY> <red|green|off>` finds the issue's Desktop in the slots
+# SlotBar's side of plan: `plan pulse <KEY> <orange|green|off>` finds the issue's Desktop in the slots
 # file and asks SlotBar (macos/slotbar/) to pulse it, through the slotbar-pulse command that
 # bin/install-slotbar puts inside the installed bundle. The Claude status engine (lib/agents.py)
 # calls the same command. slotbar-pulse validates again and exits nonzero when SlotBar isn't
@@ -9,7 +9,7 @@ from . import term
 from .start import expandHome, run
 
 DEFAULT_PULSE_COMMAND = "~/Applications/SlotBar.app/Contents/MacOS/slotbar-pulse"
-COLORS = ("red", "green", "off")
+COLORS = ("orange", "green", "off")
 
 
 def pulse(key, color, slotsFile=None, pulseCommand=None):
@@ -38,7 +38,7 @@ def runningId():
 
 def checkColor(color):
     if color not in COLORS:
-        raise RuntimeError(f'pulse: colour must be red, green or off, not "{color}"')
+        raise RuntimeError(f'pulse: colour must be orange, green or off, not "{color}"')
 
 
 def slotOf(key, slotsFile=None):

@@ -419,7 +419,7 @@ def shellQuote(value):
     return "'" + str(value).replace("'", "'\\''") + "'"
 
 
-# `plan pulse <KEY> <red|green|off>`: pulse the issue's Desktop in SlotBar, or clear its tint.
+# `plan pulse <KEY> <orange|green|off>`: pulse the issue's Desktop in SlotBar, or clear its tint.
 def cmdPulse(cfg, key, color):
     startLib.checkId(key, "Pulse")
     slotbar_mod.pulse(key, color, cfg.get("slotsFile"))

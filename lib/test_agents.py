@@ -146,9 +146,9 @@ class ReportIsFreshTests(unittest.TestCase):
 
 
 class ColouringTests(unittest.TestCase):
-    def test_waiting_is_red_done_is_green_and_an_empty_desktop_is_off(self):
+    def test_waiting_is_orange_done_is_green_and_an_empty_desktop_is_off(self):
         found = place(session("/p/a.worktrees/SK-0041", "waiting"))
-        self.assertEqual(agents.wantedPulses(found, SLOTS), {"3": "red", "4": "off"})
+        self.assertEqual(agents.wantedPulses(found, SLOTS), {"3": "orange", "4": "off"})
         found = place(session("/p/a.worktrees/CIAM-12"), reportIsFresh=always)
         self.assertEqual(agents.wantedPulses(found, SLOTS), {"3": "off", "4": "green"})
 
@@ -163,21 +163,49 @@ class ColouringTests(unittest.TestCase):
             session("/p/a.worktrees/SK-0041", "idle"),
             reportIsFresh=always,
         )
-        self.assertEqual(agents.wantedPulses(found, SLOTS)["3"], "red")
+        self.assertEqual(agents.wantedPulses(found, SLOTS)["3"], "orange")
 
     def test_an_unplaced_claude_pulses_nothing(self):
         found = place(session("/p/a.worktrees/SK-0099", "waiting"))
         self.assertEqual(agents.wantedPulses(found, SLOTS), {"3": "off", "4": "off"})
 
 
+class ReviewColouringTests(unittest.TestCase):
+    def test_a_waiting_review_turns_its_desktop_orange_over_done(self):
+        found = place(session("/p/a.worktrees/CIAM-12"), reportIsFresh=always)
+        self.assertEqual(agents.wantedPulses(found, SLOTS, frozenset({"CIAM-12"})), {"3": "off", "4": "orange"})
+
+    def test_a_review_for_a_key_without_a_slot_pulses_nothing(self):
+        self.assertEqual(agents.wantedPulses([], SLOTS, frozenset({"SK-0099"})), {"3": "off", "4": "off"})
+
+    def test_only_slotted_issues_with_a_claude_have_their_prs_checked(self):
+        found = place(session("/p/a.worktrees/SK-0041/lib"), session("/p/a.worktrees/SK-0099"), session("/p/x"))
+        self.assertEqual(agents.slottedWorktrees(found), {"SK-0041": "/p/a.worktrees/SK-0041"})
+
+    def test_reviews_are_read_from_each_slotted_worktree(self):
+        reviewed = {"/p/a.worktrees/SK-0041": {"state": "OPEN", "commits": [{"oid": "b"}],
+                    "reviews": [{"author": {"login": "copilot-pull-request-reviewer"}, "commit": {"oid": "b"}}]}}
+        sessions = [session("/p/a.worktrees/SK-0041"), session("/p/a.worktrees/CIAM-12")]
+        with mock.patch.object(agents, "currentAgents", return_value=place(*sessions)):
+            keys = agents.checkReviews(frozenset(), readPr=reviewed.get)
+        self.assertEqual(keys, frozenset({"SK-0041"}))
+
+    def test_a_failing_claude_keeps_the_reviews_last_read(self):
+        with mock.patch.object(agents, "currentAgents", side_effect=RuntimeError("claude: not found")):
+            self.assertEqual(agents.checkReviews(frozenset({"SK-0041"})), frozenset({"SK-0041"}))
+
+    def test_the_log_names_each_review_that_started_waiting(self):
+        self.assertEqual(agents.reviewLine({"SK-0041", "CIAM-12"}), "Copilot review waiting: CIAM-12, SK-0041")
+
+
 class PulseOnChangeTests(unittest.TestCase):
     def test_only_a_changed_desktop_is_sent(self):
-        sent = {"3": "red", "4": "off"}
-        self.assertEqual(agents.pulsesToSend(sent, {"3": "red", "4": "off"}), {})
+        sent = {"3": "orange", "4": "off"}
+        self.assertEqual(agents.pulsesToSend(sent, {"3": "orange", "4": "off"}), {})
         self.assertEqual(agents.pulsesToSend(sent, {"3": "off", "4": "off"}), {"3": "off"})
 
     def test_nothing_sent_yet_sends_every_desktop(self):
-        self.assertEqual(agents.pulsesToSend({}, {"3": "red", "4": "off"}), {"3": "red", "4": "off"})
+        self.assertEqual(agents.pulsesToSend({}, {"3": "orange", "4": "off"}), {"3": "orange", "4": "off"})
 
     def test_a_desktop_that_left_the_slots_file_is_cleared_once(self):
         self.assertEqual(agents.pulsesToSend({"3": "green", "4": "off"}, {"4": "off"}), {"3": "off"})
@@ -185,30 +213,30 @@ class PulseOnChangeTests(unittest.TestCase):
 
     def test_a_sent_pulse_is_recorded(self):
         calls = []
-        record, failures = agents.sendPulses({"4": "off"}, {"3": "red"}, lambda d, c: calls.append((d, c)))
-        self.assertEqual((record, failures, calls), ({"4": "off", "3": "red"}, [], [("3", "red")]))
+        record, failures = agents.sendPulses({"4": "off"}, {"3": "orange"}, lambda d, c: calls.append((d, c)))
+        self.assertEqual((record, failures, calls), ({"4": "off", "3": "orange"}, [], [("3", "orange")]))
 
     def test_a_failed_pulse_empties_the_record_so_every_desktop_is_sent_again(self):
         def slotbarQuit(desktop, color):
             raise RuntimeError("slotbar-pulse: SlotBar isn't running")
 
-        record, failures = agents.sendPulses({"4": "green"}, {"3": "red"}, slotbarQuit)
+        record, failures = agents.sendPulses({"4": "green"}, {"3": "orange"}, slotbarQuit)
         self.assertEqual(record, {})
         self.assertEqual(failures, ["slotbar-pulse: SlotBar isn't running"])
 
     def test_the_log_names_only_the_pulses_a_tick_sent(self):
-        sent = agents.pulsesSent({"3": "off", "4": "off"}, {"3": "red", "4": "off"})
-        self.assertEqual(agents.pulseLine(sent), "pulsed D3 red")
-        self.assertEqual(agents.pulsesSent({"3": "red"}, {"3": "red"}), {})
+        sent = agents.pulsesSent({"3": "off", "4": "off"}, {"3": "orange", "4": "off"})
+        self.assertEqual(agents.pulseLine(sent), "pulsed D3 orange")
+        self.assertEqual(agents.pulsesSent({"3": "orange"}, {"3": "orange"}), {})
 
 
 class SlotBarRestartTests(unittest.TestCase):
     def test_a_restarted_slotbar_gets_every_desktop_again(self):
-        self.assertEqual(agents.recordFor({"3": "red"}, "100", "200"), {})
-        self.assertEqual(agents.recordFor({"3": "red"}, "100", ""), {})
+        self.assertEqual(agents.recordFor({"3": "orange"}, "100", "200"), {})
+        self.assertEqual(agents.recordFor({"3": "orange"}, "100", ""), {})
 
     def test_the_same_slotbar_keeps_the_record_so_a_seen_desktop_stays_clear(self):
-        self.assertEqual(agents.recordFor({"3": "red"}, "100", "100"), {"3": "red"})
+        self.assertEqual(agents.recordFor({"3": "orange"}, "100", "100"), {"3": "orange"})
 
 
 class TickTests(unittest.TestCase):
@@ -236,7 +264,7 @@ class TickTests(unittest.TestCase):
 
     def test_a_tick_sends_a_pulse_only_when_a_desktop_changes(self):
         sent, _ = self.tick({})
-        self.assertEqual(self.calls, [("3", "red"), ("4", "off")])
+        self.assertEqual(self.calls, [("3", "orange"), ("4", "off")])
         self.calls.clear()
         sent, _ = self.tick(sent)
         self.assertEqual(self.calls, [])
@@ -256,8 +284,8 @@ class TickTests(unittest.TestCase):
 
     def test_a_failing_claude_keeps_what_was_sent(self):
         with mock.patch.object(agents, "readSessions", side_effect=RuntimeError("claude: not found")):
-            sent, failures = agents.tick({"3": "red"}, self.slotsFile)
-        self.assertEqual((sent, failures), ({"3": "red"}, ["claude: not found"]))
+            sent, failures = agents.tick({"3": "orange"}, self.slotsFile)
+        self.assertEqual((sent, failures), ({"3": "orange"}, ["claude: not found"]))
 
 
 class ShowingTests(unittest.TestCase):

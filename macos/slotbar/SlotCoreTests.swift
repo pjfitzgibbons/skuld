@@ -38,16 +38,16 @@ struct SlotCoreTests {
     }
 
     static func pulseValidation() {
-        check(validatePulse(slot: "3", color: "red") == Pulse(desktop: 3, color: .red), "accepts a red pulse")
+        check(validatePulse(slot: "3", color: "orange") == Pulse(desktop: 3, color: .orange), "accepts an orange pulse")
         check(validatePulse(slot: "16", color: "green") == Pulse(desktop: 16, color: .green), "accepts the top Desktop")
         check(validatePulse(slot: "1", color: "off") == Pulse(desktop: 1, color: .off), "accepts off")
         check(validatePulse(slot: "3", color: "blue") == nil, "rejects an unknown colour")
         check(validatePulse(slot: "3", color: "Red") == nil, "rejects a colour in another case")
-        check(validatePulse(slot: "0", color: "red") == nil, "rejects Desktop 0")
-        check(validatePulse(slot: "17", color: "red") == nil, "rejects a Desktop past 16")
-        check(validatePulse(slot: "3x", color: "red") == nil, "rejects a slot that isn't a number")
-        check(validatePulse(slot: 3, color: "red") == nil, "rejects a slot that isn't a string")
-        check(validatePulse(slot: nil, color: "red") == nil, "rejects a missing slot")
+        check(validatePulse(slot: "0", color: "orange") == nil, "rejects Desktop 0")
+        check(validatePulse(slot: "17", color: "orange") == nil, "rejects a Desktop past 16")
+        check(validatePulse(slot: "3x", color: "orange") == nil, "rejects a slot that isn't a number")
+        check(validatePulse(slot: 3, color: "orange") == nil, "rejects a slot that isn't a string")
+        check(validatePulse(slot: nil, color: "orange") == nil, "rejects a missing slot")
         check(validatePulse(slot: "3", color: nil) == nil, "rejects a missing colour")
     }
 

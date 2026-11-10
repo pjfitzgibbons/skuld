@@ -30,7 +30,14 @@ registerHook() {
   "$python" "$root/lib/claude_hooks.py" install "$settings" "$python $root/bin/claude-waiting"
 }
 
-# launchd's PATH lacks Homebrew, so the agent names the python3 found here, which runs bin/plan.
+# launchd's PATH lacks Homebrew, so the agent names the python3 found here, which runs bin/plan,
+# and gets a PATH with the directory of the gh found here, which reads each issue's PR.
+agentPath() {
+  local gh
+  gh=$(command -v gh || true)
+  echo "${gh:+$(dirname "$gh"):}/usr/bin:/bin:/usr/sbin:/sbin"
+}
+
 writeAgent() {
   mkdir -p "$(dirname "$agent")" "$(dirname "$log")"
   cat > "$agent" <<PLIST
@@ -45,6 +52,9 @@ writeAgent() {
     <string>tick</string>
     <string>--watch</string>
   </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>$(agentPath)</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ProcessType</key><string>Background</string>

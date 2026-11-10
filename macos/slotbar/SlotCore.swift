@@ -37,7 +37,7 @@ func slot(on desktop: Int, in slots: [Slot]) -> Slot? {
 }
 
 enum PulseColor: String {
-    case red, green, off
+    case orange, green, off
 }
 
 struct Pulse: Equatable {

@@ -3,7 +3,9 @@
 # LaunchAgent runs `plan agents tick --watch` to keep each Desktop pulsed (architecture §6.3, §7.1).
 #
 # It reads `claude agents --json`, the slots file, git, the waiting markers Claude Code's hooks
-# keep (lib/waiting.py), and, for a listing's titles only, the store or Jira. It never writes to an issue or a session; its only output is pulses and its listing.
+# keep (lib/waiting.py), once a minute each slotted issue's PR (lib/reviews.py), and, for a
+# listing's titles only, the store or Jira. It never writes to an issue or a session; its only
+# output is pulses and its listing.
 #
 # Placing a session and choosing its Desktop's colour are pure functions over plain dicts, so the
 # tests make sessions up; the few functions that call claude, git or SlotBar sit at the bottom.
@@ -14,7 +16,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 
-from . import slotbar, term, waiting
+from . import reviews, slotbar, term, waiting
 from .start import expandHome, git, run
 
 DEFAULT_CLAUDE_COMMAND = "~/.local/bin/claude"
@@ -27,7 +29,9 @@ WORKTREE = re.compile(r"^(?P<root>.*\.worktrees/(?P<key>[A-Z][A-Z0-9]*-[0-9]+))(
 
 # Most urgent first: the order of the listing, and which state a Desktop with two Claudes shows.
 URGENCY = ("waiting", "done", "busy", "blocked", "idle")
-PULSE_OF_STATE = {"waiting": "red", "done": "green"}
+PULSE_OF_STATE = {"waiting": "orange", "done": "green"}
+# A Copilot review waiting on an issue's PR asks for a person too, so it outranks done.
+PULSE_OF_REVIEW = "orange"
 SYMBOLS = {"waiting": "⏳", "done": "◆", "busy": "●", "blocked": "■", "idle": "○"}
 
 
@@ -104,14 +108,23 @@ def placeSessions(sessions, slotEntries, reportIsFresh, waitingIds=frozenset()):
 # --- colouring ---
 
 
-# The pulse every slotted Desktop should show: its most urgent Claude's colour, or off when none
-# of its Claudes needs a person, or it has no Claude at all.
-def wantedPulses(agents, slotEntries):
+# The pulse every slotted Desktop should show: orange when its issue's PR has a Copilot review
+# waiting (reviewedKeys), else its most urgent Claude's colour, or off when none of its Claudes
+# needs a person, or it has no Claude at all.
+def wantedPulses(agents, slotEntries, reviewedKeys=frozenset()):
     wanted = {slot: "off" for slot, _ in slotEntries}
     for agent in reversed(mostUrgentFirst(agents)):
         if agent.desktop in wanted:
             wanted[agent.desktop] = PULSE_OF_STATE.get(agent.state, "off")
+    for slot, key in slotEntries:
+        if key in reviewedKeys:
+            wanted[slot] = PULSE_OF_REVIEW
     return wanted
+
+
+# {KEY: worktree} for each issue on a Desktop with a Claude in its worktree: the PRs to check.
+def slottedWorktrees(agents):
+    return {agent.key: agent.worktree for agent in agents if agent.key and agent.desktop != NO_DESKTOP}
 
 
 # The pulses a tick sends: each Desktop whose wanted colour differs from the one last sent, and off
@@ -229,13 +242,13 @@ def sendPulses(sent, toSend, pulse):
 
 # One tick: read the sessions and slots, and pulse each Desktop whose colour changed since `sent`.
 # Reads no store or Jira, since it runs every few seconds. Returns (new record, failure messages).
-def tick(sent, slotsFile=None, claudeCommand=None, pulseCommand=None, waitingDir=None):
+def tick(sent, slotsFile=None, claudeCommand=None, pulseCommand=None, waitingDir=None, reviewedKeys=frozenset()):
     entries = term.slotEntries(slotsFile)
     try:
         agents = placeSessions(readSessions(claudeCommand), entries, reportIsFresh, waiting.waitingSessions(waitingDir))
     except RuntimeError as error:
         return sent, [str(error)]
-    toSend = pulsesToSend(sent, wantedPulses(agents, entries))
+    toSend = pulsesToSend(sent, wantedPulses(agents, entries, reviewedKeys))
     return sendPulses(sent, toSend, lambda desktop, color: slotbar.pulseDesktop(desktop, color, pulseCommand))
 
 
@@ -253,7 +266,7 @@ def log(message):
 
 
 # Sleeps up to `seconds`, waking early when a hook writes or removes a waiting marker, so a Claude
-# that stops for a person turns its Desktop red within a fraction of a second.
+# that stops for a person turns its Desktop orange within a fraction of a second.
 def sleepUntilMarkersChange(seconds, waitingDir=None):
     stamp = waiting.changeStamp(waitingDir)
     deadline = time.monotonic() + seconds
@@ -263,23 +276,50 @@ def sleepUntilMarkersChange(seconds, waitingDir=None):
             return
 
 
+# The keys whose PR has a Copilot review waiting, read afresh; `previous` when the sessions can't
+# be read, so a failing `claude` doesn't clear a review's colour.
+def checkReviews(previous, slotsFile=None, claudeCommand=None, readPr=reviews.readPr):
+    try:
+        agents = currentAgents(slotsFile, claudeCommand)
+    except RuntimeError:
+        return previous
+    return reviews.reviewedKeys(slottedWorktrees(agents), readPr)
+
+
+def reviewLine(keys):
+    return "Copilot review waiting: " + ", ".join(sorted(keys))
+
+
+# checkReviews, logging each key whose review has just started waiting.
+def refreshReviews(reviewed, slotsFile=None, claudeCommand=None):
+    fresh = checkReviews(reviewed, slotsFile, claudeCommand)
+    if fresh - reviewed:
+        log(reviewLine(fresh - reviewed))
+    return fresh
+
+
 # The record to tick from: empty once SlotBar's process has changed (slotbar.runningId()), since a
 # restarted SlotBar has no tints and every Desktop must be sent again; otherwise `sent` as it is.
 def recordFor(sent, lastSlotBar, slotBar):
     return sent if slotBar == lastSlotBar else {}
 
 
-# The LaunchAgent's loop: a tick every few seconds, or as soon as a waiting marker changes. Its log
-# (stderr) gets a line when it starts, one for each tick that sends a pulse, and a failure only when
-# it differs from the last one, so a quiet Desktop or a SlotBar that stays quit adds nothing.
+# The LaunchAgent's loop: a tick every few seconds, or as soon as a waiting marker changes, and a
+# look at each slotted issue's PR once a minute. Its log (stderr) gets a line when it starts, one
+# when a Copilot review starts waiting, one for each tick that sends a pulse, and a failure only
+# when it differs from the last one, so a quiet Desktop or a SlotBar that stays quit adds nothing.
 def watch(slotsFile=None, claudeCommand=None, pulseCommand=None, every=TICK_SECONDS):
-    log(f"watching, a tick every {every}s")
+    log(f"watching, a tick every {every}s, PRs every {reviews.REVIEW_CHECK_SECONDS}s")
     sent, lastFailures, lastSlotBar = {}, [], slotbar.runningId()
+    reviewed, nextReviewCheck = frozenset(), 0
     while True:
+        if time.monotonic() >= nextReviewCheck:
+            reviewed = refreshReviews(reviewed, slotsFile, claudeCommand)
+            nextReviewCheck = time.monotonic() + reviews.REVIEW_CHECK_SECONDS
         slotBar = slotbar.runningId()
         sent, lastSlotBar = recordFor(sent, lastSlotBar, slotBar), slotBar
         before = sent
-        sent, failures = tick(sent, slotsFile, claudeCommand, pulseCommand)
+        sent, failures = tick(sent, slotsFile, claudeCommand, pulseCommand, reviewedKeys=reviewed)
         pulses = pulsesSent(before, sent)
         if pulses:
             log(pulseLine(pulses))
