@@ -14,15 +14,25 @@ function claudeTerminalName(plan) {
   return `Claude ${plan.key}`;
 }
 
+// The window's own CLAUDE* variables, each set to null, which VS Code takes as "unset in the
+// terminal". A window opened by `code -n` from inside a Claude session inherits that session's
+// CLAUDE_CODE_CHILD_SESSION and CLAUDE_PID; a Claude started with them counts itself a child and
+// never registers, so `claude agents --json` and `plan agents` wouldn't list it.
+function unsetClaudeVariables(inherited) {
+  const names = Object.keys(inherited).filter((name) => name.startsWith("CLAUDE"));
+  return Object.fromEntries(names.map((name) => [name, null]));
+}
+
 // A login shell that runs Claude, then stays as a shell in the worktree once Claude exits, so
 // Claude can be started again there. The prompt travels in PLAN_PROMPT, never through shell quoting.
-function claudeTerminalOptions(plan, shell) {
+// inherited is the window's environment (process.env), whose CLAUDE* variables are unset.
+function claudeTerminalOptions(plan, shell, inherited = {}) {
   return {
     name: claudeTerminalName(plan),
     cwd: plan.worktree,
     shellPath: shell,
     shellArgs: ["-l", "-c", `claude "$PLAN_PROMPT"; exec "${shell}" -l`],
-    env: { PLAN_KEY: plan.key, PLAN_PROMPT: plan.prompt },
+    env: { ...unsetClaudeVariables(inherited), PLAN_KEY: plan.key, PLAN_PROMPT: plan.prompt },
     isTransient: true,
   };
 }
@@ -36,14 +46,15 @@ function shellTerminalName(plan) {
   return `Shell ${plan.key}`;
 }
 
-// A plain login shell in the worktree, beside Claude's terminal.
-function shellTerminalOptions(plan, shell) {
+// A plain login shell in the worktree, beside Claude's terminal; a Claude started in it registers
+// too.
+function shellTerminalOptions(plan, shell, inherited = {}) {
   return {
     name: shellTerminalName(plan),
     cwd: plan.worktree,
     shellPath: shell,
     shellArgs: ["-l"],
-    env: { PLAN_KEY: plan.key },
+    env: { ...unsetClaudeVariables(inherited), PLAN_KEY: plan.key },
     isTransient: true,
   };
 }
@@ -81,6 +92,7 @@ function isWebUrl(url) {
 module.exports = {
   browseRequest,
   readPlan,
+  unsetClaudeVariables,
   claudeTerminalName,
   claudeTerminalOptions,
   findClaudeTerminal,

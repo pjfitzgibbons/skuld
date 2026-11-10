@@ -30,8 +30,8 @@ class PulseTests(unittest.TestCase):
             return slotbar.pulse(key, color, self.slotsFile, "/opt/slotbar-pulse")
 
     def test_pulses_the_keys_desktop(self):
-        self.assertEqual(self.pulse("CIAM-12", "red"), "4")
-        self.assertEqual(self.calls, [["/opt/slotbar-pulse", "4", "red"]])
+        self.assertEqual(self.pulse("CIAM-12", "orange"), "4")
+        self.assertEqual(self.calls, [["/opt/slotbar-pulse", "4", "orange"]])
 
     def test_accepts_green_and_off(self):
         self.pulse("SK-0045", "green")
@@ -39,18 +39,23 @@ class PulseTests(unittest.TestCase):
         self.assertEqual(self.calls, [["/opt/slotbar-pulse", "3", "green"], ["/opt/slotbar-pulse", "3", "off"]])
 
     def test_refuses_an_unknown_colour_without_calling_slotbar(self):
-        with self.assertRaisesRegex(RuntimeError, "red, green or off"):
+        with self.assertRaisesRegex(RuntimeError, "orange, green or off"):
             self.pulse("SK-0045", "blue")
         self.assertEqual(self.calls, [])
 
     def test_refuses_a_key_with_no_desktop(self):
         with self.assertRaisesRegex(RuntimeError, "SK-0099 has no Desktop"):
-            self.pulse("SK-0099", "red")
+            self.pulse("SK-0099", "orange")
         self.assertEqual(self.calls, [])
 
     def test_passes_on_slotbar_not_running(self):
         with self.assertRaisesRegex(RuntimeError, "SlotBar isn't running"):
-            self.pulse("SK-0045", "red", fail="slotbar-pulse 3 red: slotbar-pulse: SlotBar isn't running")
+            self.pulse("SK-0045", "orange", fail="slotbar-pulse 3 orange: slotbar-pulse: SlotBar isn't running")
+
+    def test_pulses_a_desktop_by_number_without_the_slots_file(self):
+        with mock.patch.object(slotbar, "run", side_effect=lambda command, args, cwd: self.calls.append([command, *args])):
+            slotbar.pulseDesktop(7, "off", "/opt/slotbar-pulse")
+        self.assertEqual(self.calls, [["/opt/slotbar-pulse", "7", "off"]])
 
     def test_default_command_is_inside_the_installed_bundle(self):
         self.assertTrue(slotbar.DEFAULT_PULSE_COMMAND.endswith("SlotBar.app/Contents/MacOS/slotbar-pulse"))
@@ -72,6 +77,17 @@ class PlanPulseTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Pulse needs"):
                 cli.main(["pulse"])
         pulse.assert_not_called()
+
+
+
+class RunningIdTests(unittest.TestCase):
+    def test_the_running_slotbars_pid(self):
+        with mock.patch.object(slotbar, "run", return_value="96905\n"):
+            self.assertEqual(slotbar.runningId(), "96905")
+
+    def test_no_slotbar_running_is_blank(self):
+        with mock.patch.object(slotbar, "run", side_effect=RuntimeError("pgrep -x SlotBar: exited with code 1")):
+            self.assertEqual(slotbar.runningId(), "")
 
 
 if __name__ == "__main__":

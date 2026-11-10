@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+# Claude Code hook (Notification, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd):
+# marks a session waiting on a person when it shows the system notification, and clears the mark
+# once it moves on (lib/waiting.py). bin/install-agents registers it. It reads the hook's JSON on
+# stdin, prints nothing, and always exits 0, so it never blocks or alters a session.
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+
+from lib import waiting
+
+if __name__ == "__main__":
+    try:
+        waiting.record(json.load(sys.stdin))
+    except (OSError, ValueError):
+        pass

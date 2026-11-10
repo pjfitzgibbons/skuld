@@ -1,0 +1,80 @@
+#!/bin/bash
+# Installs the LaunchAgent that runs `plan agents tick --watch` from login: every few seconds it
+# pulses each issue's Desktop in SlotBar with its Claude's state, and launchd restarts it if it
+# stops (GUIDE §2). Its failures, such as SlotBar not running, go to its log. It also registers
+# bin/claude-waiting as a Claude Code hook in ~/.claude/settings.json, so a Claude that stops for a
+# person turns its Desktop red at once (lib/waiting.py); the settings' other hooks are kept.
+#   install-agents               install, or reinstall over a running one
+#   install-agents --uninstall   stop it, remove the agent and the hook
+set -euo pipefail
+root=$(cd "$(dirname "$(realpath "$0")")/.." && pwd)
+label=dev.skuld.agents
+agent="$HOME/Library/LaunchAgents/$label.plist"
+log="$HOME/Library/Logs/plan-agents.log"
+domain="gui/$(id -u)"
+settings="$HOME/.claude/settings.json"
+python=$(command -v python3)
+
+stopAgent() {
+  launchctl bootout "$domain/$label" 2>/dev/null || true
+}
+
+uninstall() {
+  stopAgent
+  rm -f "$agent"
+  "$python" "$root/lib/claude_hooks.py" uninstall "$settings"
+  echo "plan agents' LaunchAgent and Claude Code hook removed."
+}
+
+registerHook() {
+  "$python" "$root/lib/claude_hooks.py" install "$settings" "$python $root/bin/claude-waiting"
+}
+
+# launchd's PATH lacks Homebrew, so the agent names the python3 found here, which runs bin/plan,
+# and gets a PATH with the directory of the gh found here, which reads each issue's PR.
+agentPath() {
+  local gh
+  gh=$(command -v gh || true)
+  echo "${gh:+$(dirname "$gh"):}/usr/bin:/bin:/usr/sbin:/sbin"
+}
+
+writeAgent() {
+  mkdir -p "$(dirname "$agent")" "$(dirname "$log")"
+  cat > "$agent" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$label</string>
+  <key>ProgramArguments</key><array>
+    <string>$python</string>
+    <string>$root/bin/plan</string>
+    <string>agents</string>
+    <string>tick</string>
+    <string>--watch</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>$(agentPath)</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>$log</string>
+  <key>StandardErrorPath</key><string>$log</string>
+</dict></plist>
+PLIST
+}
+
+install() {
+  stopAgent
+  writeAgent
+  : > "$log"
+  launchctl bootstrap "$domain" "$agent"
+  registerHook
+  echo "plan agents installed: $root/bin/plan agents tick --watch, agent $agent, log $log"
+  echo "Claude Code hook: $root/bin/claude-waiting, in $settings"
+}
+
+case "${1:-}" in
+  --uninstall) uninstall ;;
+  *) install ;;
+esac

@@ -2,11 +2,13 @@
 # import, no new deps -- fzf/readline/argv parsing by hand, like the rest of this port.
 #
 # Ported from lib/cli.js. Faithful, behavior-preserving port: no change in logic.
+import json
 import os
 import re
 import subprocess
 import sys
 
+from . import agents as agents_mod
 from . import config as config_mod
 from . import done as done_mod
 from . import fileissues as fileissues_mod
@@ -417,10 +419,83 @@ def shellQuote(value):
     return "'" + str(value).replace("'", "'\\''") + "'"
 
 
-# `plan pulse <KEY> <red|green|off>`: pulse the issue's Desktop in SlotBar, or clear its tint.
+# `plan pulse <KEY> <orange|green|off>`: pulse the issue's Desktop in SlotBar, or clear its tint.
 def cmdPulse(cfg, key, color):
     startLib.checkId(key, "Pulse")
     slotbar_mod.pulse(key, color, cfg.get("slotsFile"))
+
+
+AGENTS_USAGE = "plan agents [status | list | pick | tick [--watch]] [--json]"
+
+
+# `plan agents`: every Claude session, its issue, Desktop and state (lib/agents.py). `status` is one
+# line; `list` (the default) is the table; `--json` is the listing as JSON; `pick` chooses a
+# session in fzf and brings its issue window forward; `tick` pulses each Desktop once, and
+# `tick --watch` keeps doing so, as the LaunchAgent does (bin/install-agents).
+def cmdAgents(cfg, args):
+    words = [arg for arg in args if not arg.startswith("--")]
+    flags = {arg for arg in args if arg.startswith("--")}
+    what = words[0] if words else "list"
+    if what == "tick":
+        return agentsTick(cfg, "--watch" in flags)
+    if what not in ("status", "list", "pick") or len(words) > 1:
+        raise RuntimeError(f"usage: {AGENTS_USAGE}")
+    if what == "status":
+        print(agents_mod.statusLine(agents_mod.currentAgents(cfg.get("slotsFile"), cfg.get("claudeCommand"))))
+        return None
+    agents = listedAgents(cfg)
+    if "--json" in flags:
+        print(json.dumps(agents_mod.jsonRows(agents), indent=2))
+    elif what == "pick":
+        pickAgent(cfg, agents)
+    else:
+        print("\n".join(agents_mod.tableLines(agents)))
+    return None
+
+
+def listedAgents(cfg):
+    agents = agents_mod.currentAgents(cfg.get("slotsFile"), cfg.get("claudeCommand"))
+    return agents_mod.withTitles(agents, lambda key: issueTitle(cfg, key))
+
+
+# A store key's title from its ticket file; a Jira key's from Jira, and only when the config names
+# its project (jiraFrom() refuses the rest, which leaves the title blank).
+def issueTitle(cfg, key):
+    return jiraFrom(cfg, key).issue(key)["fields"]["summary"]
+
+
+def agentsTick(cfg, keepWatching):
+    if keepWatching:
+        return agents_mod.watch(cfg.get("slotsFile"), cfg.get("claudeCommand"))  # runs until stopped
+    _, failures = agents_mod.tick({}, cfg.get("slotsFile"), cfg.get("claudeCommand"))
+    for failure in failures:
+        print(failure, file=sys.stderr)
+    return 1 if failures else None
+
+
+# fzf over the table; enter brings the chosen session's issue window forward with `code` on its
+# workspace file, the way Open does (lib/spaces.py's focus()).
+def pickAgent(cfg, agents):
+    menu = "\n".join(f"{i}\t{line}" for i, line in enumerate(agents_mod.tableLines(agents)))
+    chosen = subprocess.run(
+        ["fzf", "--with-nth=2..", "--delimiter=\t", "--no-sort", "--prompt=claude> "],
+        input=menu,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout
+    if chosen:
+        focusAgent(cfg, agents[int(chosen.split("\t")[0])])
+
+
+def focusAgent(cfg, agent):
+    if not agent.key:
+        print(f"{agent.name} isn't in an issue's worktree; it runs in {agent.cwd}")
+        return
+    workspaceFile = term_mod.issueWorkspaceFilePath(agent.key, agent.worktree, cfg.get("workspaceDir"))
+    if not os.path.exists(workspaceFile):
+        print(f"{agent.key} has no issue window; plan open {agent.key} opens one")
+        return
+    startLib.run("code", [workspaceFile], os.getcwd())
 
 
 def cmdPicker(cfg, argv0=None):
@@ -480,6 +555,8 @@ def main(argv=None):
         return cmdDone(cfg, rest[0] if rest else None)
     if cmd == "pulse":
         return cmdPulse(cfg, rest[0] if rest else None, rest[1] if len(rest) > 1 else None)
+    if cmd == "agents":
+        return cmdAgents(cfg, argv[1:])
     if KEY_RE.match(cmd):  # `plan CIAM-123` is shorthand for view
         return cmdView(cfg, fileissues_mod.canonicalKey(cmd))
-    raise RuntimeError(f'unknown command "{cmd}"; try: list, view, start, open, browse, ship, done, pulse')
+    raise RuntimeError(f'unknown command "{cmd}"; try: list, view, start, open, browse, ship, done, pulse, agents')

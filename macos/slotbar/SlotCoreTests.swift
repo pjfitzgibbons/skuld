@@ -17,6 +17,7 @@ struct SlotCoreTests {
         pulseRoundTrip()
         shortcutParsing()
         desktopNumbering()
+        seenOnSwitching()
         print(failures == 0 ? "all passed" : "\(failures) failed")
         exit(failures == 0 ? 0 : 1)
     }
@@ -37,16 +38,16 @@ struct SlotCoreTests {
     }
 
     static func pulseValidation() {
-        check(validatePulse(slot: "3", color: "red") == Pulse(desktop: 3, color: .red), "accepts a red pulse")
+        check(validatePulse(slot: "3", color: "orange") == Pulse(desktop: 3, color: .orange), "accepts an orange pulse")
         check(validatePulse(slot: "16", color: "green") == Pulse(desktop: 16, color: .green), "accepts the top Desktop")
         check(validatePulse(slot: "1", color: "off") == Pulse(desktop: 1, color: .off), "accepts off")
         check(validatePulse(slot: "3", color: "blue") == nil, "rejects an unknown colour")
         check(validatePulse(slot: "3", color: "Red") == nil, "rejects a colour in another case")
-        check(validatePulse(slot: "0", color: "red") == nil, "rejects Desktop 0")
-        check(validatePulse(slot: "17", color: "red") == nil, "rejects a Desktop past 16")
-        check(validatePulse(slot: "3x", color: "red") == nil, "rejects a slot that isn't a number")
-        check(validatePulse(slot: 3, color: "red") == nil, "rejects a slot that isn't a string")
-        check(validatePulse(slot: nil, color: "red") == nil, "rejects a missing slot")
+        check(validatePulse(slot: "0", color: "orange") == nil, "rejects Desktop 0")
+        check(validatePulse(slot: "17", color: "orange") == nil, "rejects a Desktop past 16")
+        check(validatePulse(slot: "3x", color: "orange") == nil, "rejects a slot that isn't a number")
+        check(validatePulse(slot: 3, color: "orange") == nil, "rejects a slot that isn't a string")
+        check(validatePulse(slot: nil, color: "orange") == nil, "rejects a missing slot")
         check(validatePulse(slot: "3", color: nil) == nil, "rejects a missing colour")
     }
 
@@ -100,5 +101,11 @@ struct SlotCoreTests {
                                               display([space(20), space(21)], current: 21)])
         check(two == DesktopState(count: 4, showing: [1, 4]), "numbers on across a second display, one showing each")
         check(desktopState(fromDisplays: []) == DesktopState(count: 0, showing: []), "no displays, no Desktops")
+    }
+
+    static func seenOnSwitching() {
+        check(seenDesktops(wasShowing: [2], nowShowing: [3]) == [2, 3], "switching sees the Desktop left and the one reached")
+        check(seenDesktops(wasShowing: [1, 4], nowShowing: [1, 3]) == [3, 4], "a Desktop still showing on another display isn't newly seen")
+        check(seenDesktops(wasShowing: [2], nowShowing: [2]).isEmpty, "no switch, nothing seen")
     }
 }
