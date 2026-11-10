@@ -56,8 +56,8 @@ everything reaches it by PR. The only status change `plan` makes is Start's move
 macOS only. In order:
 
 1. **Tools.** `git`, `gh` (signed in with `gh auth login`), Python 3.10 or later on `PATH` as
-   `python3` (`/usr/bin/python3` is 3.9 and can't run the scripts), VS Code with its `code` command
-   on `PATH`, fzf, and Xcode's Command Line Tools for `swiftc` (steps 12 and 13). A menu bar for
+   `python3` (`/usr/bin/python3` is 3.9 and can't run the scripts), [uv](https://docs.astral.sh/uv/)
+   (`brew install uv`) for the local server's venv, VS Code with its `code` command on `PATH`, fzf, and Xcode's Command Line Tools for `swiftc` (steps 12 and 13). A menu bar for
    the Desktops is optional: SlotBar (step 13) or SketchyBar.
 
 2. **The Jira token in `~/.netrc`**, on a Mac that works Jira projects (step 5), never in a
@@ -123,6 +123,7 @@ macOS only. In order:
    | `reservedDesktops` | `[1]` | Desktops `plan` never takes for an issue |
    | `netrcFile` | `~/.netrc` | Where the Jira token is, under `machine <baseUrl's host>` |
    | `claudeCommand` | `~/.local/bin/claude` | The `claude` that `plan agents` asks for its sessions, by path |
+   | `serverPort` | `8765` | The local server's port on `127.0.0.1` (§7) |
 
 6. **The skill.** Link `skills/jira-issues/` to `~/.claude/skills/jira-issues/`, so every repo
    shares one copy.
@@ -161,7 +162,17 @@ macOS only. In order:
     ticket store's folder.
 
 11. **The LaunchAgents.** `issue-watch` watches the store and commits and pushes it, and
-    the local server serves issue pages (§7). Both start at login and restart if they stop.
+    the local server serves issue pages (§7). Both start at login and restart if they stop. For
+    the server, from skuld's main checkout:
+
+    ```sh
+    uv sync              # makes .venv with Flask, from pyproject.toml and uv.lock
+    plan serve start     # installs and loads ~/Library/LaunchAgents/dev.skuld.serve.plist
+    plan serve status    # http://127.0.0.1:8765/  up  pid 4242
+    ```
+
+    The agent runs the server from the checkout `plan serve start` ran in, so run it from the main
+    checkout, not a worktree. After pulling `main`, run `uv sync` and `plan serve restart`.
 
 12. **Native Desktops.** Each issue window gets its own macOS Desktop. SIP stays on and nothing is
     installed beyond the helper:
@@ -251,7 +262,7 @@ decides the repo (§4).
 | `plan ship [KEY]` | Ship (§5); the key defaults to the current worktree's branch |
 | `plan done [KEY]` | Done (§6) |
 | `plan browse <KEY \| pr#N \| url> [KEY]` | Open a page in the issue window's browser (§7) |
-| `plan serve start\|stop\|restart\|status` | Control the local server's LaunchAgent (§7); `status` prints the server's URL and whether it answers |
+| `plan serve start\|stop\|restart\|status` | Control the local server's LaunchAgent (§7); `status` prints the server's URL, whether it answers, and its pid |
 | `plan pulse <KEY> orange\|green\|off` | Pulse the issue's Desktop in SlotBar, or clear its tint (§2, step 13); exits non-zero when SlotBar isn't running |
 | `plan agents [list]` | Every Claude session, most urgent first: its state, Desktop (`-` when it can't be placed), key, issue title and name |
 | `plan agents status` | The same sessions on one line, as symbols on each Desktop: `⏳` waiting, `◆` done, `●` busy, `■` blocked, `○` idle |
@@ -457,12 +468,32 @@ A Done that stops part way says what it already changed, and Done again finishes
 
 ### The local server
 
-One Flask server per machine, on `127.0.0.1` at a fixed port, started at login by a LaunchAgent.
-`plan serve start|stop|restart|status` controls it; the command renders nothing itself. The
-server's routes only read:
+One Flask server per machine, on `127.0.0.1` at the config's `serverPort` (default 8765),
+started at login by a LaunchAgent. It is `lib/server.py`, the one module that imports Flask, run as
+one process by the venv's python from skuld's uv venv (§2, step 11). It sits idle until a page is
+asked for.
+
+`plan serve start|stop|restart|status` controls the LaunchAgent, `dev.skuld.serve`, through
+`launchctl`; the command renders nothing itself.
+
+| Command | Does |
+| --- | --- |
+| `plan serve start` | Writes `~/Library/LaunchAgents/dev.skuld.serve.plist` and loads it, then waits for the server to answer. A server that already answers is left alone |
+| `plan serve stop` | Unloads the agent. The plist stays, so the server starts again at the next login |
+| `plan serve restart` | Restarts the server's process (`launchctl kickstart -k`), for new code after a pull |
+| `plan serve status` | Prints the server's URL, `up` or `down` from whether `/health` answers, and the server's pid while launchd runs it (`launchctl print`) |
+
+Without the venv, `start` refuses, naming `uv` when uv isn't installed and `uv sync` when it is. A
+port another process holds is refused, naming the port and the process, by `start` and by the
+server itself. launchd starts a server that stops again after 10 seconds, its throttle interval.
+The server logs each request and each error to `~/Library/Logs/skuld-serve.log`; a `start` whose
+server never answers says to look there.
+
+The server's routes only read:
 
 | Route | Serves |
 | --- | --- |
+| `/health` | `{"app": "skuld", "status": "ok"}`, which `plan serve status` asks for |
 | `/` | Every issue in progress, with links to its pages |
 | `/issues/<KEY>` | A store ticket, rendered from its Markdown |
 | `/issues/<KEY>/report`, `/issues/<KEY>/review` | A redirect to the latest round's page |
@@ -589,6 +620,7 @@ These recur through the code, and they're worth taking away even without the too
 
 ```sh
 python3 -m unittest discover -s lib -t .
+uv run python -m unittest discover -s lib -t .     # adds lib/test_server.py, which needs Flask
 python3 -m unittest discover -s skills/jira-issues/scripts -p 'test_*.py'
 python3 claude/hooks/test_no_ai_attribution.py
 python3 claude/hooks/test_no_terminal_jira_transition.py
@@ -601,7 +633,8 @@ fake Jira client, an injected object or a local stub HTTP server. No test touche
 `lib/test_start.py` and `lib/test_done.py` inject faults: each step is made to fail once, and the
 test checks that the next run converges. The watcher's debounce and gate test against a fake clock
 and a temp repo. Each hook's test runs it both as a function and as a process, with JSON on stdin
-and the exit code out.
+and the exit code out. The server's routes run through Flask's test client, with no server running;
+`plan serve`'s tests use a fake LaunchAgent, so no test runs `launchctl`.
 
 ## 12. Limits
 
@@ -617,6 +650,7 @@ and the exit code out.
 
 ```text
 GUIDE.md                   this file
+pyproject.toml, uv.lock    the local server's one dependency, Flask, for uv sync
 store.yml                  the store's projects (key, name, repo remotes), archive delay, debounce
 bin/
   plan                     plan's entry point
@@ -651,9 +685,12 @@ lib/
   waiting.py               the waiting markers bin/claude-waiting keeps, one per session
   reviews.py               which slotted issues' PRs have a Copilot review on their head commit
   claude_hooks.py          adds and removes bin/claude-waiting in ~/.claude/settings.json
+  serve.py                 plan serve: the server's LaunchAgent through launchctl, and its status
+  server.py                the local server: Flask on 127.0.0.1, the one module that imports Flask
   test_*.py                the unit tests
-  (the FileStore adapter, the checker, issue-watch and the local server also live in lib/)
+  (the FileStore adapter, the checker and issue-watch also live in lib/)
 templates/issue.md         what plan new fills in
+templates/*.html           the local server's pages, Jinja templates that autoescape
 skills/jira-issues/        SKILL.md, references/ (pr-body.md, jira-issue.md),
                            scripts/ (pr.sh, ghbody.sh, pr_threads.py, checklist.py,
                            new_issue.py, outline.py, ghread.py, test_scripts.py)

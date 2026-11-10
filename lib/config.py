@@ -85,6 +85,8 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #   claudeCommand  The `claude` CLI `plan agents` asks for its sessions (`claude agents --json`),
 #                  as a path, since the LaunchAgent's PATH doesn't hold it.
 #                  Default: "~/.local/bin/claude".
+#   serverPort     The local page server's port on 127.0.0.1 (lib/server.py, `plan serve`).
+#                  Default: 8765.
 def defaults():
     return {
         "jira": None,
@@ -103,6 +105,7 @@ def defaults():
         "reservedDesktops": [1],
         "issueStore": None,
         "claudeCommand": "~/.local/bin/claude",
+        "serverPort": 8765,
     }
 
 
