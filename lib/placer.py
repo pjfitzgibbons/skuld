@@ -1,12 +1,12 @@
 # The WindowPlacer port: where an issue's VS Code window goes, how it's found again, and how the
 # slots file labels it. Start and Open (lib/cli.py) talk to a placer, never to the window system
-# directly. The one adapter is SpacesPlacer (lib/spaces.py), on native macOS Desktops.
+# directly. A page opens through term.showUrl(), which needs no placer: `code` finds the window.
+# The one adapter is SpacesPlacer (lib/spaces.py), on native macOS Desktops.
 #
 # An adapter implements:
 #
 #   sweep()                         drop slot lines whose issue window is gone
 #   openWindow(key, workspaceFile)  bring up the issue's window, or open one on a free slot -> Placement
-#   showUrl(url, placement)         put the issue's URL beside its window (print it, at least)
 #   focus(placement, workspaceFile) end on the issue's window; best-effort
 #   slotLabels()                    {KEY: label} for `plan list`, a slot and where its window is
 from dataclasses import dataclass, field

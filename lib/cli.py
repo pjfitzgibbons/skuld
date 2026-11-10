@@ -265,8 +265,8 @@ def cmdStart(cfg, key):
         print(ticket)  # the plan-window extension opens it in a tab
     else:
         # Start runs in whatever terminal invoked `plan start`, not the new issue's own window,
-        # so the placer is handed the placement rather than inferring the caller's own.
-        placer.showUrl(jira.browseUrl(key), placement)
+        # so the page is aimed at the issue's key rather than the caller's.
+        term_mod.showUrl(jira.browseUrl(key), key, workspaceFile)
     placer.focus(placement, workspaceFile)
 
 
@@ -289,6 +289,50 @@ def writeIssueWorkspaceFile(cfg, key, worktree, ticket):
     with term_mod.step("writing the issue's workspace file", f"Check that {os.path.dirname(path)} is writable."):
         term_mod.writeWorkspaceFile(path, workspace)
     return path
+
+
+# `plan browse <KEY | pr#N | url> [KEY]`: print the page's URL, then open it in an issue window's
+# integrated browser (architecture §7.6.1). The window is the target's key, else the [KEY] given,
+# else the calling terminal's PLAN_KEY, else whichever VS Code window has focus.
+def cmdBrowse(cfg, target, windowKey):
+    if not target:
+        raise RuntimeError("usage: plan browse <KEY | pr#N | url> [KEY]")
+    url, targetKey = browseTarget(cfg, target)
+    key = targetKey or windowKey or os.environ.get("PLAN_KEY") or None
+    term_mod.showUrl(url, key, openWorkspaceFile(cfg, key))
+
+
+PR_TARGET_RE = re.compile(r"^pr#(\d+)$")
+
+
+# (url, the key it belongs to or None) for a browse target: a key, pr#N or an http(s) URL.
+def browseTarget(cfg, target):
+    if KEY_RE.match(target):
+        return issuePageUrl(cfg, target), target
+    pr = PR_TARGET_RE.match(target)
+    if pr:
+        return ship_mod.pullRequest(os.getcwd(), pr.group(1), "url")["url"], None
+    if term_mod.isWebUrl(target):
+        return target, None
+    raise RuntimeError(f'plan browse takes a key, pr#N or an http(s) URL, not "{target}"')
+
+
+# A Jira issue's browse URL. A store ticket's page comes from the local server, which isn't built
+# yet, so its key is refused, naming the ticket file.
+def issuePageUrl(cfg, key):
+    jira = jiraFrom(cfg, key)
+    if fileissues_mod.isFileBacked(key):
+        raise RuntimeError(f"{key} is a store ticket, whose page the local server will serve; until then open {jira.browseUrl(key)}")
+    return jira.browseUrl(key)
+
+
+# The issue window's workspace file when it exists, for `code` to focus; None for no key or no file,
+# and the link goes to the focused window, where a key the window doesn't carry is refused.
+def openWorkspaceFile(cfg, key):
+    if not key:
+        return None
+    path = term_mod.workspaceFilePath(key, cfg.get("workspaceDir"))
+    return path if os.path.exists(path) else None
 
 
 # `plan ship [KEY]`: ship.check()'s pre-flight, then `pr <KEY>` visibly in a tmux window. KEY, when
@@ -409,6 +453,8 @@ def main(argv=None):
         return cmdView(cfg, rest[0] if rest else None)
     if cmd in ("start", "open"):
         return cmdStart(cfg, rest[0] if rest else None)
+    if cmd == "browse":
+        return cmdBrowse(cfg, rest[0] if rest else None, rest[1] if len(rest) > 1 else None)
     if cmd == "ship":
         return cmdShip(cfg, rest[0] if rest else None)
     if cmd == "done":
@@ -417,4 +463,4 @@ def main(argv=None):
         return cmdPulse(cfg, rest[0] if rest else None, rest[1] if len(rest) > 1 else None)
     if KEY_RE.match(cmd):  # `plan CIAM-123` is shorthand for view
         return cmdView(cfg, fileissues_mod.canonicalKey(cmd))
-    raise RuntimeError(f'unknown command "{cmd}"; try: list, view, start, open, ship, done, pulse')
+    raise RuntimeError(f'unknown command "{cmd}"; try: list, view, start, open, browse, ship, done, pulse')

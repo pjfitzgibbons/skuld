@@ -205,7 +205,7 @@ through its adapter.
 | Front end | VS Code, one issue window per issue, opened by the `code` CLI on a workspace file and placed by the `WindowPlacer` on a native Desktop, all via `subprocess`; fzf for the picker; ticket files in an editor tab |
 | Spaces helper | `skuld-spaces`, built from `macos/spaces.swift` with `swiftc` alone: read-only SkyLight calls, resolved with `dlsym`, that list Desktops and each VS Code window's Desktop as JSON |
 | Menu bar | SlotBar or SketchyBar, whichever has its LaunchAgent loaded. SlotBar is a menu-bar extra built from `macos/slotbar/` with `swiftc` alone and signed with a local self-signed certificate. It reads the slots file and Desktops through read-only SkyLight calls, takes pulses as the distributed notification `skuld.pulse` (a Desktop 1 to 16 and `red`, `green` or `off`, anything else ignored) from `plan pulse`, and switches Desktops by posting ^N, which needs the Accessibility grant |
-| Browser | The issue window's integrated browser, reached by the placer's `showUrl()` (§7.6.1); never system `open`. Browser automation and browser tests run in Chrome, never in an issue window |
+| Browser | The issue window's integrated browser, reached by `showUrl()` (§7.6.1); never system `open`. Browser automation and browser tests run in Chrome, never in an issue window |
 | Pages | One local Flask server on `127.0.0.1`, run by a LaunchAgent from login and controlled by `plan serve start\|stop\|restart\|status`, rendering an issue's pages from Jinja templates (§7.6.1) |
 | Pull requests | `gh`; Jira linkage through Jira's development panel, not a custom field |
 | Jira writes | `/rest/api/3/*`, ADF for descriptions and comments |
@@ -339,7 +339,7 @@ through the placer, recreating any that is missing ([failure-modes.md,
 Start refuses a closed issue. A lock file per issue keeps two invocations from starting it at once
 ([failure-modes.md, *Start*](failure-modes.md)).
 
-**The issue beside Claude.** A Jira issue's browse URL opens through the placer's `showUrl()` (§7.6.1), with the
+**The issue beside Claude.** A Jira issue's browse URL opens through `showUrl()` (§7.6.1), with the
 issue's key passed explicitly, since Start runs in the invoking terminal and not in the issue
 window. A store issue opens instead in an editor tab of the issue window, on the ticket file in the
 store's folder, never on a copy in a worktree. The URL or file path is printed either way. Claude's
@@ -437,9 +437,10 @@ with `after: <JIRA-KEY>` sorts directly after that Jira issue.
 
 ### 7.6.1 Opening a page
 
-`plan browse <KEY | pr#N | url> [KEY]`, Start and Open open a page through the placer's `showUrl()`. It
-always prints the URL first, then opens the page in the integrated browser of the issue window (§2).
-A link clicked in one of that window's terminals opens there too. Nothing else opens a page. System
+`plan browse <KEY | pr#N | url> [KEY]`, Start and Open open a page through `showUrl()` in `lib/term.py`.
+It always prints the URL first, then opens the page in the integrated browser of the issue window (§2).
+A localhost or loopback link clicked in one of that window's terminals opens there too, through the
+`workbench.browser.openLocalhostLinks` setting Start writes into the workspace file. Nothing else opens a page. System
 `open` sends a page to the default browser, outside every issue window, so neither the code nor an
 agent's shell uses it for one (§10, rule 7).
 
@@ -447,14 +448,21 @@ agent's shell uses it for one (§10, rule 7).
 page for a store ticket. It also takes `pr#N`, which opens the pull request, or a URL. `[KEY]` names the
 issue whose window the page belongs in when neither the target nor the terminal names one.
 
-The issue window, in order: (1) an explicit key, which Start always passes (§7.1); (2) the key in
-the environment of the terminal that ran the command; (3) otherwise, the issue window on the Desktop that is
-showing, by its slot. (2) comes before (3) for a command run from an issue window whose Desktop is
-no longer showing. With none of the three, the printed URL is all
-that happens.
+The issue window, in order: (1) an explicit key: the target's own, or `[KEY]`, and Start always
+passes its issue's (§7.1); (2) the `PLAN_KEY` in the environment of the terminal that ran the
+command; (3) otherwise, whichever VS Code window has focus.
 
-Every step of `showUrl()` is best-effort: a missing `code` or `skuld-spaces`, a closed issue window or
-any other failure is swallowed, since the printed URL stands on its own.
+VS Code sends a `vscode://` link to the focused window, and no terminal can name its window's id.
+So `showUrl()` runs `code <workspace file>`, which focuses the issue's window, then
+`code --open-url 'vscode://skuld.plan-window/browse?url=<url>&key=<KEY>'`, with the URL and key
+percent-encoded and both passed as arguments, never through a shell. plan-window's `/browse` handler
+opens the page with `workbench.action.browser.open`. It refuses a link whose `key` isn't its
+window's `plan.key`, so a link that reaches another window, because focus moved between the two
+commands, shows a refusal and opens nothing. A link with no key opens in the focused window. The
+handler opens only http(s) URLs.
+
+Every step of `showUrl()` is best-effort: a missing `code`, a closed issue window or any other
+failure is swallowed, since the printed URL stands on its own.
 
 Pages for an issue, such as its report and its review, come from the local server, rendered from
 Jinja templates with the issue's data. A page's URL path keys (the issue key, the round, the page)

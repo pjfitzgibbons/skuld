@@ -322,23 +322,6 @@ class SpacesPlacerTests(FakeMacCase):
         self.assertEqual(labels, {"SK-0001": "D2", "SK-0002": "D3, window on D4"})
 
 
-class ShowUrlTests(FakeMacCase):
-    def show(self, mac, slot="3"):
-        with mock.patch("builtins.print") as printed:
-            self.placer(mac).showUrl("https://x/browse/CIAM-1", Placement(True, slot, f"Desktop {slot}"))
-        printed.assert_called_once_with("https://x/browse/CIAM-1")
-
-    def test_it_switches_to_the_issues_desktop_and_opens_a_new_window_there(self):
-        mac = FakeMac()
-        self.show(mac)
-        self.assertEqual(mac.showing, 3)
-        self.assertTrue(mac.ran("open", "-na", "Brave Browser", "--args", "--new-window", "https://x/browse/CIAM-1"))
-        self.assertFalse(mac.ran("open", "-a"))
-
-    def test_a_failure_after_the_print_is_swallowed(self):
-        self.show(FakeMac(unknown="CGSMainConnectionID"))
-
-
 class HelperBuildTests(unittest.TestCase):
     def test_an_unbuilt_configured_helper_says_how_to_build_it(self):
         with self.assertRaisesRegex(RuntimeError, "isn't built; run bin/build-spaces"):

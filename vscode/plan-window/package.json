@@ -1,14 +1,14 @@
 {
   "name": "plan-window",
   "displayName": "plan window",
-  "description": "Opens an issue's Claude terminal and ticket when its plan workspace opens.",
+  "description": "Opens an issue's Claude terminal and ticket when its plan workspace opens, and opens plan browse's pages in the integrated browser.",
   "publisher": "skuld",
   "version": "0.0.1",
   "private": true,
   "license": "UNLICENSED",
   "engines": { "vscode": "^1.90.0" },
   "main": "./extension.js",
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": ["onStartupFinished", "onUri"],
   "contributes": {
     "configuration": {
       "title": "plan window",

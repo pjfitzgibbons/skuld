@@ -56,7 +56,30 @@ function ticketNeedsOpening(plan, openFilePaths) {
   return plan.ticket !== null && !openFilePaths.includes(plan.ticket);
 }
 
+// What a /browse?url=<url>[&key=<KEY>] link asks of this window: { url } to open, or { refusal }
+// saying why not. A link names the issue window it's for; one that lands in another window (focus
+// moved between `code <workspace file>` and `code --open-url`) is refused rather than opened.
+// windowKey is this window's plan.key, or null outside an issue window.
+function browseRequest(query, windowKey) {
+  const params = new URLSearchParams(query);
+  const url = params.get("url");
+  const key = params.get("key");
+  if (!url) return { refusal: "/browse needs ?url=" };
+  if (!isWebUrl(url)) return { refusal: `/browse opens only http(s) links, not ${url}` };
+  if (key && key !== windowKey) return { refusal: `the link is for ${key}'s window, and this is ${windowKey || "no issue's"}: run plan browse in ${key}'s window` };
+  return { url };
+}
+
+function isWebUrl(url) {
+  try {
+    return ["http:", "https:"].includes(new URL(url).protocol);
+  } catch {
+    return false;
+  }
+}
+
 module.exports = {
+  browseRequest,
   readPlan,
   claudeTerminalName,
   claudeTerminalOptions,

@@ -142,7 +142,6 @@ class SpacesPlacer:
         self.windowsFile = cfg.get("windowsFile") or DEFAULT_WINDOWS_FILE
         self.helper = expandHome(cfg.get("spacesHelper") or DEFAULT_HELPER)
         self.reserved = {int(d) for d in cfg.get("reservedDesktops") or []}
-        self.browserApp = cfg.get("browserApp") or "Brave Browser"
         self.windowWaitTries = 40
         self.windowWaitMs = 150
 
@@ -171,20 +170,7 @@ class SpacesPlacer:
             return self.reuseWindow(key, windowId, snapshot)
         return self.placeWindow(key, workspaceFile, snapshot)
 
-    # The URL is printed first, so it stands on its own if anything after fails. Then the browser
-    # opens it in a new window on the issue's Desktop, the one showing after the switch. A tab
-    # would go to the browser's last-used window, which can be on any Desktop. Every step past the
-    # print is best-effort.
-    def showUrl(self, url, placement):
-        print(url)
-        try:
-            self.switchTo(int(placement.slot), self.readShortcuts())
-            run("open", ["-na", self.browserApp, "--args", "--new-window", url], os.getcwd())
-        except (RuntimeError, OSError, ValueError, KeyError):
-            pass
-
-    # `code <workspace file>` switches to the window's Desktop and brings it forward, in front of
-    # the browser showUrl() just opened beside it.
+    # `code <workspace file>` switches to the window's Desktop and brings it forward.
     def focus(self, placement, workspaceFile):
         try:
             run("code", [workspaceFile], os.getcwd())

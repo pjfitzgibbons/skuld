@@ -1,5 +1,5 @@
 # The issue window's plumbing: the VS Code workspace file, the issue-label slots file that
-# SlotBar reads, and Ship's tmux window. All via subprocess, like
+# SlotBar reads, opening a page in the window's integrated browser, and Ship's tmux window. All via subprocess, like
 # start.py's run(); no vscode import, no new deps. Where an issue's window goes on screen is the
 # WindowPlacer's job (lib/placer.py, lib/spaces.py); this module only reads and writes the files.
 #
@@ -8,6 +8,7 @@
 import json
 import os
 from contextlib import contextmanager
+from urllib.parse import quote, urlencode, urlparse
 
 from .start import expandHome, run
 
@@ -124,6 +125,7 @@ def issueWorkspace(key, worktree, store, prompt, ticket=None):
         "plan.key": key,
         "plan.worktree": worktree,
         "plan.prompt": prompt,
+        "workbench.browser.openLocalhostLinks": True,  # a clicked localhost link opens in the window
     }
     if ticket:
         settings["plan.ticket"] = ticket
@@ -137,6 +139,51 @@ def writeWorkspaceFile(path, workspace):
         json.dump(workspace, f, indent=2)
         f.write("\n")
     os.replace(tmp, path)
+
+
+# --- Opening a page in the issue window's integrated browser (architecture §7.6.1) ---
+#
+# VS Code sends a vscode:// link to the focused window, so `code <workspace file>` first focuses the
+# issue's window, then `code --open-url` hands plan-window's /browse handler the page. The link
+# carries the key, and the handler refuses it in any window whose plan.key differs, so a link that
+# lands in the wrong window after focus moved is refused rather than opened.
+PLAN_WINDOW_EXTENSION = "skuld.plan-window"
+
+
+def isWebUrl(url):
+    return urlparse(url).scheme in ("http", "https")
+
+
+# The vscode:// link for url, aimed at key's window, or at whichever window has focus when key is
+# None. Every character that isn't unreserved is percent-encoded, so a quote, space, & or # in url
+# stays inside the url parameter.
+def browseLink(url, key=None):
+    query = {"url": url}
+    if key:
+        query["key"] = key
+    return f"vscode://{PLAN_WINDOW_EXTENSION}/browse?{urlencode(query, quote_via=quote, safe='')}"
+
+
+# The commands that open url in key's window, as (command, args) pairs run without a shell: focus
+# the window when its workspace file is known, then send the link.
+def browseCommands(url, key=None, workspaceFile=None):
+    commands = [("code", [workspaceFile])] if workspaceFile else []
+    commands.append(("code", ["--open-url", browseLink(url, key)]))
+    return commands
+
+
+# Prints url, then opens it in key's window. Every step after the print is best-effort: the printed
+# URL stands on its own, and a failure leaves nothing else behind. A URL that isn't http(s) is only
+# printed, since the handler would refuse it.
+def showUrl(url, key=None, workspaceFile=None):
+    print(url)
+    if not isWebUrl(url):
+        return
+    try:
+        for command, args in browseCommands(url, key, workspaceFile):
+            run(command, args, os.getcwd())
+    except (RuntimeError, OSError):
+        pass
 
 
 # A step of opening the issue window that failed stops Start with the step named and what to do by
