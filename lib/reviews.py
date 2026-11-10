@@ -3,19 +3,21 @@
 # the next push moves the head and clears it, so nothing here keeps state.
 #
 # It asks `gh pr view` in each issue's worktree, which finds the PR by the worktree's branch. That
-# costs a GitHub call per issue, so the watch loop asks once a minute, not every tick.
+# costs a GitHub call per issue, so the watch loop asks once a minute on its own thread, and a call
+# that hangs is given up after GH_TIMEOUT_SECONDS.
 import json
+import subprocess
 
-from .start import expandHome, run
+from .start import expandHome
 
 COPILOT = "copilot-pull-request-reviewer"
 DEFAULT_GH_COMMAND = "gh"
 REVIEW_CHECK_SECONDS = 60
+GH_TIMEOUT_SECONDS = 20
 
 
 def headCommit(pr):
-    commits = pr.get("commits") or []
-    return commits[-1].get("oid") if commits else None
+    return pr.get("headRefOid")
 
 
 def isCopilots(review):
@@ -34,12 +36,15 @@ def copilotReviewWaiting(pr):
     return any(isCopilots(review) and reviewedCommit(review) == head for review in pr.get("reviews") or [])
 
 
-# The PR for the worktree's branch, or None when it has none or gh fails.
+# The PR for the worktree's branch, or None when it has none, gh fails, or gh takes too long.
 def readPr(worktree, ghCommand=None):
+    command = [expandHome(ghCommand or DEFAULT_GH_COMMAND), "pr", "view", "--json", "state,reviews,headRefOid"]
     try:
-        answer = run(expandHome(ghCommand or DEFAULT_GH_COMMAND), ["pr", "view", "--json", "state,reviews,commits"], worktree)
-        return json.loads(answer)
-    except (RuntimeError, OSError, ValueError):
+        answer = subprocess.run(
+            command, cwd=worktree, capture_output=True, text=True, check=True, timeout=GH_TIMEOUT_SECONDS
+        )
+        return json.loads(answer.stdout)
+    except (subprocess.SubprocessError, OSError, ValueError):
         return None
 
 

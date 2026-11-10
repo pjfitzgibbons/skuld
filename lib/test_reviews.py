@@ -1,3 +1,4 @@
+import subprocess
 import unittest
 from unittest import mock
 
@@ -6,10 +7,10 @@ from lib import reviews
 COPILOT = {"login": "copilot-pull-request-reviewer"}
 
 
-def pr(state="OPEN", commits=("a", "b"), reviewedAt=(), author=COPILOT):
+def pr(state="OPEN", head="b", reviewedAt=(), author=COPILOT):
     return {
         "state": state,
-        "commits": [{"oid": oid} for oid in commits],
+        "headRefOid": head,
         "reviews": [{"author": author, "commit": {"oid": oid}} for oid in reviewedAt],
     }
 
@@ -28,9 +29,9 @@ class CopilotReviewWaitingTests(unittest.TestCase):
         self.assertFalse(reviews.copilotReviewWaiting(pr(state="MERGED", reviewedAt=("b",))))
         self.assertFalse(reviews.copilotReviewWaiting(pr(state="CLOSED", reviewedAt=("b",))))
 
-    def test_no_pr_or_no_commits_is_not_waiting(self):
+    def test_no_pr_or_no_head_is_not_waiting(self):
         self.assertFalse(reviews.copilotReviewWaiting({}))
-        self.assertFalse(reviews.copilotReviewWaiting(pr(commits=(), reviewedAt=("b",))))
+        self.assertFalse(reviews.copilotReviewWaiting(pr(head=None, reviewedAt=("b",))))
 
 
 class ReviewedKeysTests(unittest.TestCase):
@@ -42,13 +43,22 @@ class ReviewedKeysTests(unittest.TestCase):
 
 class ReadPrTests(unittest.TestCase):
     def test_gh_failing_or_no_pr_is_none(self):
-        with mock.patch.object(reviews, "run", side_effect=RuntimeError('no pull requests found for branch "x"')):
+        failed = subprocess.CalledProcessError(1, "gh", stderr='no pull requests found for branch "x"')
+        with mock.patch.object(reviews.subprocess, "run", side_effect=failed):
             self.assertIsNone(reviews.readPr("/w"))
 
+    def test_gh_that_hangs_is_given_up_as_none(self):
+        hung = subprocess.TimeoutExpired("gh", reviews.GH_TIMEOUT_SECONDS)
+        with mock.patch.object(reviews.subprocess, "run", side_effect=hung) as run:
+            self.assertIsNone(reviews.readPr("/w"))
+        self.assertEqual(run.call_args.kwargs["timeout"], reviews.GH_TIMEOUT_SECONDS)
+
     def test_gh_output_is_read_as_json_in_the_worktree(self):
-        with mock.patch.object(reviews, "run", return_value='{"state": "OPEN"}') as run:
+        answer = subprocess.CompletedProcess("gh", 0, stdout='{"state": "OPEN"}')
+        with mock.patch.object(reviews.subprocess, "run", return_value=answer) as run:
             self.assertEqual(reviews.readPr("/w"), {"state": "OPEN"})
-        self.assertEqual(run.call_args.args[2], "/w")
+        self.assertEqual(run.call_args.kwargs["cwd"], "/w")
+        self.assertIn("state,reviews,headRefOid", run.call_args.args[0])
 
 
 if __name__ == "__main__":
