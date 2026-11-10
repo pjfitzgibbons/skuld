@@ -13,6 +13,7 @@ from . import config as config_mod
 from . import done as done_mod
 from . import fileissues as fileissues_mod
 from . import placer as placer_mod
+from . import serve as serve_mod
 from . import ship as ship_mod
 from . import slotbar as slotbar_mod
 from . import start as startLib
@@ -488,6 +489,11 @@ def focusAgent(cfg, agent):
     startLib.run("code", [workspaceFile], os.getcwd())
 
 
+# `plan serve start|stop|restart|status`: control the local server's LaunchAgent (lib/serve.py).
+def cmdServe(cfg, action):
+    print(serve_mod.control(cfg, action))
+
+
 def cmdPicker(cfg, argv0=None):
     if argv0 is None:
         argv0 = sys.argv[0]
@@ -547,6 +553,8 @@ def main(argv=None):
         return cmdPulse(cfg, rest[0] if rest else None, rest[1] if len(rest) > 1 else None)
     if cmd == "agents":
         return cmdAgents(cfg, argv[1:])
+    if cmd == "serve":
+        return cmdServe(cfg, rest[0] if rest else None)
     if KEY_RE.match(cmd):  # `plan CIAM-123` is shorthand for view
         return cmdView(cfg, fileissues_mod.canonicalKey(cmd))
-    raise RuntimeError(f'unknown command "{cmd}"; try: list, view, start, open, browse, ship, done, pulse, agents')
+    raise RuntimeError(f'unknown command "{cmd}"; try: list, view, start, open, browse, ship, done, serve, pulse, agents')
