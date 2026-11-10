@@ -52,6 +52,11 @@ class PulseTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "SlotBar isn't running"):
             self.pulse("SK-0045", "red", fail="slotbar-pulse 3 red: slotbar-pulse: SlotBar isn't running")
 
+    def test_pulses_a_desktop_by_number_without_the_slots_file(self):
+        with mock.patch.object(slotbar, "run", side_effect=lambda command, args, cwd: self.calls.append([command, *args])):
+            slotbar.pulseDesktop(7, "off", "/opt/slotbar-pulse")
+        self.assertEqual(self.calls, [["/opt/slotbar-pulse", "7", "off"]])
+
     def test_default_command_is_inside_the_installed_bundle(self):
         self.assertTrue(slotbar.DEFAULT_PULSE_COMMAND.endswith("SlotBar.app/Contents/MacOS/slotbar-pulse"))
 

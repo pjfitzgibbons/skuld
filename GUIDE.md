@@ -122,6 +122,7 @@ macOS only. In order:
    | `spacesHelper` | `macos/build/skuld-spaces` in skuld | The helper `bin/build-spaces` builds; `plan` builds the default one itself when it is missing or older than its source |
    | `reservedDesktops` | `[1]` | Desktops `plan` never takes for an issue |
    | `netrcFile` | `~/.netrc` | Where the Jira token is, under `machine <baseUrl's host>` |
+   | `claudeCommand` | `~/.local/bin/claude` | The `claude` that `plan agents` asks for its sessions, by path |
 
 6. **The skill.** Link `skills/jira-issues/` to `~/.claude/skills/jira-issues/`, so every repo
    shares one copy.
@@ -152,7 +153,9 @@ macOS only. In order:
     ```
 
     When an issue window opens, it opens the ticket in a tab, starts Claude with Start's prompt in
-    a terminal beside it, and opens a shell in the panel (§4). It also handles the
+    a terminal beside it, and opens a shell in the panel (§4). Both terminals unset every `CLAUDE*`
+    variable the window inherited, so a window opened by `code -n` from inside a Claude session
+    still gets a Claude that registers as a session of its own. It also handles the
     `vscode://skuld.plan-window/browse` links that `plan browse` sends (§7). It is disabled in Restricted Mode,
     so trust the folder that holds each configured repo with its `<repo>.worktrees/`, and the
     ticket store's folder.
@@ -204,8 +207,21 @@ macOS only. In order:
        SlotBar keeps asking, the entry is from an earlier signature:
        `tccutil reset Accessibility dev.skuld.slotbar`, then `bin/start-slotbar` and grant again.
 
-    To rebuild after pulling `main`, run `bin/install-slotbar` again from the main checkout. It
-    replaces the running SlotBar, and the grant carries over. `bin/test-slotbar` runs its tests.
+    7. Install the Claude status engine: `bin/install-agents`, from the main checkout. Its
+       LaunchAgent `~/Library/LaunchAgents/dev.skuld.agents.plist` runs `plan agents tick --watch`
+       from login and restarts it if it stops. Every few seconds it pulses each issue's Desktop red
+       while its Claude waits on a person, green once its Claude is idle with a
+       `.tmp/<KEY>/report.html` newer than the branch's last commit, and clears it otherwise.
+       Switching to or from a Desktop clears its colour until its Claude's state changes again.
+       It also adds `bin/claude-waiting` to `~/.claude/settings.json` as a hook on Notification,
+       UserPromptSubmit, PreToolUse, PostToolUse, Stop and SessionEnd, keeping your other hooks: a
+       Claude that stops for a permission, a question or input turns its Desktop red as its system
+       notification shows. Its log is `~/Library/Logs/plan-agents.log`;
+       `bin/install-agents --uninstall` removes the agent and the hook.
+
+    To rebuild after pulling `main`, run `bin/install-slotbar` and `bin/install-agents` again from
+    the main checkout. SlotBar is replaced while running, and the grant carries over.
+    `bin/test-slotbar` runs its tests.
 
 ## 3. Commands
 
@@ -235,6 +251,11 @@ decides the repo (§4).
 | `plan browse <KEY \| pr#N \| url> [KEY]` | Open a page in the issue window's browser (§7) |
 | `plan serve start\|stop\|restart\|status` | Control the local server's LaunchAgent (§7); `status` prints the server's URL and whether it answers |
 | `plan pulse <KEY> red\|green\|off` | Pulse the issue's Desktop in SlotBar, or clear its tint (§2, step 13); exits non-zero when SlotBar isn't running |
+| `plan agents [list]` | Every Claude session, most urgent first: its state, Desktop (`-` when it can't be placed), key, issue title and name |
+| `plan agents status` | The same sessions on one line, as symbols on each Desktop: `⏳` waiting, `◆` done, `●` busy, `■` blocked, `○` idle |
+| `plan agents --json` | The listing as JSON: each session's key, Desktop, state, title, name and cwd |
+| `plan agents pick` | The listing in fzf; `enter` brings the chosen session's issue window forward |
+| `plan agents tick [--watch]` | Pulse each Desktop in SlotBar once from its Claudes' states; `--watch` keeps doing so, as its LaunchAgent does (§2, step 13.7) |
 | `plan archive` | Move closed tickets past `archiveAfterDays` to `archive/` |
 | `plan init-store` | Make an empty store's folders |
 | `pr [done] [--no-copilot] [KEY]` | Send a round (§5) |
@@ -605,6 +626,9 @@ bin/
   start-slotbar            starts SlotBar through its LaunchAgent after Quit
   slotbar-signing-identity makes SlotBar's self-signed code-signing certificate, once per Mac
   test-slotbar             builds and runs SlotBar's core tests
+  install-agents           installs the LaunchAgent running plan agents tick --watch and the
+                           claude-waiting hook, or --uninstall removes both
+  claude-waiting           Claude Code hook: marks a session waiting on a person, clears it after
 macos/spaces.swift         skuld-spaces: read-only SkyLight calls listing Desktops and VS Code windows
 macos/slotbar/             SlotBar: SlotCore.swift (slots, pulses, shortcuts, Desktop numbering;
                            Foundation only) and its tests, slotbar.swift (the menu-bar item),
@@ -620,6 +644,10 @@ lib/
   placer.py                the WindowPlacer port, Placement and placerFrom()
   spaces.py                SpacesPlacer: native Desktops through skuld-spaces and System Events
   slotbar.py               plan pulse: a key's Desktop from the slots file, sent to slotbar-pulse
+  agents.py                plan agents: each Claude session's issue, Desktop and state, and the
+                           pulses that show them in SlotBar
+  waiting.py               the waiting markers bin/claude-waiting keeps, one per session
+  claude_hooks.py          adds and removes bin/claude-waiting in ~/.claude/settings.json
   test_*.py                the unit tests
   (the FileStore adapter, the checker, issue-watch and the local server also live in lib/)
 templates/issue.md         what plan new fills in

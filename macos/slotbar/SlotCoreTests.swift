@@ -17,6 +17,7 @@ struct SlotCoreTests {
         pulseRoundTrip()
         shortcutParsing()
         desktopNumbering()
+        seenOnSwitching()
         print(failures == 0 ? "all passed" : "\(failures) failed")
         exit(failures == 0 ? 0 : 1)
     }
@@ -100,5 +101,11 @@ struct SlotCoreTests {
                                               display([space(20), space(21)], current: 21)])
         check(two == DesktopState(count: 4, showing: [1, 4]), "numbers on across a second display, one showing each")
         check(desktopState(fromDisplays: []) == DesktopState(count: 0, showing: []), "no displays, no Desktops")
+    }
+
+    static func seenOnSwitching() {
+        check(seenDesktops(wasShowing: [2], nowShowing: [3]) == [2, 3], "switching sees the Desktop left and the one reached")
+        check(seenDesktops(wasShowing: [1, 4], nowShowing: [1, 3]) == [3, 4], "a Desktop still showing on another display isn't newly seen")
+        check(seenDesktops(wasShowing: [2], nowShowing: [2]).isEmpty, "no switch, nothing seen")
     }
 }

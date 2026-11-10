@@ -27,18 +27,20 @@ final class SlotBar: NSObject {
     var pulses: [Int: LivePulse] = [:]
     var lastPlacement = ""
     var lastBar = ""
+    var lastShowing: Set<Int> = []
     let fadeSeconds = 3.0
-    let heldAlpha = 0.6
+    let heldAlpha = 1.0
 
     init(slotsPath: String) {
         self.slotsPath = slotsPath
         super.init()
         NSWorkspace.shared.notificationCenter.addObserver(
-            self, selector: #selector(drawTitle), name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
+            self, selector: #selector(desktopChanged), name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(receivePulse(_:)), name: pulseNotification, object: nil)
         Timer.scheduledTimer(withTimeInterval: 1.0 / 20, repeats: true) { [weak self] _ in self?.animatePulses() }
         Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.reloadSlots() }
+        lastShowing = readDesktops().showing
         reloadSlots()
     }
 
@@ -62,6 +64,15 @@ final class SlotBar: NSObject {
         drawTitle()
     }
 
+    // Seeing a Desktop clears its pulse: the one switched to and the one left. The status engine
+    // (lib/agents.py) pulses again only when that Desktop's Claude changes state.
+    @objc func desktopChanged() {
+        let showing = readDesktops().showing
+        for desktop in seenDesktops(wasShowing: lastShowing, nowShowing: showing) { pulses[desktop] = nil }
+        lastShowing = showing
+        drawTitle()
+    }
+
     func animatePulses() {
         if pulses.values.contains(where: isFading) { drawTitle() }
     }
@@ -70,8 +81,8 @@ final class SlotBar: NSObject {
         Date().timeIntervalSince(pulse.started) < fadeSeconds
     }
 
-    // A pulse fades in and out once a second for fadeSeconds, then holds a steady tint until the
-    // next pulse or `off`.
+    // A pulse fades in and out once a second for fadeSeconds, then holds its full colour until the
+    // next pulse, `off`, or a switch to or from its Desktop.
     func tint(for desktop: Int) -> NSColor? {
         guard let pulse = pulses[desktop] else { return nil }
         guard isFading(pulse) else { return pulse.color.withAlphaComponent(heldAlpha) }

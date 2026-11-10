@@ -82,6 +82,9 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #                  "~/programming/skuld-project/issues". `~` is expanded. Default: None -- the
 #                  store lives outside skuld, so a machine that works tickets sets it; a command
 #                  that needs the store without it refuses, naming this key (issueStoreFrom()).
+#   claudeCommand  The `claude` CLI `plan agents` asks for its sessions (`claude agents --json`),
+#                  as a path, since the LaunchAgent's PATH doesn't hold it.
+#                  Default: "~/.local/bin/claude".
 def defaults():
     return {
         "jira": None,
@@ -99,6 +102,7 @@ def defaults():
         "spacesHelper": None,
         "reservedDesktops": [1],
         "issueStore": None,
+        "claudeCommand": "~/.local/bin/claude",
     }
 
 

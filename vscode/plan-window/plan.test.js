@@ -35,6 +35,17 @@ test("the Claude terminal starts in the worktree and passes the prompt by enviro
   assert.equal(options.isTransient, true);
 });
 
+test("the Claude and shell terminals unset every inherited CLAUDE* variable, and keep the rest", () => {
+  const inherited = { CLAUDE_CODE_CHILD_SESSION: "1", CLAUDE_PID: "4242", CLAUDECODE: "1", HOME: "/Users/p" };
+  const unset = { CLAUDE_CODE_CHILD_SESSION: null, CLAUDE_PID: null, CLAUDECODE: null };
+  assert.deepEqual(windowPlan.claudeTerminalOptions(plan, "/bin/bash", inherited).env, {
+    ...unset,
+    PLAN_KEY: "SK-9",
+    PLAN_PROMPT: "Work on SK-9.",
+  });
+  assert.deepEqual(windowPlan.shellTerminalOptions(plan, "/bin/bash", inherited).env, { ...unset, PLAN_KEY: "SK-9" });
+});
+
 test("an existing Claude terminal is found by name, so a second is never made", () => {
   const terminals = [{ name: "bash" }, { name: "Claude SK-9" }];
   assert.equal(windowPlan.findClaudeTerminal(plan, terminals), terminals[1]);

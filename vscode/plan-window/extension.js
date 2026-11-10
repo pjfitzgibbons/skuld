@@ -60,13 +60,13 @@ function showClaudeTerminal(plan) {
 function showShellTerminal(plan) {
   const terminal =
     windowPlan.findShellTerminal(plan, vscode.window.terminals) ||
-    vscode.window.createTerminal(windowPlan.shellTerminalOptions(plan, userShell()));
+    vscode.window.createTerminal(windowPlan.shellTerminalOptions(plan, userShell(), process.env));
   terminal.show(true);
 }
 
 function createClaudeTerminal(plan) {
   return vscode.window.createTerminal({
-    ...windowPlan.claudeTerminalOptions(plan, userShell()),
+    ...windowPlan.claudeTerminalOptions(plan, userShell(), process.env),
     location: { viewColumn: vscode.ViewColumn.Two },
   });
 }

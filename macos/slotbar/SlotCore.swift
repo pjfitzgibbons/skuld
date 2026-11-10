@@ -116,3 +116,9 @@ func desktopState(fromDisplays displays: [[String: Any]]) -> DesktopState {
     }
     return DesktopState(count: count, showing: showing)
 }
+
+// The Desktops a person has just seen when the showing Desktops change: each one they switched to
+// and each one they left. A Desktop that stayed showing on another display isn't among them.
+func seenDesktops(wasShowing: Set<Int>, nowShowing: Set<Int>) -> Set<Int> {
+    wasShowing.symmetricDifference(nowShowing)
+}
