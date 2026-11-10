@@ -60,6 +60,26 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("no issue store set", response.get_data(as_text=True))
 
+    def test_index_with_a_malformed_ticket_shows_the_store_error(self):
+        self.write("SK-0001-a.md", ticket("in-progress", "Serve pages").replace("ordinal: 1", "ordinal: soon"))
+        response = self.client().get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("The ticket store can't be read", response.get_data(as_text=True))
+
+    def test_index_with_an_unreadable_ticket_shows_the_store_error(self):
+        with mock.patch.object(server.fileissues_mod.FileIssues, "list", side_effect=PermissionError("denied")):
+            response = self.client().get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("denied", response.get_data(as_text=True))
+
+    def test_answers_loopback_host_names(self):
+        for host in ("127.0.0.1:8765", "localhost:8765"):
+            self.assertEqual(self.client().get("/health", headers={"Host": host}).status_code, 200)
+
+    def test_refuses_any_other_host_name(self):
+        response = self.client().get("/", headers={"Host": "rebind.example:8765"})
+        self.assertEqual(response.status_code, 400)
+
     def test_index_with_nothing_in_progress_says_so(self):
         self.assertIn("No store ticket is in progress", self.client().get("/").get_data(as_text=True))
 

@@ -471,14 +471,15 @@ A Done that stops part way says what it already changed, and Done again finishes
 One Flask server per machine, on `127.0.0.1` at the config's `serverPort` (default 8765),
 started at login by a LaunchAgent. It is `lib/server.py`, the one module that imports Flask, run as
 one process by the venv's python from skuld's uv venv (§2, step 11). It sits idle until a page is
-asked for.
+asked for. It answers only a Host of `127.0.0.1` or `localhost`, so a page on another site can't
+reach it through DNS rebinding.
 
 `plan serve start|stop|restart|status` controls the LaunchAgent, `dev.skuld.serve`, through
 `launchctl`; the command renders nothing itself.
 
 | Command | Does |
 | --- | --- |
-| `plan serve start` | Writes `~/Library/LaunchAgents/dev.skuld.serve.plist` and loads it, then waits for the server to answer. A server that already answers is left alone |
+| `plan serve start` | Writes `~/Library/LaunchAgents/dev.skuld.serve.plist` and loads it, reloading an agent that is loaded but down, then waits for the server to answer. A server that already answers is left alone |
 | `plan serve stop` | Unloads the agent. The plist stays, so the server starts again at the next login |
 | `plan serve restart` | Restarts the server's process (`launchctl kickstart -k`), for new code after a pull |
 | `plan serve status` | Prints the server's URL, `up` or `down` from whether `/health` answers, and the server's pid while launchd runs it (`launchctl print`) |

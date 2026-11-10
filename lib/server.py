@@ -18,6 +18,10 @@ from . import serve as serve_mod
 
 TEMPLATES = os.path.join(serve_mod.ROOT, "templates")
 IN_PROGRESS = "indeterminate"  # fileissues' status category for in-progress
+# The Host header must name loopback, so a DNS-rebinding page can't read the server as its own origin.
+TRUSTED_HOSTS = [serve_mod.HOST, "localhost"]
+# What reading the store can raise: no store set, a file unreadable or gone, a malformed field.
+STORE_ERRORS = (RuntimeError, OSError, ValueError)
 
 log = logging.getLogger("skuld.server")
 
@@ -25,6 +29,7 @@ log = logging.getLogger("skuld.server")
 # Templates ending in .html autoescape, so issue data never renders as markup.
 def createApp(cfg):
     app = Flask(__name__, template_folder=TEMPLATES)
+    app.config["TRUSTED_HOSTS"] = TRUSTED_HOSTS
 
     @app.get("/health")
     def health():
@@ -34,7 +39,7 @@ def createApp(cfg):
     def index():
         try:
             issues = issuesInProgress(cfg)
-        except RuntimeError as error:
+        except STORE_ERRORS as error:
             return render_template("index.html", issues=[], problem=str(error))
         return render_template("index.html", issues=issues, problem=None)
 

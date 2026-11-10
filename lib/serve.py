@@ -155,9 +155,8 @@ class Serve:
         self.refusePortInUse()
         self.agent.install(agentPlist(self.root))
         if self.agent.loaded():
-            self.agent.restart()
-        else:
-            self.agent.load()
+            self.agent.unload()  # launchd keeps the loaded plist; reload it to run this checkout
+        self.agent.load()
         return self.statusAfterWaitingFor(up=True)
 
     def stop(self):

@@ -80,9 +80,9 @@ class ServeTests(unittest.TestCase):
         self.assertEqual(self.agent.calls, [])
         self.assertEqual(out, "http://127.0.0.1:8765/  up  pid 4242")
 
-    def test_start_with_the_agent_loaded_but_down_kicks_it(self):
+    def test_start_with_the_agent_loaded_but_down_reloads_the_new_plist(self):
         self.serve(loaded=True).start()
-        self.assertEqual(self.agent.calls, ["install", "restart"])
+        self.assertEqual(self.agent.calls, ["install", "unload", "load"])
 
     def test_start_refuses_a_port_in_use_naming_the_port_and_the_process(self):
         with self.assertRaisesRegex(RuntimeError, r"port 8765 is in use by nginx \(pid 42\)"):
