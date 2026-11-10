@@ -12,8 +12,8 @@ from .done import DISPOSABLE
 
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".config", "skuld", "config.json")
 
-# This repo's own root (lib/'s parent) -- the repo checkouts.SK falls back to, so
-# Start/Open/Ship/Done find it regardless of where `plan` runs from. See checkouts below.
+# This repo's own root (lib/'s parent) -- checkouts.SK's default, so Start/Open/Ship/Done find it
+# regardless of where `plan` runs from. See checkouts below.
 
 # The key the issue store's path used to have. A config that still sets it is refused, naming
 # issueStore, so a stale config fails loudly instead of silently losing the store.
@@ -35,17 +35,17 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #   checkouts      { <Jira project key>: <repo path, or a LIST of them> }, e.g.
 #                  { "CIAM": ["~/programming/cryo-gitops-github",
 #                  "~/programming/CryoportSystems/Cryoport-Authentication-Service"] } -- several
-#                  repos can serve one Jira project (user decision 2026-11-05). A bare string is
-#                  still accepted, as a one-item list. DECIDED: the repo Start/Open/Ship/Done use is
-#                  primarily the one `plan` is run from (its main checkout, found from cwd) --
-#                  `checkouts` is now only a FALLBACK, consulted when an issue's work isn't already
-#                  found in some other listed repo (start.py's mainCheckout()) and cwd isn't inside
-#                  a git repo at all. One listed repo is used outright; more than one asks (fzf) for
-#                  a pick; none listed is a refusal naming both ways to fix it. Default: {} for
-#                  every project but SK, which defaults to this repo's own root (SK issues are
-#                  this repo's own backlog, lib/fileissues.py) -- a config that sets its OWN
-#                  `checkouts` dict without a "SK" entry loses this default (the merge below is
-#                  shallow, same caveat as typeMap's); add one back by hand if that happens:
+#                  repos can serve one Jira project. A bare string is still accepted, as a
+#                  one-item list. These are the only repos Start/Open/Ship/Done use for the
+#                  project (start.py's mainCheckout(), docs/architecture.md §7.0): existing work
+#                  for the key in one of them wins; for new work the repo `plan` runs from is
+#                  used only when it is listed here, otherwise one listed repo is used outright,
+#                  several ask (fzf) for a pick, and none listed is a refusal naming the project
+#                  and checkouts. Default: {} for every project but SK, which defaults to this
+#                  repo's own root (SK issues are this repo's own backlog, lib/fileissues.py) -- a
+#                  config that sets its OWN `checkouts` dict without a "SK" entry loses this
+#                  default (the merge below is shallow, same caveat as typeMap's); add one back by
+#                  hand if that happens:
 #                  "SK": "~/programming/jira-plan".
 #   projectMarkers { <Jira project key>: <short marker string shown in the picker/list>, e.g.
 #                  { "CIAM": "C" } }. Cosmetic only; falls back to the project key itself.

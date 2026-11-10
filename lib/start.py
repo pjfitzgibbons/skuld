@@ -259,10 +259,10 @@ def listedCheckouts(checkouts, project):
     return roots
 
 
-# Default repo picker, used only when cwd isn't inside a git repo and the issue's project lists
-# more than one candidate repo and none of them already holds the issue's work (mainCheckout,
-# below): the same fzf plumbing cmdPicker already depends on, over the candidate paths instead of
-# issue rows. A non-zero exit (esc, no match) refuses rather than guessing.
+# Default repo picker, used only for new work when the issue's project lists more than one repo and
+# the current folder is in none of them (mainCheckout, below): the same fzf plumbing cmdPicker
+# already depends on, over the candidate paths instead of issue rows. A non-zero exit (esc, no
+# match) refuses rather than guessing.
 def pickRepoWithFzf(options):
     result = subprocess.run(
         ["fzf", "--prompt", "Which repo holds this issue's work? "],
@@ -275,77 +275,72 @@ def pickRepoWithFzf(options):
     return result.stdout.strip()
 
 
-# DECIDED (user decision 2026-11-05): several repos can serve one Jira project, so the repo is no
-# longer looked up by project alone, and no longer assumed to be wherever `plan` happens to run --
-# both can be true of the same issue over its life. Two rules, in order:
+# The repo an issue's work lives in, resolved as docs/architecture.md §7.0 says. The candidates
+# are the repos `checkouts` lists for the key's project; the current folder only chooses among
+# them, so a run from an unlisted repo (the issue store, another project's repo) never makes work
+# there.
 #
-#   1. Existing work wins. Every candidate repo -- cwd's own main checkout (if any) and every repo
-#      checkouts lists for the issue's project (listedCheckouts, each itself resolved to its own
-#      main checkout) -- is searched with the same existingWorktree() lookup Start/Open/Done always
-#      ran within one repo, so a worktree or branch already made for the issue is found wherever it
-#      actually lives. The worktree is the record of which repo an issue belongs to; nothing extra
-#      is written to track it. Found in more than one repo is refused by name -- EDGE CASE,
-#      see docs/failure-modes.md: this is also how "started in repo A, `plan open` run from repo B"
-#      resolves correctly today, as long as A is listed, since A's existing worktree outranks B's
-#      cwd.
-#   2. No existing work anywhere: the repo is cwd's own main checkout, if `plan` was run from
-#      inside one -- `git rev-parse --git-common-dir`, so a cwd inside a linked worktree still
-#      resolves to the main checkout, never a worktree's own tree (worktrees go beside the main
-#      checkout, never in it). `checkouts` is now only a FALLBACK, used when cwd isn't inside a git
-#      repo at all: one listed repo is used outright; more than one asks `pickRepo` (default: fzf);
-#      none listed is a refusal naming both ways to fix it.
+#   1. Existing work wins: a worktree or branch for the key in one candidate is used; found in more
+#      than one, the run is refused, naming each.
+#   2. New work: the current folder's main checkout when it is a candidate; else the one candidate,
+#      or pickRepo's choice among several; none listed is refused, naming the project and
+#      `checkouts`. The refusal or the pick comes before any branch, worktree or status change.
 #
-# OPEN (not solved here, see docs/architecture.md): whether one issue may legitimately span two
-# repos. OPTIONAL-LATER (not solved here): a Jira component/label like `repo:<name>` preselecting
-# the repo at Start, instead of relying on cwd.
+# OPEN (see docs/architecture.md): whether one issue may span two repos.
 def mainCheckout(issue, checkouts, cwd, action="Start", typeMap=None, pickRepo=None):
     if pickRepo is None:
         pickRepo = pickRepoWithFzf
-    project = projectOf(issue["key"])
     key = issue["key"]
+    project = projectOf(key)
+    candidates = listedCheckouts(checkouts, project)
+    existing = repoWithExistingWork(candidates, key, action, typeMap)
+    chosen = existing or repoForNewWork(candidates, key, project, cwd, pickRepo)
+    return {"project": project, **resolvedRepo(chosen, project)}
 
-    cwdCommon = gitCommonDir(cwd)
-    cwdRoot = os.path.realpath(os.path.dirname(cwdCommon)) if cwdCommon else None
 
-    candidates = ([cwdRoot] if cwdRoot else []) + [
-        r for r in listedCheckouts(checkouts, project) if r != cwdRoot
-    ]
-
-    foundIn = []
-    for checkout in candidates:
-        common = gitCommonDir(checkout)
-        if not common:
-            continue
-        porcelain = git(checkout, "worktree", "list", "--porcelain")
-        found = existingWorktree(porcelain, key, worktreeDir(checkout, key), action, typeMap)
-        if found:
-            foundIn.append((checkout, common))
-
-    if len(foundIn) > 1:
-        names = ", ".join(c for c, _ in foundIn)
+# The one candidate holding a worktree or branch for key, or None; more than one is refused.
+def repoWithExistingWork(candidates, key, action, typeMap):
+    found = [c for c in candidates if hasWorkFor(c, key, action, typeMap)]
+    if len(found) > 1:
         raise RuntimeError(
-            f"{key} already has a worktree or branch in more than one repo: {names}; "
+            f"{key} already has a worktree or branch in more than one repo: {', '.join(found)}; "
             f"remove the extra one, or move the work, before running {action} again"
         )
-    if foundIn:
-        checkout, common = foundIn[0]
-        return {"project": project, "checkout": checkout, "common": common}
+    return found[0] if found else None
 
-    if cwdRoot:
-        return {"project": project, "checkout": cwdRoot, "common": cwdCommon}
 
-    listed = listedCheckouts(checkouts, project)
-    if not listed:
+def hasWorkFor(checkout, key, action, typeMap):
+    if not gitCommonDir(checkout):
+        return False
+    porcelain = git(checkout, "worktree", "list", "--porcelain")
+    return bool(existingWorktree(porcelain, key, worktreeDir(checkout, key), action, typeMap))
+
+
+def repoForNewWork(candidates, key, project, cwd, pickRepo):
+    current = mainCheckoutOf(cwd)
+    if current in candidates:
+        return current
+    if not candidates:
         raise RuntimeError(
-            f"Run plan from the repo the work belongs in "
-            f"(or set checkouts.{project} in ~/.config/skuld/config.json)"
+            f"{key}: project {project} lists no repo in checkouts; set checkouts.{project} in "
+            f"~/.config/skuld/config.json to the repo its work belongs in"
         )
-    named = listed[0] if len(listed) == 1 else pickRepo(listed)
+    if len(candidates) == 1:
+        return candidates[0]
+    return pickRepo(candidates)
+
+
+# dir's main checkout (a linked worktree resolves to the repo it belongs to), or None outside git.
+def mainCheckoutOf(dir):
+    common = gitCommonDir(dir)
+    return os.path.realpath(os.path.dirname(common)) if common else None
+
+
+def resolvedRepo(named, project):
     common = gitCommonDir(named)
     if not common:
         raise RuntimeError(f"the configured checkout for \"{project}\" isn't a git repo: {named}")
-    checkout = os.path.realpath(os.path.dirname(common))
-    return {"project": project, "checkout": checkout, "common": common}
+    return {"checkout": os.path.realpath(os.path.dirname(common)), "common": common}
 
 
 # Start issue key, or reopen its worktree. Safe to repeat: each step runs only when it has something
