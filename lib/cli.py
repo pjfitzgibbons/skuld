@@ -326,13 +326,32 @@ def issuePageUrl(cfg, key):
     return jira.browseUrl(key)
 
 
-# The issue window's workspace file when it exists, for `code` to focus; None for no key or no file,
-# and the link goes to the focused window, where a key the window doesn't carry is refused.
+# The issue window's workspace file when it exists, for `code` to focus: the file Start and Open
+# use, the legacy one beside the worktree while it still exists. None for no key or no file, and the
+# link goes to the focused window, where a key the window doesn't carry is refused.
 def openWorkspaceFile(cfg, key):
     if not key:
         return None
-    path = term_mod.workspaceFilePath(key, cfg.get("workspaceDir"))
+    path = term_mod.issueWorkspaceFilePath(key, issueWorktree(cfg, key), cfg.get("workspaceDir"))
     return path if os.path.exists(path) else None
+
+
+# key's worktree, found the way Start finds it, or None when it has none or can't be found. The
+# lookup needs only the key, so it asks neither Jira nor Peter: a repo choice it can't make is no
+# worktree, and the page still goes out.
+def issueWorktree(cfg, key):
+    typeMap = cfg.get("typeMap")
+    try:
+        checkout = startLib.mainCheckout({"key": key}, cfg.get("checkouts"), os.getcwd(), "Open", typeMap, refuseRepoPick)["checkout"]
+        porcelain = startLib.git(checkout, "worktree", "list", "--porcelain")
+        found = startLib.existingWorktree(porcelain, key, startLib.worktreeDir(checkout, key), "Open", typeMap)
+    except (RuntimeError, OSError):
+        return None
+    return found["dir"] if found and not found["main"] else None
+
+
+def refuseRepoPick(options):
+    raise RuntimeError(f"more than one repo could hold the work: {', '.join(options)}")
 
 
 # `plan ship [KEY]`: ship.check()'s pre-flight, then `pr <KEY>` visibly in a tmux window. KEY, when

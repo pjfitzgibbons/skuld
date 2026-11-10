@@ -183,15 +183,26 @@ class IssueWorkspaceFileTests(unittest.TestCase):
 
 # showUrl()'s two `code` calls, built by browseCommands() and browseLink(), which are pure; run is
 # patched so no `code` ever runs.
+# The query plan-window's handler reads: VS Code percent-decodes a link's query once first.
+def handlerQuery(link):
+    return urllib.parse.unquote(urllib.parse.urlsplit(link).query)
+
+
 class BrowseTests(unittest.TestCase):
     def test_the_link_names_plan_windows_browse_handler_and_the_key(self):
         self.assertEqual(
             term.browseLink("https://example.com/", "SK-0031"),
-            "vscode://skuld.plan-window/browse?url=https%3A%2F%2Fexample.com%2F&key=SK-0031",
+            "vscode://skuld.plan-window/browse?url%3Dhttps%253A%252F%252Fexample.com%252F%26key%3DSK-0031",
         )
 
     def test_with_no_key_the_link_carries_only_the_url(self):
-        self.assertEqual(term.browseLink("http://127.0.0.1/"), "vscode://skuld.plan-window/browse?url=http%3A%2F%2F127.0.0.1%2F")
+        self.assertEqual(handlerQuery(term.browseLink("http://127.0.0.1/")), "url=http%3A%2F%2F127.0.0.1%2F")
+
+    # The handler's side of this round trip is plan.test.js's "a page's own query, and a key inside
+    # it, stay in the url", which reads this same query.
+    def test_a_query_and_a_key_inside_the_url_stay_inside_it_after_vs_codes_decode(self):
+        link = term.browseLink("https://example.com/?a=1&key=SK-10&b=2", "SK-9")
+        self.assertEqual(handlerQuery(link), "url=https%3A%2F%2Fexample.com%2F%3Fa%3D1%26key%3DSK-10%26b%3D2&key=SK-9")
 
     # L1: quotes, spaces, & and ; stay inside the url parameter, and the link has no shell
     # metacharacter left in it; it is passed as one argv item, never through a shell.
@@ -202,8 +213,8 @@ class BrowseTests(unittest.TestCase):
         command, args = commands[1]
         self.assertEqual((command, args[0], len(args)), ("code", "--open-url", 2))
         link = args[1]
-        self.assertRegex(link, r"^vscode://skuld\.plan-window/browse\?url=[A-Za-z0-9%._~-]+&key=SK-0031$")
-        query = urllib.parse.parse_qs(urllib.parse.urlsplit(link).query)
+        self.assertRegex(link, r"^vscode://skuld\.plan-window/browse\?[A-Za-z0-9%._~-]+$")
+        query = urllib.parse.parse_qs(handlerQuery(link))
         self.assertEqual(query, {"url": [url], "key": ["SK-0031"]})
 
     def test_with_no_workspace_file_only_the_link_is_sent(self):

@@ -455,7 +455,9 @@ command; (3) otherwise, whichever VS Code window has focus.
 VS Code sends a `vscode://` link to the focused window, and no terminal can name its window's id.
 So `showUrl()` runs `code <workspace file>`, which focuses the issue's window, then
 `code --open-url 'vscode://skuld.plan-window/browse?url=<url>&key=<KEY>'`, with the URL and key
-percent-encoded and both passed as arguments, never through a shell. plan-window's `/browse` handler
+percent-encoded and both passed as arguments, never through a shell. VS Code decodes a link's query
+once before the handler reads it, so the whole query is encoded once more, and a `&` or `key=` inside
+the page's URL stays inside the `url` parameter. plan-window's `/browse` handler
 opens the page with `workbench.action.browser.open`. It refuses a link whose `key` isn't its
 window's `plan.key`, so a link that reaches another window, because focus moved between the two
 commands, shows a refusal and opens nothing. A link with no key opens in the focused window. The

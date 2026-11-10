@@ -66,6 +66,13 @@ test("a browse link for this window opens its url", () => {
   assert.deepEqual(windowPlan.browseRequest(query, "SK-9"), { url: "https://example.com/a b?q='x'" });
 });
 
+// The query term.browseLink() sends for https://example.com/?a=1&key=SK-10&b=2 in SK-9's window,
+// after VS Code's decode; test_term.py checks the sender's side.
+test("a page's own query, and a key inside it, stay in the url", () => {
+  const query = "url=https%3A%2F%2Fexample.com%2F%3Fa%3D1%26key%3DSK-10%26b%3D2&key=SK-9";
+  assert.deepEqual(windowPlan.browseRequest(query, "SK-9"), { url: "https://example.com/?a=1&key=SK-10&b=2" });
+});
+
 test("a browse link with no key opens in whichever window has it", () => {
   assert.deepEqual(windowPlan.browseRequest("url=http%3A%2F%2F127.0.0.1%3A8737%2F", null), { url: "http://127.0.0.1:8737/" });
 });

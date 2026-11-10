@@ -82,10 +82,11 @@ def workspaceFilePath(key, workspaceDir=None):
 
 # The file Start and Open write and run `code` on. VS Code knows a window by its workspace file's
 # path, so an issue whose legacy file still exists keeps it until Done deletes it: a new path would
-# open a second window beside the one already open.
+# open a second window beside the one already open. worktree is None when it isn't known, and then
+# only the current file can be meant.
 def issueWorkspaceFilePath(key, worktree, workspaceDir=None):
-    legacy = legacyWorkspaceFilePath(worktree, key)
-    if os.path.exists(legacy):
+    legacy = legacyWorkspaceFilePath(worktree, key) if worktree else None
+    if legacy and os.path.exists(legacy):
         return legacy
     return workspaceFilePath(key, workspaceDir)
 
@@ -155,13 +156,15 @@ def isWebUrl(url):
 
 
 # The vscode:// link for url, aimed at key's window, or at whichever window has focus when key is
-# None. Every character that isn't unreserved is percent-encoded, so a quote, space, & or # in url
-# stays inside the url parameter.
+# None. VS Code percent-decodes a link's query once before the handler reads it, so the query is
+# encoded twice: after that decode, a quote, space, &, = or # in url is still encoded, and stays
+# inside the url parameter.
 def browseLink(url, key=None):
-    query = {"url": url}
+    params = {"url": url}
     if key:
-        query["key"] = key
-    return f"vscode://{PLAN_WINDOW_EXTENSION}/browse?{urlencode(query, quote_via=quote, safe='')}"
+        params["key"] = key
+    query = urlencode(params, quote_via=quote, safe="")
+    return f"vscode://{PLAN_WINDOW_EXTENSION}/browse?{quote(query, safe='')}"
 
 
 # The commands that open url in key's window, as (command, args) pairs run without a shell: focus

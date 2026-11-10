@@ -148,13 +148,15 @@ class CmdStartWithFakePlacerTests(unittest.TestCase):
 
 # `plan browse`: which URL and which window. term.showUrl() is stubbed; what it runs is term's tests'.
 class CmdBrowseTests(unittest.TestCase):
-    def browse(self, *args, env=None, workspaceFiles=(), cfg=None):
+    def browse(self, *args, env=None, workspaceFiles=(), cfg=None, worktree=None):
         tmp = tempfile.mkdtemp(prefix="skuld-browse-")
         self.addCleanup(shutil.rmtree, tmp)
         cfg = {**(cfg or JIRA_ON), "workspaceDir": tmp}
         for key in workspaceFiles:
             open(term_mod.workspaceFilePath(key, tmp), "w").close()
-        with mock.patch.object(cli.config_mod, "load", return_value=cfg), mock.patch.dict(
+        with mock.patch.object(cli.config_mod, "load", return_value=cfg), mock.patch.object(
+            cli, "issueWorktree", return_value=worktree
+        ), mock.patch.dict(
             os.environ, env or {}, clear=False
         ), mock.patch.object(term_mod, "showUrl") as showUrl:
             if "PLAN_KEY" not in (env or {}):
@@ -166,6 +168,17 @@ class CmdBrowseTests(unittest.TestCase):
     def test_a_jira_key_opens_its_page_in_its_own_window(self):
         shown = self.browse("CIAM-1", env={"PLAN_KEY": "CIAM-2"}, workspaceFiles=["CIAM-1"])
         self.assertEqual(shown, ("https://jira.example/browse/CIAM-1", "CIAM-1", "CIAM-1.code-workspace"))
+
+    def test_an_issue_with_a_legacy_workspace_file_is_focused_through_it(self):
+        tmp = tempfile.mkdtemp(prefix="skuld-legacy-")
+        self.addCleanup(shutil.rmtree, tmp)
+        worktree = os.path.join(tmp, "repo.worktrees", "CIAM-1")
+        os.makedirs(worktree)
+        legacy = term_mod.legacyWorkspaceFilePath(worktree, "CIAM-1")
+        open(legacy, "w").close()
+        shown = self.browse("CIAM-1", workspaceFiles=["CIAM-1"], worktree=worktree)
+        self.assertEqual(shown[2], os.path.basename(legacy))
+        self.assertEqual(term_mod.issueWorkspaceFilePath("CIAM-1", worktree), legacy)
 
     def test_a_url_goes_to_the_named_key_before_the_terminals(self):
         shown = self.browse("https://example.com/x", "CIAM-3", env={"PLAN_KEY": "CIAM-2"})
@@ -201,6 +214,27 @@ class CmdBrowseTests(unittest.TestCase):
     def test_no_target_says_how(self):
         with self.assertRaisesRegex(RuntimeError, "usage: plan browse"):
             self.browse()
+
+
+class IssueWorktreeTests(unittest.TestCase):
+    PORCELAIN = "worktree /repo\nHEAD a\nbranch refs/heads/main\n\nworktree /repo.worktrees/CIAM-5\nHEAD b\nbranch refs/heads/feat/CIAM-5-x\n"
+
+    def lookup(self, mainCheckout):
+        with mock.patch.object(startLib, "mainCheckout", side_effect=mainCheckout) as mc, mock.patch.object(
+            startLib, "git", return_value=self.PORCELAIN
+        ):
+            return cli.issueWorktree({}, "CIAM-5"), mc
+
+    def test_finds_the_issues_worktree_from_the_key_alone(self):
+        found, mc = self.lookup(lambda *a: {"checkout": "/repo"})
+        self.assertEqual(found, "/repo.worktrees/CIAM-5")
+        self.assertEqual(mc.call_args.args[0], {"key": "CIAM-5"})
+
+    def test_a_repo_it_cant_choose_is_no_worktree_and_never_asks(self):
+        def mainCheckout(issue, checkouts, cwd, action, typeMap, pickRepo):
+            pickRepo(["/a", "/b"])
+
+        self.assertIsNone(self.lookup(mainCheckout)[0])
 
 
 class IssueRowsSlotColumnTests(unittest.TestCase):
