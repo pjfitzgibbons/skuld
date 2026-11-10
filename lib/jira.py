@@ -1,6 +1,6 @@
 # Jira Cloud's REST API v3, for the terminal front end and for Start. Stdlib only (urllib), so it
-# runs under plain python3 too. Auth comes from ~/.netrc (machine cryoport.atlassian.net) each
-# time it's needed; the token is never stored here, logged or printed.
+# runs under plain python3 too. Auth comes from ~/.netrc (the machine named by the site's host)
+# each time it's needed; the token is never stored here, logged or printed.
 #
 # Ported from lib/jira.js. Faithful, behavior-preserving port: no change in logic.
 import base64
@@ -11,9 +11,7 @@ from urllib.parse import quote, urlparse
 import urllib.error
 import urllib.request
 
-BASE_URL = "https://cryoport.atlassian.net"
-DEFAULT_PROJECT = "CIAM"
-DEFAULT_JQL = "project = CIAM AND assignee = currentUser() AND statusCategory != Done ORDER BY Rank"
+# The machine config names the site and the projects; nothing here defaults to either.
 
 # A Jira key: a project code of two or more letters/digits starting with a letter, a dash, a
 # number. CIAM-123, not a bare number or a branch-release tag. This is the one pattern every
@@ -23,6 +21,15 @@ KEY_RE = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
 
 def projectOf(key):
     return key.split("-")[0]
+
+
+# Next up's Jira half when the config sets no `jql`: the open issues assigned to me in the
+# configured projects, in Jira's rank order.
+def nextUpJql(projects):
+    return (
+        f"project in ({', '.join(projects)}) AND assignee = currentUser() "
+        "AND statusCategory != Done ORDER BY Rank"
+    )
 
 
 # A minimal one-paragraph-per-line ADF doc, shared by Jira.textComment() and
@@ -110,14 +117,11 @@ class _Response:
 
 
 class Jira:
-    # settings: { baseUrl, project, jql, netrcFile }
-    def __init__(self, settings=None):
-        settings = settings or {}
-        base_url = settings.get("baseUrl") or BASE_URL
+    # settings: { baseUrl (required), jql, netrcFile }
+    def __init__(self, settings):
         self.settings = {
-            "baseUrl": re.sub(r"/+$", "", base_url),
-            "project": settings.get("project") or DEFAULT_PROJECT,
-            "jql": settings.get("jql") or DEFAULT_JQL,
+            "baseUrl": re.sub(r"/+$", "", settings["baseUrl"]),
+            "jql": settings.get("jql"),
             "netrcFile": settings.get("netrcFile"),
         }
 

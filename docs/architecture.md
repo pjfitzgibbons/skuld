@@ -428,8 +428,9 @@ order:
    issues with no ordinal by number.
 
 For Jira it is the config's raw JQL (`jql` in the machine config), run against
-`/rest/api/3/search/jql`. The default is `project = CIAM AND assignee = currentUser() AND
-statusCategory != Done ORDER BY Rank`. The two lists are merged into one, in one row shape; a ticket
+`/rest/api/3/search/jql`. The default is `project in (<the jira entry's projects>) AND assignee =
+currentUser() AND statusCategory != Done ORDER BY Rank`. With no Jira projects in the machine
+config there is no Jira list. The two lists are merged into one, in one row shape; a ticket
 with `after: <JIRA-KEY>` sorts directly after that Jira issue.
 
 <a id="open-url"></a>

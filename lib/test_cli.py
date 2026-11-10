@@ -25,6 +25,9 @@ from lib import term as term_mod
 from lib.cli import main, mergeRows, resolveDir, shellQuote
 from lib.placer import Placement
 
+# A config with Jira on: one project and a site that no test ever reaches.
+JIRA_ON = {"jira": {"CIAM": {"repos": []}}, "baseUrl": "https://jira.example"}
+
 
 # `start` and `open` are the same command (main() routes both to cmdStart -- a second Open on an
 # issue that already has a worktree is just Start finding "nothing to do" and reusing it), so these
@@ -166,7 +169,7 @@ class IssueRowsSlotColumnTests(unittest.TestCase):
         with mock.patch.object(cli, "jiraFrom", return_value=FakeJira()), mock.patch.object(
             cli.fileissues_mod, "FileIssues", FakeFileIssues
         ):
-            rows = cli.issueRows({"issueStore": "/s"}, {"CIAM-22": "D3, window on D4"})
+            rows = cli.issueRows({**JIRA_ON, "issueStore": "/s"}, {"CIAM-22": "D3, window on D4"})
         self.assertEqual(rows[0]["line"], "CIAM-1   To Do                    a")
         self.assertEqual(rows[1]["line"], "CIAM-22  To Do  D3, window on D4  b")
 
@@ -272,7 +275,7 @@ class CmdShipTests(unittest.TestCase):
         with mock.patch.object(startLib, "git", side_effect=self._onBranch("feat/CIAM-5-x")), mock.patch.object(
             ship_mod, "check", return_value={"branch": "feat/CIAM-5-x", "dirty": False, "problems": [".tmp/CIAM-5/pr-body.md is missing"]}
         ) as check, mock.patch.object(term_mod, "shipWindow") as shipWindow:
-            code = cli.cmdShip({"checkouts": {}}, "CIAM-5")
+            code = cli.cmdShip({**JIRA_ON, "checkouts": {}}, "CIAM-5")
         self.assertEqual(code, 1)
         check.assert_called_once_with(os.getcwd(), "CIAM-5")
         shipWindow.assert_not_called()
@@ -283,7 +286,7 @@ class CmdShipTests(unittest.TestCase):
         ), mock.patch.object(startLib, "expandHome", return_value="/Users/t/.local/bin/pr") as expandHome, mock.patch.object(
             term_mod, "shipWindow"
         ) as shipWindow:
-            code = cli.cmdShip({"checkouts": {}, "pr": "~/.local/bin/pr"}, "CIAM-5")
+            code = cli.cmdShip({**JIRA_ON, "checkouts": {}, "pr": "~/.local/bin/pr"}, "CIAM-5")
         self.assertIsNone(code)
         expandHome.assert_called_once_with("~/.local/bin/pr")
         shipWindow.assert_called_once_with("CIAM-5", os.getcwd(), "/Users/t/.local/bin/pr")
@@ -378,7 +381,7 @@ class IssueRowsAlignmentTests(unittest.TestCase):
         with mock.patch.object(cli, "jiraFrom", return_value=FakeJira()), mock.patch.object(
             cli.fileissues_mod, "FileIssues", FakeFileIssues
         ):
-            return cli.issueRows({"issueStore": "/store"})
+            return cli.issueRows({**JIRA_ON, "issueStore": "/store"})
 
     def test_widths_come_from_the_longest_id_and_status_across_all_rows(self):
         jira = [
@@ -476,6 +479,101 @@ class MergeRowsTests(unittest.TestCase):
         jp = [skRow("SK-0001", after="CIAM-1")]
         ids = [r["id"] for r in mergeRows(jira, jp)]
         self.assertEqual(ids, ["CIAM-2", "CIAM-1", "SK-0001"])
+
+
+# SK-0029: Jira is on only when the machine config's `jira` entry names a project. A store ticket
+# for each status and ordinal, so plan order (ordinal, then number) differs from file order.
+def writeStore():
+    store = tempfile.mkdtemp(prefix="skuld-store-")
+    tickets = {
+        "SK-0001-first.md": ("open", "2", "First filed, second in plan order"),
+        "SK-0002-second.md": ("in-progress", "1", "Underway, first in plan order"),
+        "SK-0003-third.md": ("done", "", "Finished, never listed"),
+    }
+    for name, (status, ordinal, title) in tickets.items():
+        with open(os.path.join(store, name), "w", encoding="utf8") as f:
+            f.write(f"---\nstatus: {status}\ntype: task\nordinal: {ordinal}\n---\n\n# {title}\n")
+    return store
+
+
+class ListingPlacer:
+    def sweep(self):
+        pass
+
+    def slotLabels(self):
+        return {}
+
+
+class JiraOffTests(unittest.TestCase):
+    def setUp(self):
+        store = writeStore()
+        self.addCleanup(shutil.rmtree, store)
+        self.cfg = {**cli.config_mod.defaults(), "issueStore": store}
+        for patch in (
+            mock.patch.object(cli.config_mod, "load", return_value=self.cfg),
+            mock.patch.object(cli, "Jira", side_effect=AssertionError("Jira was constructed")),
+            mock.patch.object(cli.placer_mod, "placerFrom", return_value=ListingPlacer()),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def listedIds(self, text):
+        return [line.split()[0] for line in text.splitlines()]
+
+    def test_plan_list_prints_the_stores_open_tickets_in_plan_order(self):
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            main(["list"])
+        self.assertEqual(self.listedIds(out.getvalue()), ["SK-0002", "SK-0001"])
+
+    def test_the_picker_opens_on_the_same_list(self):
+        fzf = mock.MagicMock()
+        fzf.wait.return_value = 0
+        with mock.patch.object(cli.subprocess, "Popen", return_value=fzf), mock.patch(
+            "sys.stderr", new_callable=io.StringIO
+        ) as err:
+            main([])
+        shown = fzf.stdin.write.call_args.args[0].decode("utf8")
+        self.assertEqual(self.listedIds(shown), ["SK-0002", "SK-0001"])
+        self.assertEqual(err.getvalue(), "")
+
+    def test_every_command_refuses_a_jira_key_before_it_changes_anything(self):
+        for command in ("start", "open", "view", "ship", "done"):
+            with self.subTest(command=command), mock.patch.object(startLib, "start") as start, mock.patch.object(
+                ship_mod, "check"
+            ) as check, mock.patch.object(cli.done_mod, "finish") as finish, mock.patch.object(
+                cli.placer_mod, "placerFrom"
+            ) as placerFrom:
+                with self.assertRaisesRegex(RuntimeError, r'CIAM-1 is unknown on this Mac: .*has no "jira" entry naming CIAM'):
+                    main([command, "CIAM-1"])
+                for step in (start, check, finish, placerFrom):
+                    step.assert_not_called()
+
+
+class JiraOnTests(unittest.TestCase):
+    def setUp(self):
+        store = writeStore()
+        self.addCleanup(shutil.rmtree, store)
+        self.cfg = {**cli.config_mod.defaults(), **JIRA_ON, "issueStore": store}
+
+    def test_a_failing_search_still_stops_the_list(self):
+        with mock.patch.object(cli.Jira, "list", side_effect=RuntimeError("Jira search failed: 503")):
+            with self.assertRaisesRegex(RuntimeError, "Jira search failed: 503"):
+                cli.issueRows(self.cfg)
+
+    def test_a_missing_netrc_still_stops_the_list(self):
+        folder = tempfile.mkdtemp(prefix="skuld-netrc-")
+        self.addCleanup(shutil.rmtree, folder)
+        missing = os.path.join(folder, ".netrc")
+        with mock.patch("urllib.request.urlopen", side_effect=AssertionError("Jira was called")):
+            with self.assertRaisesRegex(RuntimeError, "can't read .*\\.netrc for the Jira token: no such file"):
+                cli.issueRows({**self.cfg, "netrcFile": missing})
+
+    def test_a_key_in_another_project_is_still_refused(self):
+        with self.assertRaisesRegex(RuntimeError, 'OPS-1 is unknown on this Mac: .*has no "jira" entry naming OPS'):
+            cli.jiraFrom(self.cfg, "OPS-1")
+
+    def test_a_configured_projects_key_gets_jira(self):
+        self.assertIsInstance(cli.jiraFrom(self.cfg, "CIAM-1"), cli.Jira)
 
 
 if __name__ == "__main__":

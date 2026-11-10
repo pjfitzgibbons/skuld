@@ -6,7 +6,7 @@ import json
 import os
 import sys
 
-from .jira import BASE_URL, DEFAULT_JQL, DEFAULT_PROJECT
+from .jira import nextUpJql
 from .start import DEFAULT_TYPE_MAP
 from .done import DISPOSABLE
 
@@ -24,9 +24,14 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Every key plan reads, and its default. Keys not listed here are never read by any module;
 # add the key here first if a module needs a new one.
 #
-#   jql            JQL plan's picker and `plan list` run. Default: jira.py's DEFAULT_JQL
-#                  ("project = CIAM AND assignee = currentUser() AND statusCategory != Done
-#                  ORDER BY Rank").
+#   jira           { <Jira project key>: { "repos": [<remote>, ...] } }, e.g.
+#                  { "CIAM": { "repos": ["git@github.com:cryoport/cryo-gitops-github.git"] } }.
+#                  Jira is on only when this names a project: with none, no command reads the
+#                  netrc file or calls Jira, Next up is the store's tickets alone, and a Jira key
+#                  is refused (jiraProjects()). Default: None.
+#   jql            JQL plan's picker and `plan list` run. Default: None, which runs jira.py's
+#                  nextUpJql() over the `jira` entry's projects ("project in (CIAM) AND assignee
+#                  = currentUser() AND statusCategory != Done ORDER BY Rank").
 #   checkouts      { <Jira project key>: <repo path, or a LIST of them> }, e.g.
 #                  { "CIAM": ["~/programming/cryo-gitops-github",
 #                  "~/programming/CryoportSystems/Cryoport-Authentication-Service"] } -- several
@@ -57,14 +62,10 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #                  branches made since, under that narrower map. issueBranch() (N9) compensates by
 #                  always accepting DEFAULT_TYPE_MAP's prefixes too, in addition to whatever the
 #                  configured typeMap adds, so a branch made before the override is still adopted.
-#   netrcFile      Path to the netrc file holding the "machine cryoport.atlassian.net" entry,
-#                  if not the default ~/.netrc. Default: None (jira.py falls back to
-#                  ~/.netrc itself).
-#   baseUrl        The Jira site's base URL. Default: jira.py's BASE_URL
-#                  ("https://cryoport.atlassian.net").
-#   project        The default Jira project key, used where none is otherwise known (e.g.
-#                  resolving a bare key typed without one). Default: jira.py's DEFAULT_PROJECT
-#                  ("CIAM").
+#   netrcFile      Path to the netrc file holding the "machine <baseUrl's host>" entry, if not
+#                  the default ~/.netrc. Default: None (jira.py falls back to ~/.netrc itself).
+#   baseUrl        The Jira site's base URL, e.g. "https://cryoport.atlassian.net". Required
+#                  once `jira` names a project (jiraSettingsFrom()). Default: None.
 #   slotsFile      Path to the "<Desktop number>=<KEY>" file the placer writes so SlotBar
 #                  can mark a Desktop with the issue it holds.
 #                  Default: "~/.cache/plan/workspaces".
@@ -88,15 +89,15 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #                  that needs the store without it refuses, naming this key (issueStoreFrom()).
 def defaults():
     return {
-        "jql": DEFAULT_JQL,
+        "jira": None,
+        "jql": None,
         "checkouts": {"SK": [_REPO_ROOT]},
         "projectMarkers": {},
         "disposable": DISPOSABLE,
         "pr": "~/.local/bin/pr",
         "typeMap": DEFAULT_TYPE_MAP,
         "netrcFile": None,
-        "baseUrl": BASE_URL,
-        "project": DEFAULT_PROJECT,
+        "baseUrl": None,
         "slotsFile": "~/.cache/plan/workspaces",
         "windowsFile": "~/.cache/plan/windows",
         "workspaceDir": "~/.cache/plan/code-workspaces",
@@ -136,7 +137,7 @@ def refuseRetiredKeys(parsed, file):
 
 # Keys a config may still set from an earlier front end; they're read by nothing now, so a config
 # that sets one still loads, with a warning.
-IGNORED_KEYS = ("ghosttyApp", "aerospaceConfig", "windowPlacer", "browserBundleId")
+IGNORED_KEYS = ("ghosttyApp", "aerospaceConfig", "windowPlacer", "browserBundleId", "project")
 
 
 def warnIgnoredKeys(parsed, file):
@@ -158,3 +159,19 @@ def issueStoreFrom(cfg):
     if not store:
         raise RuntimeError(f"no issue store set: add \"issueStore\": \"<path>\" to {CONFIG_FILE}")
     return store
+
+
+# The Jira projects this Mac works, in the config's order; empty when Jira is off.
+def jiraProjects(cfg):
+    return list(cfg.get("jira") or {})
+
+
+# What Jira() needs, for a Mac whose config names Jira projects; refuses when it names no site.
+def jiraSettingsFrom(cfg):
+    if not cfg.get("baseUrl"):
+        raise RuntimeError(f'the "jira" entry needs a site: add "baseUrl": "https://<site>.atlassian.net" to {CONFIG_FILE}')
+    return {
+        "baseUrl": cfg["baseUrl"],
+        "jql": cfg.get("jql") or nextUpJql(jiraProjects(cfg)),
+        "netrcFile": cfg.get("netrcFile"),
+    }
