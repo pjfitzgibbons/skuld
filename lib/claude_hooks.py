@@ -1,7 +1,7 @@
 # Registers bin/claude-waiting in Claude Code's settings (~/.claude/settings.json) for each hook
 # event lib/waiting.py names, and removes it again; bin/install-agents runs it. It changes only its
-# own entries, found by the script's path, so the settings' other hooks are kept as they are, and
-# running it twice adds nothing.
+# own commands, found by the script's name, so the settings' other hooks are kept as they are, even
+# one sharing an entry with ours, and running it twice adds nothing.
 #   python3 lib/claude_hooks.py install|uninstall <settings file> <hook command>
 import json
 import os
@@ -17,8 +17,8 @@ SCRIPT_NAME = "claude-waiting"
 HOOK_TIMEOUT_SECONDS = 5
 
 
-def isOurs(entry):
-    return any(SCRIPT_NAME in hook.get("command", "") for hook in entry.get("hooks", []))
+def isOurs(hook):
+    return SCRIPT_NAME in hook.get("command", "")
 
 
 def ourEntry(eventName, command):
@@ -28,11 +28,19 @@ def ourEntry(eventName, command):
     return entry
 
 
+# An entry with our command taken out of its `hooks` list; None when nothing else was in it.
+def entryWithoutOurs(entry):
+    others = [hook for hook in entry.get("hooks", []) if not isOurs(hook)]
+    return {**entry, "hooks": others} if others else None
+
+
+def entriesWithoutOurs(entries):
+    kept = (entryWithoutOurs(entry) for entry in entries)
+    return [entry for entry in kept if entry]
+
+
 def withoutOurs(settings):
-    hooks = {
-        eventName: [entry for entry in entries if not isOurs(entry)]
-        for eventName, entries in settings.get("hooks", {}).items()
-    }
+    hooks = {eventName: entriesWithoutOurs(entries) for eventName, entries in settings.get("hooks", {}).items()}
     return {**settings, "hooks": {eventName: entries for eventName, entries in hooks.items() if entries}}
 
 

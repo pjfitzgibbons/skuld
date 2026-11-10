@@ -1,8 +1,8 @@
 # SlotBar's side of plan: `plan pulse <KEY> <red|green|off>` finds the issue's Desktop in the slots
 # file and asks SlotBar (macos/slotbar/) to pulse it, through the slotbar-pulse command that
 # bin/install-slotbar puts inside the installed bundle. The Claude status engine (lib/agents.py)
-# calls the same command. slotbar-pulse validates again and exits nonzero when SlotBar isn't running; run() turns
-# that into a RuntimeError carrying its message.
+# calls the same command. slotbar-pulse validates again and exits nonzero when SlotBar isn't
+# running; run() turns that into a RuntimeError carrying its message.
 import os
 
 from . import term
@@ -24,6 +24,16 @@ def pulse(key, color, slotsFile=None, pulseCommand=None):
 def pulseDesktop(desktop, color, pulseCommand=None):
     checkColor(color)
     run(expandHome(pulseCommand or DEFAULT_PULSE_COMMAND), [str(desktop), color], os.getcwd())
+
+
+# The running SlotBar's process id, or "" when none runs. A new id means SlotBar restarted and
+# has lost every tint.
+def runningId():
+    try:
+        found = run("pgrep", ["-x", "SlotBar"], os.getcwd()).split()
+    except RuntimeError:
+        return ""
+    return found[0] if found else ""
 
 
 def checkColor(color):

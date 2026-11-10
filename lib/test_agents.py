@@ -202,6 +202,15 @@ class PulseOnChangeTests(unittest.TestCase):
         self.assertEqual(agents.pulsesSent({"3": "red"}, {"3": "red"}), {})
 
 
+class SlotBarRestartTests(unittest.TestCase):
+    def test_a_restarted_slotbar_gets_every_desktop_again(self):
+        self.assertEqual(agents.recordFor({"3": "red"}, "100", "200"), {})
+        self.assertEqual(agents.recordFor({"3": "red"}, "100", ""), {})
+
+    def test_the_same_slotbar_keeps_the_record_so_a_seen_desktop_stays_clear(self):
+        self.assertEqual(agents.recordFor({"3": "red"}, "100", "100"), {"3": "red"})
+
+
 class TickTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
@@ -239,6 +248,11 @@ class TickTests(unittest.TestCase):
         sent, failures = self.tick({}, fail="SlotBar isn't running")
         self.assertEqual(sent, {})
         self.assertEqual(len(failures), 2)
+
+    def test_empty_output_from_claude_is_a_failure_not_an_empty_list(self):
+        with mock.patch.object(agents, "run", return_value=""):
+            with self.assertRaisesRegex(RuntimeError, "gave no JSON"):
+                agents.readSessions()
 
     def test_a_failing_claude_keeps_what_was_sent(self):
         with mock.patch.object(agents, "readSessions", side_effect=RuntimeError("claude: not found")):

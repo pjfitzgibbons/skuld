@@ -188,7 +188,7 @@ def quietly(lookup, key):
 def readSessions(claudeCommand=None):
     answer = run(expandHome(claudeCommand or DEFAULT_CLAUDE_COMMAND), ["agents", "--json"], os.getcwd())
     try:
-        return json.loads(answer or "[]")
+        return json.loads(answer)
     except json.JSONDecodeError as error:
         raise RuntimeError(f"claude agents --json gave no JSON: {error}") from error
 
@@ -263,13 +263,21 @@ def sleepUntilMarkersChange(seconds, waitingDir=None):
             return
 
 
-# The LaunchAgent's loop: a tick every few seconds, or as soon as a waiting marker changes. Its log (stderr) gets a line when it starts,
-# one for each tick that sends a pulse, and a failure only when it differs from the last one, so a
-# quiet Desktop or a SlotBar that stays quit adds nothing.
+# The record to tick from: empty once SlotBar's process has changed (slotbar.runningId()), since a
+# restarted SlotBar has no tints and every Desktop must be sent again; otherwise `sent` as it is.
+def recordFor(sent, lastSlotBar, slotBar):
+    return sent if slotBar == lastSlotBar else {}
+
+
+# The LaunchAgent's loop: a tick every few seconds, or as soon as a waiting marker changes. Its log
+# (stderr) gets a line when it starts, one for each tick that sends a pulse, and a failure only when
+# it differs from the last one, so a quiet Desktop or a SlotBar that stays quit adds nothing.
 def watch(slotsFile=None, claudeCommand=None, pulseCommand=None, every=TICK_SECONDS):
     log(f"watching, a tick every {every}s")
-    sent, lastFailures = {}, []
+    sent, lastFailures, lastSlotBar = {}, [], slotbar.runningId()
     while True:
+        slotBar = slotbar.runningId()
+        sent, lastSlotBar = recordFor(sent, lastSlotBar, slotBar), slotBar
         before = sent
         sent, failures = tick(sent, slotsFile, claudeCommand, pulseCommand)
         pulses = pulsesSent(before, sent)

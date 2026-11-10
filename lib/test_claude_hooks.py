@@ -29,6 +29,12 @@ class HookSettingsTests(unittest.TestCase):
         installed = claude_hooks.withOurs({"hooks": {"PreToolUse": [OTHER]}}, COMMAND)
         self.assertEqual(claude_hooks.withoutOurs(installed), {"hooks": {"PreToolUse": [OTHER]}})
 
+    def test_a_command_sharing_our_entry_is_kept_with_its_matcher(self):
+        ours = {"type": "command", "command": COMMAND}
+        shared = {"matcher": "Bash", "hooks": [OTHER["hooks"][0], ours]}
+        cleaned = claude_hooks.withoutOurs({"hooks": {"PreToolUse": [shared]}})
+        self.assertEqual(cleaned, {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": OTHER["hooks"]}]}})
+
     def test_main_rewrites_the_file_and_starts_one_when_missing(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "settings.json")

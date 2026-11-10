@@ -79,5 +79,16 @@ class PlanPulseTests(unittest.TestCase):
         pulse.assert_not_called()
 
 
+
+class RunningIdTests(unittest.TestCase):
+    def test_the_running_slotbars_pid(self):
+        with mock.patch.object(slotbar, "run", return_value="96905\n"):
+            self.assertEqual(slotbar.runningId(), "96905")
+
+    def test_no_slotbar_running_is_blank(self):
+        with mock.patch.object(slotbar, "run", side_effect=RuntimeError("pgrep -x SlotBar: exited with code 1")):
+            self.assertEqual(slotbar.runningId(), "")
+
+
 if __name__ == "__main__":
     unittest.main()
