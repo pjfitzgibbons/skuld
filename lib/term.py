@@ -167,6 +167,12 @@ def browseLink(url, key=None):
     return f"vscode://{PLAN_WINDOW_EXTENSION}/browse?{quote(query, safe='')}"
 
 
+# The plan-window link that opens path in a tab of the window it goes to, the focused one.
+def openFileLink(path):
+    query = urlencode({"file": path}, quote_via=quote, safe="")
+    return f"vscode://{PLAN_WINDOW_EXTENSION}/open?{quote(query, safe='')}"
+
+
 # The commands that open url in key's window, as (command, args) pairs run without a shell: focus
 # the window when its workspace file is known, then send the link.
 def browseCommands(url, key=None, workspaceFile=None):

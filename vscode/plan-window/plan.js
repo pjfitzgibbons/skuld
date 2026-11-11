@@ -81,6 +81,16 @@ function browseRequest(query, windowKey) {
   return { url };
 }
 
+// What an /open?file=<path> link asks of this window: { file } to open in a tab, or { refusal }
+// saying why not. The local server sends it for a ticket page's Open in VS Code, since
+// `code <file>` opens a file in whichever window's folders hold it.
+function openRequest(query) {
+  const file = new URLSearchParams(query).get("file");
+  if (!file) return { refusal: "/open needs ?file=" };
+  if (!file.startsWith("/")) return { refusal: `/open takes an absolute path, not ${file}` };
+  return { file };
+}
+
 function isWebUrl(url) {
   try {
     return ["http:", "https:"].includes(new URL(url).protocol);
@@ -91,6 +101,7 @@ function isWebUrl(url) {
 
 module.exports = {
   browseRequest,
+  openRequest,
   readPlan,
   unsetClaudeVariables,
   claudeTerminalName,

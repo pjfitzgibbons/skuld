@@ -124,6 +124,7 @@ macOS only. In order:
    | `reservedDesktops` | `[1]` | Desktops `plan` never takes for an issue |
    | `netrcFile` | `~/.netrc` | Where the Jira token is, under `machine <baseUrl's host>` |
    | `claudeCommand` | `~/.local/bin/claude` | The `claude` that `plan agents` asks for its sessions, by path |
+   | `codeCommand` | `/usr/local/bin/code` | The `code` the local server runs to open a ticket's file, by path |
    | `serverPort` | `8765` | The local server's port on `127.0.0.1` (§7) |
 
 6. **The skill.** Link `skills/jira-issues/` to `~/.claude/skills/jira-issues/`, so every repo
@@ -134,6 +135,7 @@ macOS only. In order:
    ```sh
    ln -s "$(pwd)/bin/plan" ~/.local/bin/plan
    ln -s "$(pwd)/bin/jira-get" ~/.local/bin/jira-get
+   ln -s "$(pwd)/bin/reindex" ~/.local/bin/reindex
    ln -s ~/.claude/skills/jira-issues/scripts/pr.sh ~/.local/bin/pr
    ln -s ~/.claude/skills/jira-issues/scripts/new_issue.py ~/.local/bin/new_issue
    ```
@@ -167,7 +169,7 @@ macOS only. In order:
     the server, from skuld's main checkout:
 
     ```sh
-    uv sync              # makes .venv with Flask, from pyproject.toml and uv.lock
+    uv sync              # makes .venv with Flask and markdown-it-py, from pyproject.toml and uv.lock
     plan serve start     # installs and loads ~/Library/LaunchAgents/dev.skuld.serve.plist
     plan serve status    # http://127.0.0.1:8765/  up  pid 4242
     ```
@@ -250,7 +252,7 @@ pane: fields, open blockers, what it blocks, and its body or description.
 | `ctrl-r` | Reload the list |
 
 The same work runs as subcommands. A command that takes a key works from any folder; the key
-decides the repo (§4).
+decides the repo (§4). A command refuses arguments and flags it doesn't take, naming them.
 
 | Command | Does |
 | --- | --- |
@@ -263,7 +265,7 @@ decides the repo (§4).
 | `plan ship [KEY]` | Ship (§5); the key defaults to the current worktree's branch |
 | `plan done [KEY]` | Done (§6) |
 | `plan browse <KEY \| pr#N \| url> [KEY]` | Open a page in the issue window's browser (§7) |
-| `plan serve start\|stop\|restart\|status` | Control the local server's LaunchAgent (§7); `status` prints the server's URL, whether it answers, and its pid |
+| `plan serve start\|stop\|restart\|status [--port N]` | Control the local server's LaunchAgent (§7); `status` prints the server's URL, whether it answers, and its pid |
 | `plan pulse <KEY> orange\|green\|off` | Pulse the issue's Desktop in SlotBar, or clear its tint (§2, step 13); exits non-zero when SlotBar isn't running |
 | `plan agents [list]` | Every Claude session, most urgent first: its state, Desktop (`-` when it can't be placed), key, issue title and name |
 | `plan agents status` | The same sessions on one line, as symbols on each Desktop: `⏳` waiting, `◆` done, `●` busy, `■` blocked, `○` idle |
@@ -476,8 +478,11 @@ one process by the venv's python from skuld's uv venv (§2, step 11). It sits id
 asked for. It answers only a Host of `127.0.0.1` or `localhost`, so a page on another site can't
 reach it through DNS rebinding.
 
-`plan serve start|stop|restart|status` controls the LaunchAgent, `dev.skuld.serve`, through
-`launchctl`; the command renders nothing itself.
+`plan serve start|stop|restart|status [--port N]` controls the LaunchAgent, `dev.skuld.serve`,
+through `launchctl`; the command renders nothing itself. `start` runs the server on `--port N`, else
+on `serverPort`, and writes the port into the plist's arguments. `stop`, `status` and `restart` act
+on the port the plist names, and `restart --port N` moves the server to N. Start's and
+`plan browse`'s page links use the plist's port too.
 
 | Command | Does |
 | --- | --- |
@@ -488,7 +493,7 @@ reach it through DNS rebinding.
 
 Without the venv, `start` refuses, naming `uv` when uv isn't installed and `uv sync` when it is. A
 port another process holds is refused, naming the port and the process, by `start` and by the
-server itself. launchd starts a server that stops again after 10 seconds, its throttle interval.
+server itself; pass `--port N` to run on another. launchd starts a server that stops again after 10 seconds, its throttle interval.
 The server logs each request and each error to `~/Library/Logs/skuld-serve.log`; a `start` whose
 server never answers says to look there.
 
@@ -497,8 +502,9 @@ The server's routes only read:
 | Route | Serves |
 | --- | --- |
 | `/health` | `{"app": "skuld", "status": "ok"}`, which `plan serve status` asks for |
-| `/` | Every issue in progress, with links to its pages |
-| `/issues/<KEY>` | A store ticket: its front matter fields, its body by `##` section, and its log |
+| `/` | Next up: the store's `INDEX.md`, rendered, each ticket linking to its page |
+| `/issues/<KEY>` | A store ticket: its front matter fields, and its body and log rendered from Markdown |
+| `POST /issues/<KEY>/open` | The page's Open in VS Code button: sends `vscode://skuld.plan-window/open?file=<ticket file>` with `code --open-url`, which opens the file in a tab of the focused window, the one clicked in, and returns to the page. Refused (403) without an `Origin` naming this server |
 | `/issues/<KEY>/report`, `/issues/<KEY>/review` | A redirect to the latest round's page |
 | `/issues/<KEY>/rounds/<n>/report` | Round `n`'s report, from the round data and `git diff` |
 | `/issues/<KEY>/rounds/<n>/review` | Round `n`'s findings and dispositions |
@@ -653,11 +659,12 @@ and the exit code out. The server's routes run through Flask's test client, with
 
 ```text
 GUIDE.md                   this file
-pyproject.toml, uv.lock    the local server's one dependency, Flask, for uv sync
+pyproject.toml, uv.lock    the local server's dependencies, Flask and markdown-it-py, for uv sync
 store.yml                  the store's projects (key, name, repo remotes), archive delay, debounce
 bin/
   plan                     plan's entry point
   jira-get                 one read-only Jira GET with ~/.netrc auth
+  reindex                  rewrites the ticket store's INDEX.md (its scripts/index.py), from any folder
   gh-aliases.yml           gh pc and gh pb
   build-spaces             builds macos/build/skuld-spaces with swiftc
   build-slotbar            builds and signs macos/build/SlotBar.app, slotbar-pulse inside it
@@ -690,6 +697,7 @@ lib/
   claude_hooks.py          adds and removes bin/claude-waiting in ~/.claude/settings.json
   serve.py                 plan serve: the server's LaunchAgent through launchctl, and its status
   server.py                the local server: Flask on 127.0.0.1, the one module that imports Flask
+                           and markdown-it-py
   test_*.py                the unit tests
   (the FileStore adapter, the checker and issue-watch also live in lib/)
 templates/issue.md         what plan new fills in

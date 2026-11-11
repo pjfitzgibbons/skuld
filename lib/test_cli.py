@@ -26,6 +26,14 @@ from lib.issue import IN_PROGRESS, NEW, Issue
 from lib.placer import Placement
 from lib.test_start import sandbox as start_sandbox
 
+
+# cli.main reads the LaunchAgent's plist for the port the server runs on; these tests run as if no
+# agent were installed, whatever this machine's plist says.
+def setUpModule():
+    patcher = mock.patch.object(cli.serve_mod.LaunchAgent, "port", return_value=None)
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
 # A config with Jira on: one project and a site that no test ever reaches.
 JIRA_ON = {"jira": {"CIAM": {"repos": []}}, "baseUrl": "https://jira.example"}
 
@@ -693,6 +701,64 @@ class JiraOnTests(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", side_effect=AssertionError("Jira was called")):
             with self.assertRaisesRegex(RuntimeError, "can't read .*\\.netrc for the Jira token: no such file"):
                 cli.issueRows({**self.cfg, "netrcFile": missing})
+
+
+class CmdServeTests(unittest.TestCase):
+    def test_passes_the_action_to_the_server_control(self):
+        with mock.patch.object(cli.serve_mod, "control", return_value="up") as control, mock.patch("builtins.print"):
+            cli.cmdServe({}, ["start"])
+        control.assert_called_once_with({}, "start", None)
+
+    def test_passes_the_port_to_the_server_control(self):
+        with mock.patch.object(cli.serve_mod, "control", return_value="up") as control, mock.patch("builtins.print"):
+            cli.cmdServe({}, ["start", "--port", "8799"])
+        control.assert_called_once_with({}, "start", 8799)
+
+    def test_refuses_anything_but_port_after_the_action_before_touching_the_server(self):
+        for extra in (["--host", "x"], ["--port", "8799", "x"], ["8799"]):
+            with mock.patch.object(cli.serve_mod, "control") as control:
+                with self.assertRaisesRegex(RuntimeError, r"usage: plan serve start\|stop\|restart\|status \[--port N\]"):
+                    cli.cmdServe({}, ["start", *extra])
+            control.assert_not_called()
+
+    def test_refuses_a_port_that_isnt_a_port_number(self):
+        for bad in (["--port"], ["--port", "x"], ["--port", "0"], ["--port", "70000"]):
+            with self.assertRaisesRegex(RuntimeError, "--port must be a port number"):
+                cli.cmdServe({}, ["start", *bad])
+
+
+class ExtraArgsTests(unittest.TestCase):
+    def runMain(self, argv):
+        with mock.patch.object(cli.config_mod, "load", return_value={}):
+            return cli.main(argv)
+
+    def test_a_command_refuses_arguments_past_what_it_takes(self):
+        with self.assertRaisesRegex(RuntimeError, "plan view takes at most 1 argument; remove extra more"):
+            self.runMain(["view", "CIAM-1", "extra", "more"])
+
+    def test_list_takes_no_arguments(self):
+        with self.assertRaisesRegex(RuntimeError, "plan list takes no arguments; remove --all"):
+            self.runMain(["list", "--all"])
+
+    def test_a_bare_key_is_view_and_takes_nothing_after_it(self):
+        with self.assertRaisesRegex(RuntimeError, "plan view takes at most 1 argument; remove x"):
+            self.runMain(["CIAM-1", "x"])
+
+    def test_a_bare_key_still_views_the_issue(self):
+        with mock.patch.object(cli, "cmdView") as view:
+            self.runMain(["CIAM-1"])
+        view.assert_called_once_with({}, "CIAM-1")
+
+    def test_browse_takes_two(self):
+        with mock.patch.object(cli, "cmdBrowse") as browse:
+            self.runMain(["browse", "pr#3", "CIAM-1"])
+        browse.assert_called_once_with({}, "pr#3", "CIAM-1")
+
+    def test_agents_refuses_a_flag_its_action_doesnt_take(self):
+        with self.assertRaisesRegex(RuntimeError, "usage: plan agents"):
+            cli.cmdAgents({}, ["tick", "--json"])
+        with self.assertRaisesRegex(RuntimeError, "usage: plan agents"):
+            cli.cmdAgents({}, ["status", "--watch"])
 
 
 if __name__ == "__main__":

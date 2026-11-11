@@ -7,28 +7,9 @@
 {% else %}
   <div class="issue">
     <article>
-      {% for section in ticket.sections %}
-        <section>
-          {% if section.heading %}<h2>{{ section.heading }}</h2>{% endif %}
-          {% for block in section.blocks %}
-            {% if block.kind == "subheading" %}
-              <h3>{{ block.text }}</h3>
-            {% elif block.kind == "list" %}
-              <ul>
-              {% for item in block["items"] %}
-                {% if item.checked is none %}
-                  <li>{{ item.text }}</li>
-                {% else %}
-                  <li class="task"><input type="checkbox" disabled{% if item.checked %} checked{% endif %} aria-label="{{ 'done' if item.checked else 'not done' }}"> {{ item.text }}</li>
-                {% endif %}
-              {% endfor %}
-              </ul>
-            {% else %}
-              <p>{{ block.text }}</p>
-            {% endif %}
-          {% endfor %}
-        </section>
-      {% endfor %}
+      <section class="body">
+        {{ ticket.body }}
+      </section>
       <section>
         <h2>Log</h2>
         {% if ticket.log %}
@@ -50,8 +31,9 @@
         {% endfor %}
         </tbody>
       </table>
+      <form method="post" action="/issues/{{ ticket.key }}/open"><button class="link">Open in VS Code</button></form>
       <p class="muted path">{{ ticket.path }}</p>
-      <p><a href="/">In progress</a></p>
+      <p><a href="/">Next up</a></p>
     </aside>
   </div>
 {% endif %}

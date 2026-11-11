@@ -22,17 +22,25 @@
     .issue { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 24px; }
     @media (max-width: 640px) { .issue { grid-template-columns: minmax(0, 1fr); } }
     h2 { font-size: 16px; margin: 20px 0 6px; }
-    section:first-child h2 { margin-top: 0; }
+    .body > h2:first-child { margin-top: 0; }
     h3 { font-size: 15px; margin: 14px 0 4px; }
     article p, article li { overflow-wrap: anywhere; }
     article p { margin: 0 0 10px; }
-    article ul { margin: 0 0 10px; padding-left: 20px; }
-    li.task { list-style: none; margin-left: -20px; padding-left: 22px; text-indent: -22px; }
+    article ul, article ol { margin: 0 0 10px; padding-left: 20px; }
+    .task-list-item { list-style: none; margin-left: -20px; padding-left: 22px; text-indent: -22px; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+    code { background: color-mix(in srgb, var(--rule) 40%, transparent); padding: 1px 4px; border-radius: 4px; }
+    pre { background: color-mix(in srgb, var(--rule) 40%, transparent); padding: 8px 10px; border-radius: 6px; overflow-x: auto; margin: 0 0 10px; }
+    pre code { background: none; padding: 0; }
+    blockquote { margin: 0 0 10px; padding-left: 12px; border-left: 3px solid var(--rule); color: var(--muted); }
+    article table { margin: 0 0 10px; }
     .log { list-style: none; padding: 0; margin: 0; }
     .log li { padding: 4px 0; border-bottom: 1px solid var(--rule); overflow-wrap: anywhere; }
     .log time { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin-right: 6px; }
     .fields th { width: 40%; }
     .path { font-size: 13px; overflow-wrap: anywhere; }
+    button.link { font: inherit; color: var(--link); background: none; border: 0; padding: 0; cursor: pointer; }
+    button.link:hover { text-decoration: underline; }
   </style>
 </head>
 <body>

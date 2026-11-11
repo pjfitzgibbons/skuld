@@ -87,7 +87,11 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #   claudeCommand  The `claude` CLI `plan agents` asks for its sessions (`claude agents --json`),
 #                  as a path, since the LaunchAgent's PATH doesn't hold it.
 #                  Default: "~/.local/bin/claude".
-#   serverPort     The local page server's port on 127.0.0.1 (lib/server.py, `plan serve`).
+#   codeCommand    The `code` CLI the local server runs to open a ticket's file in VS Code, as a
+#                  path, since the LaunchAgent's PATH doesn't hold it.
+#                  Default: "/usr/local/bin/code".
+#   serverPort     The local page server's port on 127.0.0.1 (lib/server.py, `plan serve`), unless
+#                  `plan serve start --port N` names another.
 #                  Default: 8765.
 def defaults():
     return {
@@ -106,6 +110,7 @@ def defaults():
         "reservedDesktops": [1],
         "issueStore": None,
         "claudeCommand": "~/.local/bin/claude",
+        "codeCommand": "/usr/local/bin/code",
         "serverPort": 8765,
     }
 

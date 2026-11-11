@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Rewrite the ticket store's INDEX.md, from any folder.
+
+    reindex            run the store's scripts/index.py, and say whether INDEX.md changed
+    reindex --check    exit 1, changing nothing, when INDEX.md is out of date
+
+The store is the config's issueStore (~/.config/skuld/config.json).
+"""
+import os
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+
+from lib import config as config_mod
+
+FLAGS = {"--check"}
+
+
+def storeDir():
+    return os.path.expanduser(config_mod.issueStoreFrom(config_mod.load()))
+
+
+def refuseUnknownArgs(args):
+    unknown = [arg for arg in args if arg not in FLAGS]
+    if unknown:
+        raise RuntimeError(f"usage: reindex [--check]; remove {' '.join(unknown)}")
+
+
+def indexText(store):
+    path = os.path.join(store, "INDEX.md")
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf8") as f:
+        return f.read()
+
+
+def main(args):
+    refuseUnknownArgs(args)
+    store = storeDir()
+    before = indexText(store)
+    index = subprocess.run([sys.executable, os.path.join(store, "scripts", "index.py"), *args], cwd=store)
+    if index.returncode or args:
+        return index.returncode
+    changed = indexText(store) != before
+    print(f"{store}/INDEX.md {'rewritten' if changed else 'already up to date'}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(1)

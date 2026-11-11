@@ -99,3 +99,13 @@ test("a browse link with no url, or one that isn't http(s), is refused", () => {
   assert.match(windowPlan.browseRequest("url=file%3A%2F%2F%2Fetc%2Fpasswd", "SK-9").refusal, /only http\(s\)/);
   assert.match(windowPlan.browseRequest("url=javascript%3Aalert(1)", "SK-9").refusal, /only http\(s\)/);
 });
+
+test("an open link opens its file", () => {
+  const query = new URLSearchParams({ file: "/store/SK-0005-a b.md" }).toString();
+  assert.deepEqual(windowPlan.openRequest(query), { file: "/store/SK-0005-a b.md" });
+});
+
+test("an open link with no file, or a relative one, is refused", () => {
+  assert.match(windowPlan.openRequest("").refusal, /needs \?file=/);
+  assert.match(windowPlan.openRequest("file=s.md").refusal, /absolute path/);
+});

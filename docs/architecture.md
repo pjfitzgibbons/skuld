@@ -217,7 +217,7 @@ through its adapter.
 | Menu bar | SlotBar or SketchyBar, whichever has its LaunchAgent loaded. SlotBar is a menu-bar extra built from `macos/slotbar/` with `swiftc` alone and signed with a local self-signed certificate. It reads the slots file and Desktops through read-only SkyLight calls, takes pulses as the distributed notification `skuld.pulse` (a Desktop 1 to 16 and `orange`, `green` or `off`, anything else ignored) from `plan pulse` and the Claude status engine, and switches Desktops by posting ^N, which needs the Accessibility grant |
 | Claude status | `lib/agents.py`, run every few seconds by a LaunchAgent as `plan agents tick --watch`, and at once when a waiting marker changes: reads `claude agents --json`, the waiting markers in `~/.cache/plan/waiting` that the Claude Code hook `bin/claude-waiting` keeps, the slots file and git, once a minute each slotted issue's PR through `gh`, and pulses each issue's Desktop through `slotbar-pulse` only when its colour changes (§7.1) |
 | Browser | The issue window's integrated browser, reached by `showUrl()` (§7.6.1); never system `open`. Browser automation and browser tests run in Chrome, never in an issue window |
-| Pages | One local Flask server on `127.0.0.1`, run by a LaunchAgent from login and controlled by `plan serve start\|stop\|restart\|status`, rendering an issue's pages from Jinja templates (§7.6.1) |
+| Pages | One local Flask server on `127.0.0.1`, run by a LaunchAgent from login and controlled by `plan serve start\|stop\|restart\|status`, rendering an issue's pages from Jinja templates and tickets' Markdown with markdown-it-py (§7.6.1) |
 | Pull requests | `gh`; Jira linkage through Jira's development panel, not a custom field |
 | Jira writes | `/rest/api/3/*`, ADF for descriptions and comments |
 
@@ -494,9 +494,14 @@ agent's shell uses it for one (§10, rule 7).
 
 `plan browse` takes a key, which opens the issue's page: Jira's browse URL, or the local server's
 page for a store ticket, `/issues/<KEY>`. That page shows the ticket's front matter fields, its body
-by `##` section, and its `## Log`. The body's paragraphs, lists, checkboxes and `###` headings are
-read from its Markdown; every piece of text is escaped and no inline Markdown is rendered, so nothing
-in a ticket becomes markup.
+and its `## Log`, rendered from their Markdown: CommonMark, with tables, strikethrough and task-list
+checkboxes. Raw HTML in a ticket is escaped and `javascript:` links are not rendered, so a ticket
+adds no markup of its own. The page's Open in VS Code button posts to `/issues/<KEY>/open`, since
+a `vscode://` link clicked in the integrated browser never reaches VS Code. The server sends
+plan-window's `/open?file=<ticket file>` link with `code --open-url`. VS Code hands the link to the
+focused window, the one clicked in, and the extension opens the file in a tab there. `code <file>`
+would open it in whichever window's folders hold the store. The server takes the post only from its
+own pages, by their `Origin`.
 It also takes `pr#N`, which opens the pull request, or a URL. `[KEY]` names the
 issue whose window the page belongs in when neither the target nor the terminal names one.
 
@@ -607,7 +612,7 @@ they share:
 | The picker and `plan list` | Next up in plan order, both trackers merged, with each issue's project name (§7.6) |
 | `plan view <KEY>` | One issue: fields, open blockers, what it blocks, and its body or description |
 | A ticket in an editor tab | The ticket file itself, opened in the issue window by Start and Open (§7.1) |
-| A ticket's page | The local server's `/issues/<KEY>`: fields, body and log, read-only, opened beside Claude by Start and Open (§7.1, §7.6.1) |
+| A ticket's page | The local server's `/issues/<KEY>`: fields, body and log, with a button that opens the ticket file in the window it was clicked in, opened beside Claude by Start and Open (§7.1, §7.6.1) |
 | `git log` in the store | Every change to every ticket, milestone and review round |
 | Jira's issue list, board and issue page | Jira issues, their links, comments and development panel |
 

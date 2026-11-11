@@ -366,6 +366,8 @@ def cmdPulse(cfg, key, color):
 
 
 AGENTS_USAGE = "plan agents [status | list | pick | tick [--watch]] [--json]"
+# The flags each `plan agents` action takes.
+AGENTS_FLAGS = {"status": set(), "list": {"--json"}, "pick": {"--json"}, "tick": {"--watch"}}
 
 
 # `plan agents`: every Claude session, its issue, Desktop and state (lib/agents.py). `status` is one
@@ -376,10 +378,10 @@ def cmdAgents(cfg, args):
     words = [arg for arg in args if not arg.startswith("--")]
     flags = {arg for arg in args if arg.startswith("--")}
     what = words[0] if words else "list"
+    if what not in AGENTS_FLAGS or len(words) > 1 or not flags <= AGENTS_FLAGS[what]:
+        raise RuntimeError(f"usage: {AGENTS_USAGE}")
     if what == "tick":
         return agentsTick(cfg, "--watch" in flags)
-    if what not in ("status", "list", "pick") or len(words) > 1:
-        raise RuntimeError(f"usage: {AGENTS_USAGE}")
     if what == "status":
         print(agents_mod.statusLine(agents_mod.currentAgents(cfg.get("slotsFile"), cfg.get("claudeCommand"))))
         return None
@@ -438,9 +440,13 @@ def focusAgent(cfg, agent):
     startLib.run("code", [workspaceFile], os.getcwd())
 
 
-# `plan serve start|stop|restart|status`: control the local server's LaunchAgent (lib/serve.py).
-def cmdServe(cfg, action):
-    print(serve_mod.control(cfg, action))
+# `plan serve start|stop|restart|status [--port N]`: control the local server's LaunchAgent
+# (lib/serve.py). --port is the only thing it takes after the action.
+def cmdServe(cfg, args):
+    action, options = (args[0], args[1:]) if args else (None, [])
+    if options and (options[0] != serve_mod.PORT_FLAG or len(options) > 2):
+        raise RuntimeError(f"usage: {serve_mod.USAGE}")
+    print(serve_mod.control(cfg, action, serve_mod.portIn(options)))
 
 
 def cmdPicker(cfg, argv0=None):
@@ -478,11 +484,30 @@ def cmdPicker(cfg, argv0=None):
         raise RuntimeError(f"fzf exited {code}")
 
 
+# How many arguments each command takes after its name; `agents` and `serve` check their own.
+MOST_ARGS = {"list": 0, "view": 1, "start": 1, "open": 1, "browse": 2, "ship": 1, "done": 1, "pulse": 2}
+
+
+# Refuses arguments past what cmd takes, so a mistyped or unsupported one is never dropped silently.
+def refuseExtraArgs(cmd, args):
+    most = MOST_ARGS.get(cmd)
+    if most is None or len(args) <= most:
+        return
+    takes = "no arguments" if most == 0 else f"at most {most} argument{'' if most == 1 else 's'}"
+    raise RuntimeError(f"plan {cmd} takes {takes}; remove {' '.join(args[most:])}")
+
+
 def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
     cfg = config_mod.load()
     cmd = argv[0] if argv else None
+    if cmd and KEY_RE.match(cmd):  # `plan CIAM-123` is shorthand for view
+        argv = ["view", *argv]
+        cmd = "view"
+    refuseExtraArgs(cmd, argv[1:])
+    if cmd != "serve":  # serve start uses --port or serverPort, not where the server ran last
+        cfg = serve_mod.withServedPort(cfg)
     rest = [issuestore_mod.canonicalKey(arg) for arg in argv[1:]]
     if not cmd:
         return cmdPicker(cfg)
@@ -503,7 +528,5 @@ def main(argv=None):
     if cmd == "agents":
         return cmdAgents(cfg, argv[1:])
     if cmd == "serve":
-        return cmdServe(cfg, rest[0] if rest else None)
-    if KEY_RE.match(cmd):  # `plan CIAM-123` is shorthand for view
-        return cmdView(cfg, issuestore_mod.canonicalKey(cmd))
+        return cmdServe(cfg, argv[1:])
     raise RuntimeError(f'unknown command "{cmd}"; try: list, view, start, open, browse, ship, done, serve, pulse, agents')
