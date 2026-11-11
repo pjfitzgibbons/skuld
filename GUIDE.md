@@ -102,7 +102,9 @@ macOS only. In order:
    }
    ```
 
-   Jira is on only when `jira` names a project, and then `baseUrl` names its site. A Mac with no
+   Jira is on only when `jira` names a project, and then `baseUrl` names its site. A project's
+   entry may set `jql`, its set in Next up; the default is `project in (<PROJECT>) AND assignee =
+   currentUser() AND statusCategory != Done ORDER BY Rank`. A Mac with no
    `jira` entry never reads `~/.netrc` or calls Jira: Next up is the store's tickets alone, and a
    Jira key is refused, naming the missing entry.
 
@@ -112,8 +114,7 @@ macOS only. In order:
 
    | Key | Default | What it sets |
    | --- | --- | --- |
-   | `jql` | `project in (<the jira entry's projects>) AND assignee = currentUser() AND statusCategory != Done ORDER BY Rank` | The Jira half of Next up |
-   | `typeMap` | Story and Task `feat`, Bug `fix` | Issue type to branch prefix, merged over the default |
+   | `typeMap` | story and task `feat`, bug `fix` | Issue type name to branch prefix, matched without regard to case, merged over the default |
    | `pr` | `~/.local/bin/pr` | The `pr` that Ship runs, by path |
    | `disposable` | `done.py`'s list | Ignored files Done may delete with a worktree |
    | `slotsFile` | `~/.cache/plan/workspaces` | The `<slot>=<KEY>` lines that place issues on Desktops |
@@ -278,8 +279,8 @@ decides the repo (§4).
 
 ## 4. Start and Open
 
-`plan start` is **Start** on an issue that hasn't started (a store `status: open`, a Jira
-`statusCategory` of `new`) and **Open** on one in progress. Both run the same code, and each step
+`plan start` is **Start** on an issue in the `new` category (a store `status: open`, a Jira
+status in the To Do category) and **Open** on one in progress. Both run the same code, and each step
 runs only when it has something to do:
 
 1. **Re-read the issue** and refuse any other status, since the picker's list may be stale.
@@ -299,10 +300,9 @@ runs only when it has something to do:
    title's first five words. `git worktree add` puts it in `<repo>.worktrees/<KEY>`. A setting-up
    marker, `<git-common-dir>/plan-setting-up-<KEY>`, is written first and removed only when setup
    has finished.
-6. **Move the issue to "in progress", and read it back.** Jira: `lib/jira.py` finds the
-   transition whose target status matches the configured name (default `"In Progress"`), posts it,
-   and refuses if the read-back `statusCategory` isn't `indeterminate`. Store: `FileStore` sets
-   `status: in-progress` and reads the file back. Then "Started" is logged: an ADF comment in
+6. **Move the issue to in progress, and read it back.** Jira: `lib/jira.py` finds the
+   transition whose target status is `"In Progress"`, posts it, and refuses if the issue read back
+   has another status. Store: `FileStore` sets `status: in-progress` and reads the file back. Then "Started" is logged: an ADF comment in
    Jira, a `## Log` line in the ticket.
 7. **Place the issue on a slot.** `SpacesPlacer` does this, and
    `term.writeSlot()` records `<slot>=<KEY>` through a temp file and a rename. SketchyBar is told
@@ -327,10 +327,12 @@ runs only when it has something to do:
    naming the issue, and a shell waits in another; both carry the issue's key in their
    environment. When the window is already open, Open reuses it, rewrites the slot when the
    window sits on another Desktop, and never moves it.
-9. **Put the issue beside Claude.** A Jira issue's browse URL is printed, then opens in the
-   issue window's integrated browser, as `plan browse` opens it (§7). Each step after the print
-   is best-effort. A store ticket opens in an editor tab, on the ticket file in the window's store
-   folder. The URL or file path is printed either way.
+9. **Put the issue beside Claude.** The issue's page is printed, then opens in the issue
+   window's integrated browser, as `plan browse` opens it (§7): Jira's browse URL, or the local
+   server's `/issues/<KEY>` for a store ticket. Each step after the print is best-effort. A store
+   ticket also opens in an editor tab, on the ticket file in the window's store folder, and its
+   path is printed. With the local server down, Start prints the page's URL, says to run
+   `plan serve start` and then `plan browse <KEY>`, and goes on.
 10. **Focus the issue.** Switch to the slot and focus the issue window with Claude's terminal
     in front, so the command ends with the human at the issue's Claude: `code <workspace file>`
     switches to the window's Desktop.
@@ -496,7 +498,7 @@ The server's routes only read:
 | --- | --- |
 | `/health` | `{"app": "skuld", "status": "ok"}`, which `plan serve status` asks for |
 | `/` | Every issue in progress, with links to its pages |
-| `/issues/<KEY>` | A store ticket, rendered from its Markdown |
+| `/issues/<KEY>` | A store ticket: its front matter fields, its body by `##` section, and its log |
 | `/issues/<KEY>/report`, `/issues/<KEY>/review` | A redirect to the latest round's page |
 | `/issues/<KEY>/rounds/<n>/report` | Round `n`'s report, from the round data and `git diff` |
 | `/issues/<KEY>/rounds/<n>/review` | Round `n`'s findings and dispositions |

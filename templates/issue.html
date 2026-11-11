@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}{% if ticket %}{{ ticket.key }}: {{ ticket.title }}{% else %}Skuld: ticket{% endif %}{% endblock %}
+{% block heading %}{% if ticket %}<span class="key">{{ ticket.key }}</span> {{ ticket.title }}{% else %}Ticket{% endif %}{% endblock %}
+{% block content %}
+{% if problem %}
+  <p>The ticket can't be read: {{ problem }}</p>
+{% else %}
+  <div class="issue">
+    <article>
+      {% for section in ticket.sections %}
+        <section>
+          {% if section.heading %}<h2>{{ section.heading }}</h2>{% endif %}
+          {% for block in section.blocks %}
+            {% if block.kind == "subheading" %}
+              <h3>{{ block.text }}</h3>
+            {% elif block.kind == "list" %}
+              <ul>
+              {% for item in block["items"] %}
+                {% if item.checked is none %}
+                  <li>{{ item.text }}</li>
+                {% else %}
+                  <li class="task"><input type="checkbox" disabled{% if item.checked %} checked{% endif %} aria-label="{{ 'done' if item.checked else 'not done' }}"> {{ item.text }}</li>
+                {% endif %}
+              {% endfor %}
+              </ul>
+            {% else %}
+              <p>{{ block.text }}</p>
+            {% endif %}
+          {% endfor %}
+        </section>
+      {% endfor %}
+      <section>
+        <h2>Log</h2>
+        {% if ticket.log %}
+          <ol class="log">
+          {% for entry in ticket.log %}
+            <li><time class="muted">{{ entry.date }}</time> {{ entry.text }}</li>
+          {% endfor %}
+          </ol>
+        {% else %}
+          <p class="muted">Nothing logged yet.</p>
+        {% endif %}
+      </section>
+    </article>
+    <aside>
+      <table class="fields">
+        <tbody>
+        {% for name, value in ticket.fields.items() %}
+          <tr><th>{{ name }}</th><td>{{ value or "—" }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <p class="muted path">{{ ticket.path }}</p>
+      <p><a href="/">In progress</a></p>
+    </aside>
+  </div>
+{% endif %}
+{% endblock %}

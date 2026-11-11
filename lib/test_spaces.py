@@ -9,7 +9,7 @@ import unittest
 from unittest import mock
 
 from lib import spaces, term
-from lib.placer import Placement, placerFrom
+from lib.placer import placerFrom
 from lib.spaces import SpacesPlacer, SpacesUnknown, parseDesktopShortcuts, parseSnapshot
 
 # skuld-spaces' output on macOS 27.0.1, one display, four Desktops, recorded 2026-11-09.

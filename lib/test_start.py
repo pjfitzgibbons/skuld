@@ -1,18 +1,20 @@
 # Ported from reference/vscode/test/start.test.js. Redmine's numeric issue ids (80, 81, ...) become
 # Jira keys (CIAM-80, CIAM-81, ...); tracker.name becomes issuetype.name; the fake `redmine` object
-# becomes a fake `jira` matching lib/jira.py's real surface (issue/blockers/transition/addComment/
-# textComment). Redmine's start_date custom-field write has no CIAM equivalent and isn't ported
+# becomes a fake IssueStore adapter (lib/issuestore.py) returning lib/issue.py's Issue. Redmine's start_date custom-field write has no CIAM equivalent and isn't ported
 # (confirmed absent from lib/start.py's startIn()). The fault-injection matrix is reduced to the
 # steps that exist in the ported start() (no "the Redmine update" row -- Start's single Jira write
 # is the transition+comment, already covered by its own fault-injection case below), not every row
 # of the 454-line source.
 #
 # Ported from lib/start.test.js. Faithful, behavior-preserving port.
+import dataclasses
 import os
 import shutil
 import subprocess
 import tempfile
 import unittest
+
+from lib.issue import DONE, IN_PROGRESS, NEW, Blocker, Issue
 
 from lib.start import (
     DEFAULT_TYPE_MAP,
@@ -21,6 +23,7 @@ from lib.start import (
     issueBranch,
     lock,
     mainCheckout,
+    prefixFor,
     settingUp,
     slug,
     start,
@@ -35,12 +38,17 @@ class PureFunctionTests(unittest.TestCase):
         self.assertEqual(slug("Fix: the thing!"), "fix-the-thing")
 
     def test_branchName_maps_issue_type_to_prefix_else_chore(self):
-        def issue(type_, summary):
-            return {"key": "CIAM-9", "fields": {"issuetype": {"name": type_}, "summary": summary}}
+        self.assertEqual(branchName(typed("Story")), "feat/CIAM-9-go-requests-time-out")
+        self.assertEqual(branchName(typed("Bug")), "fix/CIAM-9-go-requests-time-out")
+        self.assertEqual(branchName(typed("Epic")), "chore/CIAM-9-go-requests-time-out")
 
-        self.assertEqual(branchName(issue("Story", "Go requests time out")), "feat/CIAM-9-go-requests-time-out")
-        self.assertEqual(branchName(issue("Bug", "Go requests time out")), "fix/CIAM-9-go-requests-time-out")
-        self.assertEqual(branchName(issue("Epic", "Go requests time out")), "chore/CIAM-9-go-requests-time-out")
+    def test_type_names_match_without_regard_to_case(self):
+        self.assertEqual(branchName(typed("bug")), "fix/CIAM-9-go-requests-time-out")
+        self.assertEqual(branchName(typed("task")), "feat/CIAM-9-go-requests-time-out")
+        self.assertEqual(prefixFor("BUG", {"Bug": "hotfix"}), "hotfix")
+
+    def test_a_type_the_map_lacks_gets_chore(self):
+        self.assertEqual(prefixFor("question"), "chore")
 
     def test_worktreeDir_sits_beside_checkout(self):
         self.assertEqual(worktreeDir("/home/p/code/widgets", "CIAM-9"), "/home/p/code/widgets.worktrees/CIAM-9")
@@ -176,64 +184,54 @@ def sandbox():
     return {"root": root, "checkout": checkout, "git": git, "checkouts": {"CIAM": checkout}}
 
 
-# A fake Jira matching lib/jira.py's real surface used by start(): issue(), blockers(),
-# statusTransitionId(), transition(), textComment(), addComment(). issues: dict<key,
-# issue-shaped-dict>. failTransition fails the POST itself (L4's pre-check, statusTransitionId,
-# still succeeds), so the resumable-after-failure test still exercises a worktree that got made
-# before a later step failed, not a Start refused before anything was created.
-class FakeJira:
+# A fake IssueStore adapter with the surface start() uses: issue(), statusTransitionId(),
+# transition(), addComment(). issues: dict<key, Issue>. failTransition fails the transition itself
+# (L4's pre-check, statusTransitionId, still succeeds), so the resumable-after-failure test still
+# exercises a worktree that got made before a later step failed, not a Start refused before
+# anything was created.
+class FakeStore:
     def __init__(self, issues, failTransition=False, noTransitionAvailable=False):
         self.issues = issues
         self.comments = []
         self.transitions = []
+        self.reads = 0
         self.failTransition = failTransition
         self.noTransitionAvailable = noTransitionAvailable
 
     def issue(self, key):
+        self.reads += 1
         issue = self.issues.get(key)
         if not issue:
             raise RuntimeError(f"no such issue {key}")
         return issue
 
-    def blockers(self, issue):
-        links = issue["fields"].get("issuelinks") or []
-        result = []
-        for link in links:
-            if link["type"]["name"] == "Blocks" and link.get("inwardIssue"):
-                b = link["inwardIssue"]
-                if b["fields"]["status"]["statusCategory"]["key"] != "done":
-                    result.append(b)
-        return result
-
-    def textComment(self, text):
-        return {"type": "doc", "text": text}
-
-    def statusTransitionId(self, key, targetStatusName):
+    def statusTransitionId(self, key, category):
         if self.noTransitionAvailable:
-            raise RuntimeError(f'{key} has no transition to "{targetStatusName}"; available: (none)')
+            raise RuntimeError(f"{key} can't be moved to {category}")
         return "31"
 
-    def transition(self, key, target):
+    def transition(self, key, category):
         if self.failTransition:
-            raise RuntimeError("jira transition failed")
-        self.transitions.append([key, target])
-        self.issues[key]["fields"]["status"] = {"name": target, "statusCategory": {"key": "indeterminate"}}
+            raise RuntimeError("transition failed")
+        self.transitions.append([key, category])
+        self.issues[key] = inProgress(self.issues[key])
         return self.issues[key]
 
-    def addComment(self, key, body):
-        self.comments.append([key, body])
+    def addComment(self, key, text):
+        self.comments.append([key, text])
 
 
-def toDoIssue(key, summary="Go requests time out", issuetype="Story", links=None):
-    return {
-        "key": key,
-        "fields": {
-            "summary": summary,
-            "issuetype": {"name": issuetype},
-            "status": {"name": "To Do", "statusCategory": {"key": "new"}},
-            "issuelinks": links or [],
-        },
-    }
+def toDoIssue(key, summary="Go requests time out", issuetype="Story", blockers=()):
+    return Issue(key=key, summary=summary, status="To Do", category=NEW, issueType=issuetype, blockers=tuple(blockers))
+
+
+# CIAM-9 "Go requests time out" with the given type name.
+def typed(issueType):
+    return toDoIssue("CIAM-9", "Go requests time out", issueType)
+
+
+def inProgress(issue):
+    return dataclasses.replace(issue, status="In Progress", category=IN_PROGRESS)
 
 
 class StartTests(unittest.TestCase):
@@ -242,28 +240,34 @@ class StartTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.s["root"], True)
 
     def test_makes_worktree_from_origins_default_branch_and_transitions_issue(self):
-        jira = FakeJira({"CIAM-9": toDoIssue("CIAM-9")})
+        jira = FakeStore({"CIAM-9": toDoIssue("CIAM-9")})
         result = start(jira, self.s["checkouts"], "CIAM-9", lambda blockers: True, cwd=self.s["checkout"])
         self.assertTrue(result["created"])
         self.assertTrue(result["started"])
         self.assertTrue(os.path.exists(result["dir"]))
         self.assertEqual(result["branch"], "feat/CIAM-9-go-requests-time-out")
-        self.assertEqual(jira.transitions, [["CIAM-9", "In Progress"]])
+        self.assertEqual(jira.transitions, [["CIAM-9", IN_PROGRESS]])
         self.assertEqual(len(jira.comments), 1)
 
+    def test_reads_the_issue_once_and_returns_it_as_it_left_it(self):
+        jira = FakeStore({"CIAM-9": toDoIssue("CIAM-9")})
+        result = start(jira, self.s["checkouts"], "CIAM-9", lambda blockers: True, cwd=self.s["checkout"])
+        self.assertEqual(jira.reads, 1)
+        self.assertEqual(result["issue"].status, "In Progress")
+
     def test_is_noop_second_time_reuses_worktree_doesnt_transition_again(self):
-        jira = FakeJira({"CIAM-9": toDoIssue("CIAM-9")})
+        jira = FakeStore({"CIAM-9": toDoIssue("CIAM-9")})
         first = start(jira, self.s["checkouts"], "CIAM-9", lambda blockers: True, cwd=self.s["checkout"])
-        jira.issues["CIAM-9"]["fields"]["status"] = {"name": "In Progress", "statusCategory": {"key": "indeterminate"}}
+        jira.issues["CIAM-9"] = inProgress(jira.issues["CIAM-9"])
         second = start(jira, self.s["checkouts"], "CIAM-9", lambda blockers: True, cwd=self.s["checkout"])
         self.assertFalse(second["created"])
         self.assertEqual(second["dir"], first["dir"])
-        self.assertEqual(jira.transitions, [["CIAM-9", "In Progress"]])
+        self.assertEqual(jira.transitions, [["CIAM-9", IN_PROGRESS]])
 
     def test_asks_confirm_about_blockers_before_making_new_worktree_and_stops_on_no(self):
-        blocker = {"key": "CIAM-1", "fields": {"summary": "blocker", "status": {"name": "To Do", "statusCategory": {"key": "new"}}}}
-        issue = toDoIssue("CIAM-9", "x", "Story", [{"type": {"name": "Blocks"}, "inwardIssue": blocker}])
-        jira = FakeJira({"CIAM-9": issue})
+        blocker = Blocker("CIAM-1", "blocker", "To Do")
+        issue = toDoIssue("CIAM-9", "x", "Story", [blocker])
+        jira = FakeStore({"CIAM-9": issue})
         seen = []
 
         def confirm(blockers):
@@ -272,27 +276,24 @@ class StartTests(unittest.TestCase):
 
         result = start(jira, self.s["checkouts"], "CIAM-9", confirm, cwd=self.s["checkout"])
         self.assertIsNone(result)
-        self.assertEqual(seen, [[{"id": "CIAM-1", "subject": "blocker", "status": "To Do"}]])
+        self.assertEqual(seen, [[blocker]])
         self.assertFalse(os.path.exists(self.s["checkout"] + ".worktrees"))
 
     def test_refuses_issue_thats_already_done(self):
-        issue = {
-            "key": "CIAM-9",
-            "fields": {"summary": "x", "issuetype": {"name": "Bug"}, "status": {"name": "Done", "statusCategory": {"key": "done"}}},
-        }
-        jira = FakeJira({"CIAM-9": issue})
+        issue = Issue(key="CIAM-9", summary="x", status="Done", category=DONE, issueType="Bug")
+        jira = FakeStore({"CIAM-9": issue})
         with self.assertRaisesRegex(RuntimeError, "CIAM-9 is Done; refresh Next up"):
             start(jira, self.s["checkouts"], "CIAM-9", lambda blockers: True, cwd=self.s["checkout"])
 
     def test_refuses_key_with_no_checkout_configured_for_its_project(self):
-        jira = FakeJira({"OTHER-1": toDoIssue("OTHER-1")})
+        jira = FakeStore({"OTHER-1": toDoIssue("OTHER-1")})
         notARepo = tempfile.mkdtemp(prefix="jira-plan-norepo-")
         self.addCleanup(shutil.rmtree, notARepo, True)
         with self.assertRaisesRegex(RuntimeError, "project OTHER lists no repo in checkouts; set checkouts.OTHER"):
             start(jira, {}, "OTHER-1", lambda blockers: True, cwd=notARepo)
 
     def test_refuses_from_an_unlisted_repo_before_any_branch_worktree_or_status_change(self):
-        jira = FakeJira({"OTHER-1": toDoIssue("OTHER-1")})
+        jira = FakeStore({"OTHER-1": toDoIssue("OTHER-1")})
         branchesBefore = self.s["git"](self.s["checkout"], "branch", "--list")
         with self.assertRaisesRegex(RuntimeError, "project OTHER lists no repo in checkouts"):
             start(jira, self.s["checkouts"], "OTHER-1", lambda blockers: True, cwd=self.s["checkout"])
@@ -305,7 +306,7 @@ class StartTests(unittest.TestCase):
         # The issue store case: `plan start` run from a repo the project doesn't list.
         unlisted = sandbox()
         self.addCleanup(shutil.rmtree, unlisted["root"], True)
-        jira = FakeJira({"CIAM-9": toDoIssue("CIAM-9")})
+        jira = FakeStore({"CIAM-9": toDoIssue("CIAM-9")})
         result = start(jira, self.s["checkouts"], "CIAM-9", lambda blockers: True, cwd=unlisted["checkout"])
         self.assertEqual(
             os.path.realpath(result["dir"]),
@@ -316,19 +317,19 @@ class StartTests(unittest.TestCase):
 
     def test_resumable_after_worktree_add_succeeds_but_jira_transition_fails(self):
         issues = {"CIAM-9": toDoIssue("CIAM-9")}
-        failing = FakeJira(issues, failTransition=True)
+        failing = FakeStore(issues, failTransition=True)
         with self.assertRaises(RuntimeError):
             start(failing, self.s["checkouts"], "CIAM-9", lambda blockers: True, cwd=self.s["checkout"])
         # The worktree exists, and the setting-up marker is still there, so the retry finishes the job.
-        working = FakeJira(issues)
+        working = FakeStore(issues)
         result = start(working, self.s["checkouts"], "CIAM-9", lambda blockers: True, cwd=self.s["checkout"])
         self.assertFalse(result["created"])
         self.assertTrue(result["started"])
-        self.assertEqual(working.transitions, [["CIAM-9", "In Progress"]])
+        self.assertEqual(working.transitions, [["CIAM-9", IN_PROGRESS]])
 
     def test_refuses_before_creating_anything_when_in_progress_transition_isnt_available(self):
-        jira = FakeJira({"CIAM-9": toDoIssue("CIAM-9")}, noTransitionAvailable=True)
-        with self.assertRaisesRegex(RuntimeError, 'has no transition to "In Progress"'):
+        jira = FakeStore({"CIAM-9": toDoIssue("CIAM-9")}, noTransitionAvailable=True)
+        with self.assertRaisesRegex(RuntimeError, f"can't be moved to {IN_PROGRESS}"):
             start(jira, self.s["checkouts"], "CIAM-9", lambda blockers: True, cwd=self.s["checkout"])
         # Nothing was created: no worktree directory, no branch, no setting-up marker.
         self.assertFalse(os.path.exists(self.s["checkout"] + ".worktrees"))
@@ -336,7 +337,7 @@ class StartTests(unittest.TestCase):
 
     def test_refuses_when_issues_branch_is_checked_out_in_main_checkout(self):
         self.s["git"](self.s["checkout"], "checkout", "-q", "-b", "feat/CIAM-9-go-requests-time-out")
-        jira = FakeJira({"CIAM-9": toDoIssue("CIAM-9")})
+        jira = FakeStore({"CIAM-9": toDoIssue("CIAM-9")})
         with self.assertRaisesRegex(RuntimeError, "is checked out in the main checkout"):
             start(jira, self.s["checkouts"], "CIAM-9", lambda blockers: True, cwd=self.s["checkout"])
 
@@ -364,7 +365,7 @@ class MainCheckoutTests(unittest.TestCase):
         notARepo = tempfile.mkdtemp(prefix="jira-plan-norepo-")
         self.addCleanup(shutil.rmtree, notARepo, True)
         issue = toDoIssue("CIAM-9")
-        result = mainCheckout(issue, s["checkouts"], notARepo)
+        result = mainCheckout(issue.key, s["checkouts"], notARepo)
         self.assertEqual(result["project"], "CIAM")
         self.assertEqual(os.path.realpath(result["checkout"]), os.path.realpath(s["checkout"]))
 
@@ -374,7 +375,7 @@ class MainCheckoutTests(unittest.TestCase):
         listedRepo = sandbox()
         self.addCleanup(shutil.rmtree, listedRepo["root"], True)
         issue = toDoIssue("CIAM-9")
-        result = mainCheckout(issue, {"CIAM": listedRepo["checkout"]}, cwdRepo["checkout"])
+        result = mainCheckout(issue.key, {"CIAM": listedRepo["checkout"]}, cwdRepo["checkout"])
         self.assertEqual(os.path.realpath(result["checkout"]), os.path.realpath(listedRepo["checkout"]))
 
     def test_cwd_inside_a_listed_repo_resolves_that_repo_without_a_pick(self):
@@ -387,7 +388,7 @@ class MainCheckoutTests(unittest.TestCase):
             raise AssertionError("no pick expected when cwd is a listed repo")
 
         issue = toDoIssue("CIAM-9")
-        result = mainCheckout(issue, {"CIAM": [repoA["checkout"], repoB["checkout"]]}, repoB["checkout"], pickRepo=refusePick)
+        result = mainCheckout(issue.key, {"CIAM": [repoA["checkout"], repoB["checkout"]]}, repoB["checkout"], pickRepo=refusePick)
         self.assertEqual(os.path.realpath(result["checkout"]), os.path.realpath(repoB["checkout"]))
 
     def test_cwd_in_a_linked_worktree_of_a_listed_repo_resolves_its_main_checkout(self):
@@ -402,7 +403,7 @@ class MainCheckoutTests(unittest.TestCase):
             raise AssertionError("no pick expected when cwd is in a listed repo's worktree")
 
         issue = toDoIssue("CIAM-9")
-        result = mainCheckout(issue, {"CIAM": [repoA["checkout"], repoB["checkout"]]}, linked, pickRepo=refusePick)
+        result = mainCheckout(issue.key, {"CIAM": [repoA["checkout"], repoB["checkout"]]}, linked, pickRepo=refusePick)
         self.assertEqual(os.path.realpath(result["checkout"]), os.path.realpath(repoB["checkout"]))
 
     def test_existing_work_in_a_listed_repo_wins_over_cwds_own_repo(self):
@@ -413,11 +414,11 @@ class MainCheckoutTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, cwdRepo["root"], True)
         listedRepo = sandbox()
         self.addCleanup(shutil.rmtree, listedRepo["root"], True)
-        jira = FakeJira({"CIAM-9": toDoIssue("CIAM-9")})
+        jira = FakeStore({"CIAM-9": toDoIssue("CIAM-9")})
         start(jira, {"CIAM": listedRepo["checkout"]}, "CIAM-9", lambda blockers: True, cwd=listedRepo["checkout"])
 
         issue = toDoIssue("CIAM-9")
-        result = mainCheckout(issue, {"CIAM": listedRepo["checkout"]}, cwdRepo["checkout"])
+        result = mainCheckout(issue.key, {"CIAM": listedRepo["checkout"]}, cwdRepo["checkout"])
         self.assertEqual(os.path.realpath(result["checkout"]), os.path.realpath(listedRepo["checkout"]))
 
     def test_existing_work_in_more_than_one_repo_is_refused_naming_both(self):
@@ -425,13 +426,13 @@ class MainCheckoutTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, repoA["root"], True)
         repoB = sandbox()
         self.addCleanup(shutil.rmtree, repoB["root"], True)
-        jira = FakeJira({"CIAM-9": toDoIssue("CIAM-9")})
+        jira = FakeStore({"CIAM-9": toDoIssue("CIAM-9")})
         start(jira, {"CIAM": repoA["checkout"]}, "CIAM-9", lambda blockers: True, cwd=repoA["checkout"])
         start(jira, {"CIAM": repoB["checkout"]}, "CIAM-9", lambda blockers: True, cwd=repoB["checkout"])
 
         issue = toDoIssue("CIAM-9")
         with self.assertRaisesRegex(RuntimeError, "more than one repo"):
-            mainCheckout(issue, {"CIAM": [repoA["checkout"], repoB["checkout"]]}, repoA["checkout"])
+            mainCheckout(issue.key, {"CIAM": [repoA["checkout"], repoB["checkout"]]}, repoA["checkout"])
 
     def test_accepts_a_bare_checkout_string_as_a_one_item_list(self):
         s = sandbox()
@@ -439,7 +440,7 @@ class MainCheckoutTests(unittest.TestCase):
         notARepo = tempfile.mkdtemp(prefix="jira-plan-norepo-")
         self.addCleanup(shutil.rmtree, notARepo, True)
         issue = toDoIssue("CIAM-9")
-        result = mainCheckout(issue, {"CIAM": s["checkout"]}, notARepo)
+        result = mainCheckout(issue.key, {"CIAM": s["checkout"]}, notARepo)
         self.assertEqual(os.path.realpath(result["checkout"]), os.path.realpath(s["checkout"]))
 
     def test_prompts_with_fzf_when_cwd_isnt_a_repo_and_several_repos_are_listed(self):
@@ -457,7 +458,7 @@ class MainCheckoutTests(unittest.TestCase):
 
         issue = toDoIssue("CIAM-9")
         result = mainCheckout(
-            issue,
+            issue.key,
             {"CIAM": [repoA["checkout"], repoB["checkout"]]},
             notARepo,
             pickRepo=fakePick,
@@ -473,14 +474,14 @@ class MainCheckoutTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, notARepo, True)
         issue = toDoIssue("OTHER-1")
         with self.assertRaisesRegex(RuntimeError, "project OTHER lists no repo in checkouts; set checkouts.OTHER"):
-            mainCheckout(issue, {}, notARepo)
+            mainCheckout(issue.key, {}, notARepo)
 
     def test_refuses_when_cwd_is_an_unlisted_repo_and_nothing_is_listed(self):
         s = sandbox()
         self.addCleanup(shutil.rmtree, s["root"], True)
         issue = toDoIssue("OTHER-1")
         with self.assertRaisesRegex(RuntimeError, "project OTHER lists no repo in checkouts; set checkouts.OTHER"):
-            mainCheckout(issue, {}, s["checkout"])
+            mainCheckout(issue.key, {}, s["checkout"])
 
 
 if __name__ == "__main__":

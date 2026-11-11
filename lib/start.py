@@ -1,4 +1,5 @@
-# Starting an issue: its branch and worktree off the latest base, then In Progress in Jira.
+# Starting an issue: its branch and worktree off the latest base, then in progress in its store
+# (lib/issuestore.py's adapter for the key).
 # Ported from lib/start.js. Faithful, behavior-preserving port: no change in logic. Everything
 # here is synchronous (stdlib subprocess/os/fs calls are sync in Python; there is no async/await
 # equivalent needed), unlike the JS original which used node's Promise-based APIs throughout --
@@ -11,37 +12,38 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .jira import KEY_RE, projectOf
+from .issue import IN_PROGRESS, KEY_RE, projectOf
 
-# Jira issue types vary per project and have no fixed branch convention, unlike Redmine's trackers.
-# The map is config (plan.typeMap), not a hardcoded constant; this is only its default.
-DEFAULT_TYPE_MAP = {"Story": "feat", "Task": "feat", "Bug": "fix"}
+# An issue type's branch prefix. Each tracker names its own types, so the map is config
+# (typeMap); this is only its default. Type names match without regard to case, so "Bug" and
+# "bug" both get fix.
+DEFAULT_TYPE_MAP = {"story": "feat", "task": "feat", "bug": "fix"}
 
 
 def prefixFor(issueType, typeMap=None):
     if typeMap is None:
         typeMap = DEFAULT_TYPE_MAP
-    return typeMap.get(issueType) or "chore"
+    return prefixesByType(typeMap).get((issueType or "").lower()) or "chore"
 
 
-# The statuses Start accepts, keyed by Jira's statusCategory rather than by status name. Redmine
-# had one fixed vocabulary ("New", "In Progress") to key off; Jira's CIAM project alone has many
-# status names per issue type in each category (Story: "Requested"/"Drafted"/"Approved" are all To
-# Do, "In Progress"/"Blocked"/"QA Testing" are all In Progress), so a name-keyed lookup like
-# Redmine's can't cover every issue type. statusCategory.key is the one thing every workflow agrees
-# on: "new" (To Do), "indeterminate" (In Progress), "done".
+def prefixesByType(typeMap):
+    return {name.lower(): prefix for name, prefix in typeMap.items()}
+
+
+# What Start does with an issue, by its status category rather than its status name: a tracker can
+# have many status names in each category, and the category is the one thing every tracker's
+# statuses agree on.
 def ACTION(issue):
-    key = issue["fields"]["status"]["statusCategory"]["key"]
-    if key == "new":
+    if issue.isNew():
         return "Start"
-    if key == "indeterminate":
+    if issue.isInProgress():
         return "Open"
     return None  # done: refuse
 
 
 def checkId(key, action="Start"):
     if not KEY_RE.match(str(key)):
-        raise RuntimeError(f"{action} needs a Jira key like CIAM-123, not {json.dumps(str(key))}")
+        raise RuntimeError(f"{action} needs an issue key like CIAM-123 or SK-0003, not {json.dumps(str(key))}")
 
 
 # The subject's first five words, lowercase, joined by hyphens, as worktask made them.
@@ -54,8 +56,8 @@ def slug(subject):
 def branchName(issue, typeMap=None):
     if typeMap is None:
         typeMap = DEFAULT_TYPE_MAP
-    prefix = prefixFor(issue["fields"]["issuetype"]["name"], typeMap)
-    return f'{prefix}/{issue["key"]}-{slug(issue["fields"]["summary"])}'
+    prefix = prefixFor(issue.issueType, typeMap)
+    return f"{prefix}/{issue.key}-{slug(issue.summary)}"
 
 
 # Beside the checkout: <parent>/<repo>.worktrees/<KEY>.
@@ -222,7 +224,7 @@ def settingUp(common, key):
 
 
 # checkouts[project] is a list of repo paths serving that project (several repos can carry one
-# Jira project); a bare string is accepted too, as a one-item list, for back-compat with configs
+# project); a bare string is accepted too, as a one-item list, for back-compat with configs
 # written before this port's project-maps-to-many-repos change.
 def checkoutsFor(checkouts, project):
     val = (checkouts or {}).get(project)
@@ -287,10 +289,9 @@ def pickRepoWithFzf(options):
 #      `checkouts`. The refusal or the pick comes before any branch, worktree or status change.
 #
 # OPEN (see docs/architecture.md): whether one issue may span two repos.
-def mainCheckout(issue, checkouts, cwd, action="Start", typeMap=None, pickRepo=None):
+def mainCheckout(key, checkouts, cwd, action="Start", typeMap=None, pickRepo=None):
     if pickRepo is None:
         pickRepo = pickRepoWithFzf
-    key = issue["key"]
     project = projectOf(key)
     candidates = listedCheckouts(checkouts, project)
     existing = repoWithExistingWork(candidates, key, action, typeMap)
@@ -344,12 +345,14 @@ def resolvedRepo(named, project):
 
 
 # Start issue key, or reopen its worktree. Safe to repeat: each step runs only when it has something
-# to do. confirm(blockers) is asked only before a new worktree; false stops with nothing changed.
+# to do. store is the key's IssueStore adapter, and the issue is read from it once. confirm(blockers)
+# is asked only before a new worktree, with the open Blockers; false stops with nothing changed.
 # handOff(result), when given, is the last step of setup, so a handoff that fails runs setup again
 # (cmdStart opens the issue window after start() returns instead, so it passes none).
-# Returns { dir, branch, created, started, notes }, or None when Peter said no. started: this Start
-# finished the worktree's setup, here or after an earlier one stopped part way.
-def start(jira, checkouts, key, confirm, handOff=None, typeMap=None, cwd=None, pickRepo=None):
+# Returns { dir, branch, created, started, notes, issue }, or None when Peter said no. started: this
+# Start finished the worktree's setup, here or after an earlier one stopped part way. issue: the
+# Issue as Start left it.
+def start(store, checkouts, key, confirm, handOff=None, typeMap=None, cwd=None, pickRepo=None):
     if handOff is None:
         handOff = lambda result: None
     if typeMap is None:
@@ -357,22 +360,22 @@ def start(jira, checkouts, key, confirm, handOff=None, typeMap=None, cwd=None, p
     if cwd is None:
         cwd = os.getcwd()
     checkId(key)
-    issue = jira.issue(key)
+    issue = store.issue(key)
     # The panel's row can be older than the issue: one closed or moved on since keeps its status.
     action = ACTION(issue)
     if not action:
-        raise RuntimeError(f'{key} is {issue["fields"]["status"]["name"]}; refresh Next up')
-    mc = mainCheckout(issue, checkouts, cwd, action, typeMap, pickRepo)
+        raise RuntimeError(f"{key} is {issue.status}; refresh Next up")
+    mc = mainCheckout(key, checkouts, cwd, action, typeMap, pickRepo)
     checkout, common = mc["checkout"], mc["common"]
 
     release = lock(common, key)
     try:
-        return startIn(jira, key, confirm, handOff, issue, checkout, common, typeMap)
+        return startIn(store, key, confirm, handOff, issue, checkout, common, typeMap)
     finally:
         release()
 
 
-def startIn(jira, key, confirm, handOff, issue, checkout, common, typeMap):
+def startIn(store, key, confirm, handOff, issue, checkout, common, typeMap):
     notes = []
     dir = worktreeDir(checkout, key)
     found = existingWorktree(git(checkout, "worktree", "list", "--porcelain"), key, dir, "Start", typeMap)
@@ -382,17 +385,12 @@ def startIn(jira, key, confirm, handOff, issue, checkout, common, typeMap):
     if found and not os.path.exists(found["dir"]):
         raise RuntimeError(f"git still lists {found['dir']} as a worktree, but it's gone; run git worktree prune in {checkout}, then Start again")
     if not found:
-        # L4: refuse before anything is created if the In Progress transition (made below, only once
-        # the worktree is set up) isn't even available -- a read-only check (GET transitions), so
-        # nothing is created, moved or written to Jira if it's going to fail anyway.
-        if issue["fields"]["status"]["statusCategory"]["key"] == "new":
-            jira.statusTransitionId(key, "In Progress")
-        # A blocker Peter can't read, moved to a project hidden from him, is listed as unknown.
-        blockers = [
-            {"id": b["key"], "subject": b["fields"]["summary"], "status": b["fields"]["status"]["name"]}
-            for b in jira.blockers(issue)
-        ]
-        if blockers and not confirm(blockers):
+        # L4: refuse before anything is created if the move to in progress (made below, only once
+        # the worktree is set up) isn't even available -- a read-only check, so nothing is created,
+        # moved or written to the store if it's going to fail anyway.
+        if issue.isNew():
+            store.statusTransitionId(key, IN_PROGRESS)
+        if issue.blockers and not confirm(list(issue.blockers)):
             return None
 
         # A new branch starts from the latest base or not at all; a failed fetch stops before
@@ -465,16 +463,16 @@ def startIn(jira, key, confirm, handOff, issue, checkout, common, typeMap):
         run("uv", ["sync", "--quiet"], found["dir"])
         notes.append("Synced the uv environment.")
 
-    if issue["fields"]["status"]["statusCategory"]["key"] == "new":
-        # transition() reads the issue back and refuses if Jira didn't move it, so a workflow condition
-        # or validator that silently keeps the old status stops Start here rather than lying about it.
-        # Jira has no start_date field for CIAM; that Redmine custom-field write is dropped, not ported.
-        jira.transition(key, "In Progress")
+    if issue.isNew():
+        # transition() reads the issue back and refuses if the store didn't move it, so a workflow
+        # condition or validator that silently keeps the old status stops Start here rather than lying
+        # about it.
+        issue = store.transition(key, IN_PROGRESS)
         on_branch = f' on `{found["branch"]}`' if found.get("branch") else ""
-        jira.addComment(key, jira.textComment(f"Started{on_branch}, in {found['dir']}."))
-        notes.append(f"{key} is In Progress.")
+        store.addComment(key, f"Started{on_branch}, in {found['dir']}.")
+        notes.append(f"{key} is {issue.status}.")
 
-    result = {**found, "created": created, "started": started, "notes": notes}
+    result = {**found, "created": created, "started": started, "notes": notes, "issue": issue}
     if started:
         handOff(result)
         try:

@@ -17,7 +17,7 @@ test("a window with no plan.key is not an issue window", () => {
   assert.equal(windowPlan.readPlan(settingsOf({})), null);
 });
 
-test("an issue window's settings are read, with no ticket for a Jira issue", () => {
+test("an issue window's settings are read, with no ticket for an issue that has no file", () => {
   const read = windowPlan.readPlan(settingsOf({ key: "CIAM-1", worktree: "/w", prompt: "p" }));
   assert.deepEqual(read, { key: "CIAM-1", worktree: "/w", ticket: null, prompt: "p" });
 });
@@ -52,7 +52,7 @@ test("an existing Claude terminal is found by name, so a second is never made", 
   assert.equal(windowPlan.findClaudeTerminal(plan, [{ name: "Claude SK-10" }]), undefined);
 });
 
-test("the ticket opens only when no tab has it, and never for a Jira issue", () => {
+test("the ticket opens only when no tab has it, and never for an issue that has no file", () => {
   assert.equal(windowPlan.ticketNeedsOpening(plan, []), true);
   assert.equal(windowPlan.ticketNeedsOpening(plan, [plan.ticket]), false);
   assert.equal(windowPlan.ticketNeedsOpening({ ...plan, ticket: null }, []), false);

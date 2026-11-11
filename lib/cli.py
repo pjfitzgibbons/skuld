@@ -11,39 +11,14 @@ import sys
 from . import agents as agents_mod
 from . import config as config_mod
 from . import done as done_mod
-from . import fileissues as fileissues_mod
+from . import issuestore as issuestore_mod
 from . import placer as placer_mod
 from . import serve as serve_mod
 from . import ship as ship_mod
 from . import slotbar as slotbar_mod
 from . import start as startLib
 from . import term as term_mod
-from .jira import KEY_RE, Jira, projectOf
-
-
-# The client key's commands go through: FileIssues for a SK-<nnnn> key (lib/fileissues.py, user
-# decision 2026-11-05 -- SK issues are this repo's own backlog, stored as files, not Jira), Jira
-# for every other project. Every call site below already knows its key before it needs a client
-# (checkId() runs first), so dispatch is a plain "which class for this key", not a wrapping
-# router object: each returned client implements the same surface (list/issue/blockers/
-# statusTransitionId/transition/textComment/addComment/browseUrl/closeNote), so start.py/done.py/
-# ship.py need no branch of their own. key=None is the picker's Jira half (issueRows(), below),
-# asked for only when the config names Jira projects. A key whose project the config's `jira`
-# entry doesn't name is refused here, before any command changes anything.
-def jiraFrom(cfg, key=None):
-    if key is not None and fileissues_mod.isFileBacked(key):
-        return fileissues_mod.FileIssues({"dir": config_mod.issueStoreFrom(cfg)})
-    if key is not None:
-        refuseUnconfiguredProject(cfg, key)
-    return Jira(config_mod.jiraSettingsFrom(cfg))
-
-
-def refuseUnconfiguredProject(cfg, key):
-    project = projectOf(key)
-    if project not in config_mod.jiraProjects(cfg):
-        raise RuntimeError(
-            f'{key} is unknown on this Mac: {config_mod.CONFIG_FILE} has no "jira" entry naming {project}'
-        )
+from .issue import KEY_RE
 
 
 # y/n on stdin, for Start's confirm(blockers) -- the terminal stand-in for the old modal dialog.
@@ -52,7 +27,7 @@ def confirmBlockers(blockers):
         return True
     print("This issue is still open and blocks it:" if len(blockers) == 1 else "These issues are still open and block it:")
     for b in blockers:
-        print(f'  {b["id"]}  {b["status"]}  {b["subject"]}')
+        print(f"  {b.key}  {b.status}  {b.summary}")
     answer = input("Start anyway? [y/N] ")
     return bool(re.match(r"^y(es)?$", answer.strip(), re.IGNORECASE))
 
@@ -66,10 +41,9 @@ def currentBranch(dir):
 # existingWorktree, from the key), so Ship follows docs/architecture.md §7.0 like they do. A cwd on
 # the issue's branch gets no shortcut: an unlisted repo is refused, and work in two listed repos is
 # refused by name. Ship never asks for a repo, since only a repo holding the work can be shipped.
-def resolveDir(cfg, jira, key):
+def resolveDir(cfg, key):
     typeMap = cfg.get("typeMap")
-    issue = jira.issue(key)
-    checkout = startLib.mainCheckout(issue, cfg.get("checkouts"), os.getcwd(), "Ship", typeMap, refuseRepoPick)["checkout"]
+    checkout = startLib.mainCheckout(key, cfg.get("checkouts"), os.getcwd(), "Ship", typeMap, refuseRepoPick)["checkout"]
     porcelain = startLib.git(checkout, "worktree", "list", "--porcelain")
     found = startLib.existingWorktree(porcelain, key, startLib.worktreeDir(checkout, key), "Ship", typeMap)
     if not found:
@@ -77,86 +51,61 @@ def resolveDir(cfg, jira, key):
     return found["dir"]
 
 
-# Pulls a Jira key out of a branch name built by branchName() (<type>/<KEY>-<slug>) or a bare
+# Pulls an issue key out of a branch name built by branchName() (<type>/<KEY>-<slug>) or a bare
 # <KEY>-<slug>; raises if the branch doesn't carry one, since ship/go without a key need one.
 def keyFromBranch(branch):
     match = re.search(r"(?:^|/)([A-Z][A-Z0-9]*-[0-9]+)-", branch)
     if not match:
-        raise RuntimeError(f'current branch "{branch}" doesn\'t carry a Jira key; pass one: plan ship CIAM-123')
+        raise RuntimeError(f'current branch "{branch}" doesn\'t carry an issue key; pass one: plan ship CIAM-123 or plan ship SK-0003')
     return match.group(1)
 
 
-# A minimal ADF document -> plain text renderer, for plan view's description/comments. Only the
-# node types md_to_adf.py and Jira's own editor actually produce: paragraphs, text (with a bold/
-# code mark folded in as-is, no ANSI), hard breaks, bullet/ordered lists, and headings. Anything
-# else just recurses into its content, so an unrecognized node still shows its text rather than
-# vanishing silently.
-def adfText(node, indent=""):
-    if not node:
-        return ""
-    if node.get("type") == "text":
-        return node.get("text") or ""
-    if node.get("type") == "hardBreak":
-        return "\n"
-    children = "".join(adfText(child, indent) for child in node.get("content") or [])
-    node_type = node.get("type")
-    if node_type == "paragraph":
-        return f"{indent}{children}\n"
-    if node_type == "heading":
-        return f"{indent}{children.upper()}\n"
-    if node_type == "listItem":
-        return f"{indent}- {children.strip()}\n"
-    if node_type in ("bulletList", "orderedList"):
-        return children
-    return children
+# Next up's rows: every project this Mac works (issuestore.projects()), each one's open issues
+# from its own adapter, as one set per project, merged in project order by mergeSets().
+def nextUpRows(cfg):
+    sets = []
+    for project in issuestore_mod.projects(cfg):
+        sets.append(issuestore_mod.storeForProject(cfg, project).list(project))
+    return mergeSets(sets)
 
 
-def adfToText(doc):
-    if not doc:
-        return ""
-    return "".join(adfText(node) for node in doc.get("content") or []).strip()
-
-
-# Jira's JQL results (kept in their JQL `ORDER BY Rank` order -- never re-sorted here) plus
-# every SK file whose status is open or in-progress, interleaved by `after:` (issues/README.md).
-# skRows is assumed already in SK sort order -- ordinal, then issue number
-# (lib/fileissues.py's FileIssues.list() guarantees that) -- so a group of SK issues sharing one
-# `after:` anchor comes out in that same order (Python's sort/list ops below are stable).
-#
-# A SK row goes right after the Jira row whose id matches its `after:` value. A SK row falls to
-# the end, in SK sort order, when: it has no `after:`; its anchor isn't one of jiraRows' ids
-# (closed/unassigned/filtered-out of the current JQL); or its anchor is a SK key -- which can
-# never be a jiraRows id anyway, since jiraRows only ever holds what Jira's list() returned, so
-# that case is covered by the same "not in jiraRows' ids" check, not a separate one. This also
-# means an `after:` chain can never cycle: only a Jira id anchors a placement, and Jira issues are
-# never reordered or reinserted by this function.
-def mergeRows(jiraRows, skRows):
-    jiraIds = {row["id"] for row in jiraRows}
-    anchored = {}
-    leftover = []
-    for row in skRows:
-        anchor = row.get("after")
-        if anchor and anchor in jiraIds:
-            anchored.setdefault(anchor, []).append(row)
-        else:
-            leftover.append(row)
+# The sets as one list, each set kept in its adapter's order,
+# never re-sorted. A row whose `after:` names a row of an earlier set goes right after that row;
+# every other row follows the rows before its set. Anchors only point back to an earlier set, so an
+# `after:` chain can never cycle.
+def mergeSets(sets):
     merged = []
-    for jiraRow in jiraRows:
-        merged.append(jiraRow)
-        merged.extend(anchored.get(jiraRow["id"], []))
-    merged.extend(leftover)
+    for rows in sets:
+        merged = placedAfterAnchors(merged, rows)
     return merged
 
 
-# `plan list`/the picker's rows: Jira's JQL results and every open/in-progress SK file, merged by
-# mergeRows() (decision #3, 2026-11-05; `after:` interleaving, 2026-11-06). With no Jira projects
-# in the config there is no Jira half, and nothing reads the netrc file or calls Jira.
+# merged with rows added: each row anchored to one of merged's ids right after it, in rows' order,
+# and the rest at the end.
+def placedAfterAnchors(merged, rows):
+    ids = {row["id"] for row in merged}
+    anchored = {}
+    leftover = []
+    for row in rows:
+        anchor = row.get("after")
+        if anchor in ids:
+            anchored.setdefault(anchor, []).append(row)
+        else:
+            leftover.append(row)
+    placed = []
+    for row in merged:
+        placed.append(row)
+        placed.extend(anchored.get(row["id"], []))
+    return placed + leftover
+
+
+# `plan list`/the picker's rows: Next up (nextUpRows()), padded into columns.
 #
 # Column alignment (2026-11-06): a plain `f'{id}\t{status}\t{subject}'` left every row's tab
 # stops wherever the terminal happened to put them, so columns drifted out of line as soon as ids
 # or statuses had different lengths (e.g. CIAM-163 vs CIAM-94). `line` is now one pre-padded
-# string -- id, then status, each left-justified to the widest id/status across ALL rows (Jira
-# and SK together) with `str.ljust`, with exactly two literal spaces between columns -- so it
+# string -- id, then status, each left-justified to the widest id/status across ALL rows (every
+# project's set together) with `str.ljust`, with exactly two literal spaces between columns -- so it
 # lines up the same way in `plan list`'s plain stdout and in the fzf picker, with no tab
 # character left for a terminal's own tab stops to misplace.
 #
@@ -172,8 +121,7 @@ def mergeRows(jiraRows, skRows):
 # window is ("D3", or "D3, window on D4" when its window is elsewhere). With no slots at all there
 # is no column.
 def issueRows(cfg, slotLabels=None):
-    skRows = fileissues_mod.FileIssues({"dir": config_mod.issueStoreFrom(cfg)}).list()
-    issues = mergeRows(jiraNextUp(cfg), skRows)
+    issues = nextUpRows(cfg)
     slotLabels = slotLabels or {}
     columns = [lambda issue: issue["id"], lambda issue: issue["status"]]
     if slotLabels:
@@ -189,12 +137,6 @@ def issueRows(cfg, slotLabels=None):
     return rows
 
 
-def jiraNextUp(cfg):
-    if not config_mod.jiraProjects(cfg):
-        return []
-    return jiraFrom(cfg).list()
-
-
 # `plan list`: the picker's rows, printed plainly -- already column-aligned (issueRows()).
 def cmdList(cfg):
     placer = placer_mod.placerFrom(cfg)
@@ -207,77 +149,93 @@ def cmdList(cfg):
 # `plan view <KEY>`: one issue in full, the fzf preview pane's content and a standalone command.
 def cmdView(cfg, key):
     startLib.checkId(key, "View")
-    jira = jiraFrom(cfg, key)
-    issue = jira.issue(key)
-    f = issue["fields"]
-    print(f'{key}  {f["issuetype"]["name"]}  {f["status"]["name"]}')
-    print(f["summary"])
-    if f.get("parent"):
-        print(f'Parent: {f["parent"]["key"]}')
-    blockers = jira.blockers(issue)
-    if blockers:
-        parts = [f'{b["key"]} ({b["fields"]["status"]["name"]})' for b in blockers]
-        print(f"Blocked by: {', '.join(parts)}")
-    if f.get("description"):
+    issue = issuestore_mod.storeFor(cfg, key).issue(key)
+    print(f"{key}  {issue.issueType}  {issue.status}")
+    print(issue.summary)
+    if issue.parent:
+        print(f"Parent: {issue.parent}")
+    if issue.blockers:
+        print(f"Blocked by: {blockerList(issue.blockers)}")
+    if issue.description:
         print("")
-        print(adfToText(f["description"]))
-    comments = (f.get("comment") or {}).get("comments") or []
-    if comments:
+        print(issue.description)
+    if issue.comments:
         print("")
-        print(f'{len(comments)} comment{"" if len(comments) == 1 else "s"}:')
-        for c in comments[-5:]:
-            author = (c.get("author") or {}).get("displayName") or "?"
-            first_line = adfToText(c.get("body")).split("\n")[0]
-            print(f"  {author}  {first_line}")
-    print("")
-    print(jira.browseUrl(key))
+        print(f'{len(issue.comments)} comment{"" if len(issue.comments) == 1 else "s"}:')
+        for comment in issue.comments[-5:]:
+            print(f"  {comment.author}  {firstLine(comment.text)}")
+    if issue.file:
+        print("")
+        print(f"Kept in {issue.file}: its status and log are there.")
+    if issue.page:
+        print("")
+        print(issue.page)
+
+
+# "CIAM-1 (In Progress), CIAM-2 (To Do)"
+def blockerList(blockers):
+    return ", ".join(f"{b.key} ({b.status})" for b in blockers)
+
+
+def firstLine(text):
+    return text.split("\n")[0]
 
 
 # `plan start`/`plan open <KEY>`: start.start(), then open or focus the issue's VS Code window
 # through the configured WindowPlacer (lib/placer.py). Open is the same call as Start (start.py's
 # ACTION/startIn already handle "already has a worktree" by reusing it); the terminal tool doesn't
-# need two code paths.
+# need two code paths. The issue is read once, by start(), and everything after uses what it read.
 def cmdStart(cfg, key):
     startLib.checkId(key, "Start")
-    jira = jiraFrom(cfg, key)
+    store = issuestore_mod.storeFor(cfg, key)
     placer = placer_mod.placerFrom(cfg)
     placer.sweep()
-    result = startLib.start(jira, cfg.get("checkouts"), key, confirmBlockers, typeMap=cfg.get("typeMap"))
+    result = startLib.start(store, cfg.get("checkouts"), key, confirmBlockers, typeMap=cfg.get("typeMap"))
     if not result:
         print("Not started.")
         return
     for note in result["notes"]:
         print(note)
-    ticket = jira.browseUrl(key) if fileissues_mod.isFileBacked(key) else None
-    workspaceFile = writeIssueWorkspaceFile(cfg, key, result["dir"], ticket)
+    issue = result["issue"]
+    workspaceFile = writeIssueWorkspaceFile(cfg, key, result["dir"], issue.file)
     placement = placer.openWindow(key, workspaceFile)
     for note in placement.notes:
         print(note)
     print(f"{placement.where} ready.")
-    if ticket:
-        print(ticket)  # the plan-window extension opens it in a tab
-    else:
-        # Start runs in whatever terminal invoked `plan start`, not the new issue's own window,
-        # so the page is aimed at the issue's key rather than the caller's.
-        term_mod.showUrl(jira.browseUrl(key), key, workspaceFile)
+    if issue.file:
+        print(issue.file)  # the plan-window extension opens it in a tab
+    showIssuePage(cfg, issue, workspaceFile)
     placer.focus(placement, workspaceFile)
 
 
-# What Claude is first asked to do. A store issue names its ticket file: "Work on Jira SK-0003"
-# sent Claude looking for a Jira ticket (2026-11-05).
-def claudePrompt(key, ticket):
-    if not ticket:
-        return f"Work on Jira {key}"
-    return (
-        f"Work on {key}. It is a local file-backed issue, not a Jira ticket: read "
-        f"{ticket} first. Its status and log live in that file."
-    )
+# The issue's page beside Claude: on its tracker, or on the local server.
+# Start runs in whatever terminal invoked `plan start`, not the new issue's own window, so the page
+# is aimed at the issue's key rather than the caller's. A local server that isn't answering gets the
+# URL printed and how to open it once it is, and Start goes on.
+def showIssuePage(cfg, issue, workspaceFile):
+    if not issue.page:
+        return
+    if servedLocally(cfg, issue.page) and not serve_mod.answers(serve_mod.portFrom(cfg)):
+        print(issue.page)
+        print(f"The local server isn't answering: run `plan serve start`, then `plan browse {issue.key}`.")
+        return
+    term_mod.showUrl(issue.page, issue.key, workspaceFile)
+
+
+def servedLocally(cfg, url):
+    return url.startswith(serve_mod.serverUrl(serve_mod.portFrom(cfg)))
+
+
+# What Claude is first asked to do: read the issue through plan, which reads every tracker the same
+# way, so the prompt never names one.
+def claudePrompt(key):
+    return f"Work on {key}. Read it first with `plan view {key}`."
 
 
 def writeIssueWorkspaceFile(cfg, key, worktree, ticket):
     path = term_mod.issueWorkspaceFilePath(key, worktree, cfg.get("workspaceDir"))
     workspace = term_mod.issueWorkspace(
-        key, worktree, config_mod.issueStoreFrom(cfg), claudePrompt(key, ticket), ticket
+        key, worktree, config_mod.issueStoreFrom(cfg), claudePrompt(key), ticket
     )
     with term_mod.step("writing the issue's workspace file", f"Check that {os.path.dirname(path)} is writable."):
         term_mod.writeWorkspaceFile(path, workspace)
@@ -301,22 +259,14 @@ PR_TARGET_RE = re.compile(r"^pr#(\d+)$")
 # (url, the key it belongs to or None) for a browse target: a key, pr#N or an http(s) URL.
 def browseTarget(cfg, target):
     if KEY_RE.match(target):
-        return issuePageUrl(cfg, target), target
+        key = issuestore_mod.canonicalKey(target)
+        return issuestore_mod.storeFor(cfg, key).issue(key).page, key
     pr = PR_TARGET_RE.match(target)
     if pr:
         return ship_mod.pullRequest(os.getcwd(), pr.group(1), "url")["url"], None
     if term_mod.isWebUrl(target):
         return target, None
     raise RuntimeError(f'plan browse takes a key, pr#N or an http(s) URL, not "{target}"')
-
-
-# A Jira issue's browse URL. A store ticket's page comes from the local server, which isn't built
-# yet, so its key is refused, naming the ticket file.
-def issuePageUrl(cfg, key):
-    jira = jiraFrom(cfg, key)
-    if fileissues_mod.isFileBacked(key):
-        raise RuntimeError(f"{key} is a store ticket, whose page the local server will serve; until then open {jira.browseUrl(key)}")
-    return jira.browseUrl(key)
 
 
 # The issue window's workspace file when it exists, for `code` to focus: the file Start and Open
@@ -330,12 +280,12 @@ def openWorkspaceFile(cfg, key):
 
 
 # key's worktree, found the way Start finds it, or None when it has none or can't be found. The
-# lookup needs only the key, so it asks neither Jira nor Peter: a repo choice it can't make is no
+# lookup needs only the key, so it asks neither the store nor Peter: a repo choice it can't make is no
 # worktree, and the page still goes out.
 def issueWorktree(cfg, key):
     typeMap = cfg.get("typeMap")
     try:
-        checkout = startLib.mainCheckout({"key": key}, cfg.get("checkouts"), os.getcwd(), "Open", typeMap, refuseRepoPick)["checkout"]
+        checkout = startLib.mainCheckout(key, cfg.get("checkouts"), os.getcwd(), "Open", typeMap, refuseRepoPick)["checkout"]
         porcelain = startLib.git(checkout, "worktree", "list", "--porcelain")
         found = startLib.existingWorktree(porcelain, key, startLib.worktreeDir(checkout, key), "Open", typeMap)
     except (RuntimeError, OSError):
@@ -359,8 +309,8 @@ def cmdShip(cfg, key):
     if not key:
         key = keyFromBranch(currentBranch(os.getcwd()))
     startLib.checkId(key, "Ship")
-    jira = jiraFrom(cfg, key)
-    dir = resolveDir(cfg, jira, key)
+    issuestore_mod.refuseUnknownProject(cfg, key)
+    dir = resolveDir(cfg, key)
     result = ship_mod.check(dir, key)
     if result["problems"]:
         print(f"{key} isn't ready to ship:", file=sys.stderr)
@@ -371,18 +321,17 @@ def cmdShip(cfg, key):
     return None
 
 
-# `plan done [KEY]`: done.finish(); Done never transitions the Jira issue (decision #5) -- it
-# prints the notes done.py returns, including the "Close KEY in Jira" line, and leaves closing
-# it to Peter.
+# `plan done [KEY]`: done.finish(); Done never transitions the issue (decision #5) -- it prints
+# the notes done.py returns, ending with the store's close note, and leaves closing it to Peter.
 def cmdDone(cfg, key):
     dir = os.getcwd()
     if not key:
         key = keyFromBranch(currentBranch(dir))
     startLib.checkId(key, "Done")
-    jira = jiraFrom(cfg, key)
+    store = issuestore_mod.storeFor(cfg, key)
     placer_mod.placerFrom(cfg).sweep()
     result = done_mod.finish(
-        jira,
+        store,
         cfg.get("checkouts"),
         key,
         disposable=cfg.get("disposable"),
@@ -398,7 +347,7 @@ def cmdDone(cfg, key):
 # `plan` with no args: fzf over the picker's rows. enter starts/opens the highlighted issue;
 # ctrl-s ships it (check, then pr, in one step -- Go's old ctrl-g bind is removed), ctrl-d marks
 # it done, ctrl-r reloads the list. Each bind shells back out to `plan <subcommand> {1}` (the
-# row's first field, the Jira key) rather than duplicating any of cmdStart/cmdShip/cmdDone's logic
+# row's first field, the issue key) rather than duplicating any of cmdStart/cmdShip/cmdDone's logic
 # inside the fzf process. `{1}` is fzf's default AWK-style (whitespace-run) field splitting --
 # no `--delimiter`/`--with-nth` needed (2026-11-06): issueRows()'s `line` is already one padded,
 # tab-free string, so the first whitespace-delimited token is the bare id.
@@ -449,10 +398,10 @@ def listedAgents(cfg):
     return agents_mod.withTitles(agents, lambda key: issueTitle(cfg, key))
 
 
-# A store key's title from its ticket file; a Jira key's from Jira, and only when the config names
-# its project (jiraFrom() refuses the rest, which leaves the title blank).
+# A key's title from its store, when the config names its project (storeFor() refuses the rest,
+# which leaves the title blank).
 def issueTitle(cfg, key):
-    return jiraFrom(cfg, key).issue(key)["fields"]["summary"]
+    return issuestore_mod.storeFor(cfg, key).issue(key).summary
 
 
 def agentsTick(cfg, keepWatching):
@@ -534,7 +483,7 @@ def main(argv=None):
         argv = sys.argv[1:]
     cfg = config_mod.load()
     cmd = argv[0] if argv else None
-    rest = [fileissues_mod.canonicalKey(arg) for arg in argv[1:]]
+    rest = [issuestore_mod.canonicalKey(arg) for arg in argv[1:]]
     if not cmd:
         return cmdPicker(cfg)
     if cmd == "list":
@@ -556,5 +505,5 @@ def main(argv=None):
     if cmd == "serve":
         return cmdServe(cfg, rest[0] if rest else None)
     if KEY_RE.match(cmd):  # `plan CIAM-123` is shorthand for view
-        return cmdView(cfg, fileissues_mod.canonicalKey(cmd))
+        return cmdView(cfg, issuestore_mod.canonicalKey(cmd))
     raise RuntimeError(f'unknown command "{cmd}"; try: list, view, start, open, browse, ship, done, serve, pulse, agents')

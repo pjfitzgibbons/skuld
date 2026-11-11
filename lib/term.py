@@ -118,7 +118,7 @@ def removeThrowaway(path):
 # The issue window's workspace file contents: the worktree and the ticket store as its folders, the
 # key in the window title and in every terminal's environment, and the plan.* settings the
 # plan-window extension reads (vscode/plan-window) to open the ticket and start Claude. ticket is
-# None for a Jira issue, which has no ticket file.
+# None for an issue its tracker keeps in no file.
 def issueWorkspace(key, worktree, store, prompt, ticket=None):
     settings = {
         "window.title": f"{key}${{separator}}${{activeEditorShort}}",

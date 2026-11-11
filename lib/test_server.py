@@ -1,7 +1,6 @@
 # lib/server.py: the routes through Flask's test client, with no running server. Flask is in skuld's
 # uv venv only, so under a bare python3 these tests skip: run `uv run python -m unittest discover -s
 # lib -t .` to include them.
-import errno
 import importlib.util
 import os
 import socket
@@ -12,10 +11,78 @@ from unittest import mock
 HAS_FLASK = importlib.util.find_spec("flask") is not None
 if HAS_FLASK:
     from lib import server
+    from lib.filestore import FileStore
 
 
 def ticket(status, title):
     return f"---\nstatus: {status}\ntype: task\nordinal: 1\n---\n\n# {title}\n\n## Log\n"
+
+
+TICKET_PAGE = """---
+status: in-progress
+type: task
+ordinal: 1
+closed:
+---
+
+# Show the ticket
+
+## Task
+
+Render the page.
+
+## Guardrails
+
+- Read-only.
+
+## Log
+
+- 2026-11-10: Started on the branch.
+"""
+
+
+@unittest.skipUnless(HAS_FLASK, "Flask is in skuld's uv venv; run under `uv run`")
+class BodySectionTests(unittest.TestCase):
+    def test_splits_at_level_two_headings(self):
+        sections = server.bodySections("Intro.\n\n## Task\n\nDo it.\n\n## Empty")
+        self.assertEqual(
+            sections,
+            [
+                {"heading": None, "blocks": [{"kind": "paragraph", "text": "Intro."}]},
+                {"heading": "Task", "blocks": [{"kind": "paragraph", "text": "Do it."}]},
+                {"heading": "Empty", "blocks": []},
+            ],
+        )
+
+    def test_a_body_that_starts_with_a_heading_has_no_untitled_section(self):
+        self.assertEqual([s["heading"] for s in server.bodySections("## Task\nDo it.")], ["Task"])
+
+    def test_joins_a_wrapped_paragraph_and_reads_subheadings(self):
+        blocks = server.textBlocks(["Add the route, so it", "reads well.", "", "### Current state", "", "A tab."])
+        self.assertEqual(
+            blocks,
+            [
+                {"kind": "paragraph", "text": "Add the route, so it reads well."},
+                {"kind": "subheading", "text": "Current state"},
+                {"kind": "paragraph", "text": "A tab."},
+            ],
+        )
+
+    def test_reads_list_items_their_continuations_and_checkboxes(self):
+        blocks = server.textBlocks(["- In scope: the route,", "  and its tests.", "- [x] L3 Reliability", "- [ ] L4 Performance"])
+        self.assertEqual(
+            blocks,
+            [
+                {
+                    "kind": "list",
+                    "items": [
+                        {"checked": None, "text": "In scope: the route, and its tests."},
+                        {"checked": True, "text": "L3 Reliability"},
+                        {"checked": False, "text": "L4 Performance"},
+                    ],
+                }
+            ],
+        )
 
 
 @unittest.skipUnless(HAS_FLASK, "Flask is in skuld's uv venv; run under `uv run`")
@@ -32,7 +99,7 @@ class RouteTests(unittest.TestCase):
             f.write(text)
 
     def client(self, cfg=None):
-        return server.createApp(cfg if cfg is not None else {"issueStore": self.store}).test_client()
+        return server.createApp({"serverPort": 8765, **(cfg if cfg is not None else {"issueStore": self.store})}).test_client()
 
     def test_health_answers_as_skuld(self):
         response = self.client().get("/health")
@@ -67,7 +134,7 @@ class RouteTests(unittest.TestCase):
         self.assertIn("The ticket store can't be read", response.get_data(as_text=True))
 
     def test_index_with_an_unreadable_ticket_shows_the_store_error(self):
-        with mock.patch.object(server.fileissues_mod.FileIssues, "list", side_effect=PermissionError("denied")):
+        with mock.patch.object(FileStore, "list", side_effect=PermissionError("denied")):
             response = self.client().get("/")
         self.assertEqual(response.status_code, 200)
         self.assertIn("denied", response.get_data(as_text=True))
@@ -79,6 +146,48 @@ class RouteTests(unittest.TestCase):
     def test_refuses_any_other_host_name(self):
         response = self.client().get("/", headers={"Host": "rebind.example:8765"})
         self.assertEqual(response.status_code, 400)
+
+    def test_index_links_each_ticket_to_its_page(self):
+        self.write("SK-0001-a.md", ticket("in-progress", "Serve pages"))
+        self.assertIn('href="/issues/SK-0001"', self.client().get("/").get_data(as_text=True))
+
+    def test_issue_page_shows_fields_sections_and_log(self):
+        self.write("SK-0034-a.md", TICKET_PAGE)
+        response = self.client().get("/issues/SK-34")
+        page = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("SK-0034", page)
+        self.assertIn("Show the ticket", page)
+        self.assertIn("<h2>Task</h2>", page)
+        self.assertIn("<h2>Guardrails</h2>", page)
+        self.assertIn("<th>status</th><td>in-progress</td>", page)
+        self.assertIn("<th>closed</th><td>—</td>", page)
+        self.assertIn("2026-11-10", page)
+        self.assertIn("Started on the branch.", page)
+
+    def test_issue_page_escapes_ticket_data(self):
+        self.write("SK-0001-a.md", TICKET_PAGE.replace("Render the page.", "<img src=x onerror=alert(1)>"))
+        page = self.client().get("/issues/SK-0001").get_data(as_text=True)
+        self.assertNotIn("<img src=x", page)
+        self.assertIn("&lt;img src=x onerror=alert(1)&gt;", page)
+
+    def test_an_unknown_ticket_gets_a_404_page_that_names_it(self):
+        response = self.client().get("/issues/SK-0099")
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("no issue file for SK-0099", response.get_data(as_text=True))
+
+    def test_a_key_that_isnt_the_stores_gets_a_404_without_reading_the_store(self):
+        for key in ("CIAM-1", "SK-*", "sk-1"):
+            with self.subTest(key=key), mock.patch.object(FileStore, "issue") as read:
+                response = self.client().get(f"/issues/{key}")
+                self.assertEqual(response.status_code, 404)
+                read.assert_not_called()
+
+    def test_an_unreadable_ticket_shows_the_store_error(self):
+        with mock.patch.object(FileStore, "issue", side_effect=PermissionError("denied")):
+            response = self.client().get("/issues/SK-0001")
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("denied", response.get_data(as_text=True))
 
     def test_index_with_nothing_in_progress_says_so(self):
         self.assertIn("No store ticket is in progress", self.client().get("/").get_data(as_text=True))

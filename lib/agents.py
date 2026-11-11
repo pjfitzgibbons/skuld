@@ -4,7 +4,7 @@
 #
 # It reads `claude agents --json`, the slots file, git, the waiting markers Claude Code's hooks
 # keep (lib/waiting.py), once a minute each slotted issue's PR (lib/reviews.py), and, for a
-# listing's titles only, the store or Jira. It never writes to an issue or a session; its only
+# listing's titles only, the issue stores. It never writes to an issue or a session; its only
 # output is pulses and its listing.
 #
 # Placing a session and choosing its Desktop's colour are pure functions over plain dicts, so the
@@ -242,7 +242,7 @@ def sendPulses(sent, toSend, pulse):
 
 
 # One tick: read the sessions and slots, and pulse each Desktop whose colour changed since `sent`.
-# Reads no store or Jira, since it runs every few seconds. Returns (new record, failure messages).
+# Reads no issue store, since it runs every few seconds. Returns (new record, failure messages).
 def tick(sent, slotsFile=None, claudeCommand=None, pulseCommand=None, waitingDir=None, reviewedKeys=frozenset()):
     entries = term.slotEntries(slotsFile)
     try:

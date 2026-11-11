@@ -4,14 +4,13 @@
 # only when it has something to do, so a Done that stopped part way is finished by the next, and a
 # second Done changes nothing.
 #
-# INVARIANT (decision #5): Done never transitions the Jira issue, to Done or anything else. Peter's
-# PreToolUse hook already blocks any Bash command that looks like it moves an issue to a terminal
-# status, and a terminal transition needs a human regardless -- Jira issues can carry required-field
-# prompts or workflow conditions on close that only a person reviewing the issue can satisfy. So
-# finish() has no status write at all: it posts an ADF comment (jira.addComment) linking the PR and
-# merge commit, and its last note is the literal string "Close <KEY> in Jira: <browse URL>" for
-# Peter to act on himself. No function in this file calls jira.transition, and none should ever be
-# added that does.
+# INVARIANT (decision #5): Done never transitions the issue, to done or anything else. A PreToolUse
+# hook already blocks any Bash command that looks like it moves an issue to a terminal status, and
+# a terminal transition needs a human regardless -- a tracker can carry required fields or
+# conditions on close that only a person reviewing the issue can satisfy. So finish() has no status
+# write at all: it posts a comment (store.addComment) linking the PR and merge commit, and its last
+# note is the store's closeNote, saying how the human closes it. No function in this file calls store.transition, and none should
+# ever be added that does.
 import json
 import os
 import re
@@ -30,18 +29,18 @@ from .start import (
     worktreeDir,
     worktrees,
 )
+from .issue import DONE, IN_PROGRESS
 from .ship import prLink, unsentIn
 from . import term
 
-# The status categories Done accepts: "indeterminate" (In Progress) and "done", either of which a
-# merge's comment or an earlier Done's cleanup may still have work left to do under. "new" (To Do)
-# means Ship never ran.
-FINISHES = {"indeterminate", "done"}
+# The status categories Done accepts: in progress and done, either of which a merge's comment or an
+# earlier Done's cleanup may still have work left to do under. New means Ship never ran.
+FINISHES = {IN_PROGRESS, DONE}
 FIELDS = "state,url,number,title,headRefName,headRefOid,baseRefName,mergeCommit,isCrossRepository"
 
 
-# The PR for branch, as gh reports it. Decision #4: Jira has no "Pull requests" field to read, so
-# Done finds the PR from the branch itself, the same way a person would. gh pr view works once the
+# The PR for branch, as gh reports it. Decision #4: the issue keeps no PR field to read, so Done
+# finds the PR from the branch itself, the same way a person would. gh pr view works once the
 # branch is resolvable against the repo (a local branch, or one gh can still look up by name); gh pr
 # list --head searches GitHub's side instead, which is the one that still finds a merged PR after
 # its branch is gone locally (Done's own branch-sweep, further down, deletes merged branches) --
@@ -79,10 +78,15 @@ def commitUrl(pr):
     return f'{repoUrl(pr)}/commit/{pr["mergeCommit"]["oid"]}'
 
 
-# The closing comment: the PR and its merge commit, each linked. Posted with jira.addComment, not a
+# The closing comment: the PR and its merge commit, each linked. Posted with store.addComment, not a
 # status-changing update -- see the invariant at the top of this file.
 def doneNote(pr):
     return f'Done: {prLink(pr)} merged as [{pr["mergeCommit"]["oid"][:7]}]({commitUrl(pr)}).'
+
+
+# Whether the issue, as finish() read it, already has the merge's note: a rerun of Done posts none.
+def alreadyNoted(issue, pr):
+    return any(commitUrl(pr) in comment.text for comment in issue.comments)
 
 
 # owner/repo, lower-cased: a URL's last two path segments, so an ssh host alias or GitHub's ssh on
@@ -223,13 +227,11 @@ def checkMerged(dir, pr, removing, disposable):
 # fake in a test. Returns { dir, notes }: the worktree it removed, or None, and what each step did.
 # A Done that fails part way raises with that result as error.result, so Peter learns what it changed.
 #
-# Decision #4 reorders this from the Redmine version: Redmine kept the PR's URL on the issue itself,
-# so finish() could look the PR up before touching git at all. Jira has nothing to read it from -- the
-# PR is only findable from the branch -- so the worktree/branch lookup (existingWorktree) must happen
+# Decision #4: the issue keeps no PR URL -- the PR is only findable from the branch -- so the worktree/branch lookup (existingWorktree) must happen
 # FIRST here, and the PR lookup (prFromBranch) moves after it, inside finishIn, once a branch name
 # is in hand. If no worktree and no branch for the key can be found at all, there is nothing to
 # resolve a PR from, and finish() must refuse rather than guess at a branch name.
-def finish(jira, checkouts, key, view=None, disposable=None, typeMap=None, slotsFile=None, cwd=None, pickRepo=None, workspaceDir=None):
+def finish(store, checkouts, key, view=None, disposable=None, typeMap=None, slotsFile=None, cwd=None, pickRepo=None, workspaceDir=None):
     if view is None:
         view = prFromBranch
     if disposable is None:
@@ -239,12 +241,11 @@ def finish(jira, checkouts, key, view=None, disposable=None, typeMap=None, slots
     if cwd is None:
         cwd = os.getcwd()
     checkId(key, "Done")
-    issue = jira.issue(key)
+    issue = store.issue(key)
     # The panel's row can be older than the issue.
-    category = issue["fields"]["status"]["statusCategory"]["key"]
-    if category not in FINISHES:
-        raise RuntimeError(f'{key} is {issue["fields"]["status"]["name"]}; refresh Next up')
-    mc = mainCheckout(issue, checkouts, cwd, "Done", typeMap, pickRepo)
+    if issue.category not in FINISHES:
+        raise RuntimeError(f"{key} is {issue.status}; refresh Next up")
+    mc = mainCheckout(key, checkouts, cwd, "Done", typeMap, pickRepo)
     project, checkout, common = mc["project"], mc["checkout"], mc["common"]
 
     porcelain = git(checkout, "worktree", "list", "--porcelain")
@@ -260,7 +261,7 @@ def finish(jira, checkouts, key, view=None, disposable=None, typeMap=None, slots
     release = lock(common, key, "Done")
     result = {"dir": None, "notes": []}
     try:
-        finishIn(jira, key, project, checkout, common, pr, found, porcelain, result, disposable, typeMap, slotsFile, workspaceDir)
+        finishIn(store, issue, project, checkout, common, pr, found, porcelain, result, disposable, typeMap, slotsFile, workspaceDir)
         return result
     except Exception as error:
         error.result = result
@@ -296,9 +297,10 @@ def issueWorktreePath(resolved, checkout, key):
     return worktreeDir(checkout, key)
 
 
-def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result, disposable, typeMap=None, slotsFile=None, workspaceDir=None):
+def finishIn(store, issue, project, checkout, common, pr, found, porcelain, result, disposable, typeMap=None, slotsFile=None, workspaceDir=None):
     if typeMap is None:
         typeMap = DEFAULT_TYPE_MAP
+    key = issue.key
     notes = result["notes"]
     link = prLink(pr)
     base = pr["baseRefName"]
@@ -327,12 +329,9 @@ def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result,
     if resolved and not resolved["main"]:
         left = unsentIn(resolved["dir"])
         if left:
-            scripts = "python3 ~/.claude/skills/jira-issues/scripts"
             raise RuntimeError(
-                f'{resolved["dir"]} has replies or checklist ticks pr hasn\'t sent; send them from there with '
-                f"{scripts}/pr_threads.py <PR> --post .tmp/<KEY>/replies and {scripts}/checklist.py <KEY> "
-                f'.tmp/<KEY>/issue.md (for {key}, the PR is {pr["number"]}), not pr, whose cleanup skips Done\'s '
-                f"checks, or delete them, then Done again:\n" + "\n".join(left)
+                f'{resolved["dir"]} has replies or checklist ticks pr hasn\'t sent; run pr done {key} there '
+                f"to send them, or delete them, then Done again:\n" + "\n".join(left)
             )
     if resolved and not resolved["main"]:
         tree = next((t for t in trees if t["dir"] == resolved["dir"]), None)
@@ -459,22 +458,16 @@ def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result,
         else:
             notes.append(f"Kept the branch {branch}: it's at {tip[:7]}, with commits {link}'s merged head lacks.")
 
-    # No fetchCommits here: Redmine's version pulled commits from the repo itself so a "fixes #n"
-    # commit could close the issue on its own. Jira has no equivalent for this tool to call -- the
-    # GitHub for Jira app links commits/PRs to issues on its own, via a webhook, outside this process
-    # -- and closing is a human's job regardless (see the invariant at the top of this file). So the
-    # only Jira write left is a comment, never a status change.
-    issue = jira.issue(key)
-    comments = (issue["fields"].get("comment") or {}).get("comments") or []
-    noted = any(commitUrl(pr) in json.dumps(c.get("body") or "") for c in comments)
-    if not noted:
-        jira.addComment(key, jira.textComment(doneNote(pr)))
+    # Closing is a human's job (see the invariant at the top of this file), so the only write to
+    # the issue is a comment, never a status change.
+    if not alreadyNoted(issue, pr):
+        store.addComment(key, doneNote(pr))
         notes.append(f"Added the note to {key}.")
-    notes.append(jira.closeNote(key))
+    notes.append(store.closeNote(key))
 
     # Rule 4: the issue is finished, so its workspace slot (if any) is freed, the same way
-    # Start/Open label it (term.writeSlot). Done opens no browser -- only
-    # the "Close KEY in Jira" note above, once, ever points Peter at the issue.
+    # Start/Open label it (term.writeSlot). Done opens no browser -- only the close note above, once,
+    # ever points at the issue.
     term.removeSlot(key, slotsFile)
     # The issue window's workspace file is a throwaway: one that won't delete is a warning, not a failure.
     notes.extend(term.removeWorkspaceFiles(key, issueWorktreePath(resolved, checkout, key), workspaceDir))

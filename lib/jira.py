@@ -11,20 +11,26 @@ from urllib.parse import quote, urlparse
 import urllib.error
 import urllib.request
 
+from .issue import DONE, IN_PROGRESS, NEW, Blocker, Comment, Issue, projectOf
+
 # The machine config names the site and the projects; nothing here defaults to either.
 
-# A Jira key: a project code of two or more letters/digits starting with a letter, a dash, a
-# number. CIAM-123, not a bare number or a branch-release tag. This is the one pattern every
-# other key check in the repo (the scripts' KEY_RE-equivalents, pr.sh, ghbody.sh) must match (L2).
-KEY_RE = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
+# Jira's status category keys, in the port's words. Every Jira workflow sorts its statuses into
+# these three, however many it has ("Blocked" and "QA Testing" are both indeterminate).
+CATEGORIES = {"new": NEW, "indeterminate": IN_PROGRESS, "done": DONE}
+
+# The status each port category a command moves an issue to names in Jira. Start's move is the only
+# one: the status named "In Progress".
+TARGET_STATUS = {IN_PROGRESS: "In Progress"}
 
 
-def projectOf(key):
-    return key.split("-")[0]
+# A Jira status's category, in the port's words. A category Jira adds later reads as NEW.
+def categoryOf(status):
+    return CATEGORIES.get(status["statusCategory"]["key"], NEW)
 
 
-# Next up's Jira half when the config sets no `jql`: the open issues assigned to me in the
-# configured projects, in Jira's rank order.
+# A project's set in Next up when its config entry sets no `jql`: the open issues assigned to me,
+# in Jira's rank order.
 def nextUpJql(projects):
     return (
         f"project in ({', '.join(projects)}) AND assignee = currentUser() "
@@ -32,8 +38,8 @@ def nextUpJql(projects):
     )
 
 
-# A minimal one-paragraph-per-line ADF doc, shared by Jira.textComment() and
-# lib/fileissues.py's FileIssues.textComment() so both backends build comments the same way.
+# A minimal one-paragraph-per-line ADF doc: a plain-text comment as Jira takes it. Markdown with
+# structure (lists, task items) goes through ~/.claude/skills/jira-markdown-adf/md_to_adf.py instead.
 def textComment(text):
     return {
         "type": "doc",
@@ -43,6 +49,37 @@ def textComment(text):
             for line in text.split("\n")
         ],
     }
+
+
+# A minimal ADF document -> plain text renderer, for an Issue's description and comments. Only the
+# node types md_to_adf.py and Jira's own editor actually produce: paragraphs, text (with a bold/
+# code mark folded in as-is), hard breaks, bullet/ordered lists, headings and link cards. Anything
+# else just recurses into its content, so an unrecognized node still shows its text rather than
+# vanishing silently.
+def adfText(node, indent=""):
+    if not node:
+        return ""
+    node_type = node.get("type")
+    if node_type == "text":
+        return node.get("text") or ""
+    if node_type == "hardBreak":
+        return "\n"
+    if node_type == "inlineCard":
+        return (node.get("attrs") or {}).get("url") or ""
+    children = "".join(adfText(child, indent) for child in node.get("content") or [])
+    if node_type == "paragraph":
+        return f"{indent}{children}\n"
+    if node_type == "heading":
+        return f"{indent}{children.upper()}\n"
+    if node_type == "listItem":
+        return f"{indent}- {children.strip()}\n"
+    return children
+
+
+def adfToText(doc):
+    if not doc:
+        return ""
+    return "".join(adfText(node) for node in doc.get("content") or []).strip()
 
 
 def _default_netrc_file():
@@ -117,11 +154,12 @@ class _Response:
 
 
 class Jira:
-    # settings: { baseUrl (required), jql, netrcFile }
+    # settings: { baseUrl (required), jql: { <project>: <JQL> }, netrcFile }. A project jql
+    # doesn't name runs nextUpJql().
     def __init__(self, settings):
         self.settings = {
             "baseUrl": re.sub(r"/+$", "", settings["baseUrl"]),
-            "jql": settings.get("jql"),
+            "jql": settings.get("jql") or {},
             "netrcFile": settings.get("netrcFile"),
         }
 
@@ -171,11 +209,16 @@ class Jira:
             raise RuntimeError(f"Jira {method} {path}: HTTP {status}{suffix}")
         return _Response(payload)
 
-    # The configured JQL's issues, in rank order, with what a row shows. /search/jql is the live
-    # endpoint; the older /search returns 410 Gone.
-    def list(self, jql=None):
-        if jql is None:
-            jql = self.settings["jql"]
+    # Next up's rows for one project: its query's issues, in its order.
+    def list(self, project):
+        return self.search(self.nextUpQuery(project))
+
+    def nextUpQuery(self, project):
+        return self.settings["jql"].get(project) or nextUpJql([project])
+
+    # A JQL query's issues, in its order, with what a row shows. /search/jql is the live endpoint;
+    # the older /search returns 410 Gone.
+    def search(self, jql):
         fields = ["summary", "status", "issuetype", "parent"]
         issues = []
         next_page_token = None
@@ -199,7 +242,7 @@ class Jira:
                     "id": issue["key"],
                     "subject": fields_["summary"],
                     "status": fields_["status"]["name"],
-                    "statusCategory": fields_["status"]["statusCategory"]["key"],
+                    "category": categoryOf(fields_["status"]),
                     "issueType": fields_["issuetype"]["name"],
                     "project": projectOf(issue["key"]),
                     "parent": parent["key"] if parent else None,
@@ -207,17 +250,34 @@ class Jira:
             )
         return result
 
-    # One issue in full: the first click on its row, what Start reads to check blockers, and what
-    # Done reads to check whether it already posted its merge note (comment included, so a rerun
-    # doesn't post the same note twice).
+    # One issue in full, in one GET: what plan view shows, what Start reads to check blockers, and
+    # what Done reads to check whether it already posted its merge note.
     def issue(self, key):
         fields = "summary,status,issuetype,parent,issuelinks,description,comment"
-        return self.get(f"/rest/api/3/issue/{quote(key, safe='')}?fields={fields}")
+        raw = self.get(f"/rest/api/3/issue/{quote(key, safe='')}?fields={fields}")
+        return self.issueFrom(raw)
 
-    # The transition id whose target status is named targetStatusName. Never hardcode a transition
+    def issueFrom(self, raw):
+        f = raw["fields"]
+        parent = f.get("parent")
+        return Issue(
+            key=raw["key"],
+            summary=f["summary"],
+            status=f["status"]["name"],
+            category=categoryOf(f["status"]),
+            issueType=f["issuetype"]["name"],
+            parent=parent["key"] if parent else None,
+            description=adfToText(f.get("description")),
+            comments=tuple(commentFrom(c) for c in commentsOf(f)),
+            blockers=tuple(blockerFrom(link["inwardIssue"]) for link in openBlockingLinks(f)),
+            page=self.browseUrl(raw["key"]),
+        )
+
+    # The transition id to category's target status (TARGET_STATUS). Never hardcode a transition
     # id: Jira assigns them per-project-per-workflow, and the same target status can sit behind a
     # different id, or a differently-worded transition, in another project.
-    def statusTransitionId(self, key, targetStatusName):
+    def statusTransitionId(self, key, category):
+        targetStatusName = targetStatus(key, category)
         data = self.get(f"/rest/api/3/issue/{quote(key, safe='')}/transitions")
         transitions = data["transitions"]
         found = next((t for t in transitions if t["to"]["name"] == targetStatusName), None)
@@ -226,26 +286,22 @@ class Jira:
             raise RuntimeError(f'{key} has no transition to "{targetStatusName}"; available: {names}')
         return found["id"]
 
-    # Transition key to targetStatusName, then read it back and refuse if it didn't take. Jira, like
+    # Transition key to category's target status, then read it back and refuse if it didn't take. Jira, like
     # Redmine (docs/failure-modes.md), can accept a transition POST and still not move the issue: a
     # workflow condition or validator can block it, or a required field prompt (not sent here) can
     # leave it half-applied. A 201/204 from the POST is never trusted on its own.
-    def transition(self, key, targetStatusName):
-        tid = self.statusTransitionId(key, targetStatusName)
+    def transition(self, key, category):
+        targetStatusName = targetStatus(key, category)
+        tid = self.statusTransitionId(key, category)
         self.send("POST", f"/rest/api/3/issue/{quote(key, safe='')}/transitions", {"transition": {"id": tid}})
         issue = self.issue(key)
-        if issue["fields"]["status"]["name"] != targetStatusName:
+        if issue.status != targetStatusName:
             raise RuntimeError(
-                f'Jira kept {key} {issue["fields"]["status"]["name"]}, not {targetStatusName}. It can refuse a '
+                f'Jira kept {key} {issue.status}, not {targetStatusName}. It can refuse a '
                 f"transition when a workflow condition or validator blocks it, or a required field it needs isn't "
                 f"set. Fix that, then try again"
             )
         return issue
-
-    # A minimal one-paragraph ADF comment body. Markdown with structure (lists, task items) goes
-    # through ~/.claude/skills/jira-markdown-adf/md_to_adf.py instead; this is for plain status notes.
-    def textComment(self, text):
-        return textComment(text)
 
     def browseUrl(self, key):
         return f'{self.settings["baseUrl"]}/browse/{key}'
@@ -255,21 +311,43 @@ class Jira:
     def closeNote(self, key):
         return f"Close {key} in Jira: {self.browseUrl(key)}"
 
-    def addComment(self, key, adfDoc):
-        self.send("POST", f"/rest/api/3/issue/{quote(key, safe='')}/comment", {"body": adfDoc})
+    # A plain-text comment, posted as ADF.
+    def addComment(self, key, text):
+        self.send("POST", f"/rest/api/3/issue/{quote(key, safe='')}/comment", {"body": textComment(text)})
 
-    # The unresolved issues blocking this one. Jira's issuelinks are directional: a link entry carries
-    # either outwardIssue (this issue <outward-phrase> that one) or inwardIssue (this issue
-    # <inward-phrase> that one). "Blocks"'s inward phrase is "is blocked by", so a link with
-    # inwardIssue present under that type names a blocker; a link with outwardIssue present names an
-    # issue this one blocks, which isn't a blocker on this issue at all. A blocker already Done
-    # doesn't count.
-    def blockers(self, issue):
-        links = issue["fields"].get("issuelinks") or []
-        result = []
-        for link in links:
-            if link["type"]["name"] == "Blocks" and link.get("inwardIssue"):
-                blocker = link["inwardIssue"]
-                if blocker["fields"]["status"]["statusCategory"]["key"] != "done":
-                    result.append(blocker)
-        return result
+
+def targetStatus(key, category):
+    if category not in TARGET_STATUS:
+        raise RuntimeError(f"{key} can't be moved to {category} by plan")
+    return TARGET_STATUS[category]
+
+
+def commentsOf(fields):
+    return (fields.get("comment") or {}).get("comments") or []
+
+
+def commentFrom(raw):
+    author = (raw.get("author") or {}).get("displayName") or "?"
+    return Comment(author=author, text=adfToText(raw.get("body")), date=(raw.get("created") or "")[:10] or None)
+
+
+# The links naming an unresolved issue that blocks this one. Jira's issuelinks are directional: a
+# link entry carries either outwardIssue (this issue <outward-phrase> that one) or inwardIssue (this
+# issue <inward-phrase> that one). "Blocks"'s inward phrase is "is blocked by", so a link with
+# inwardIssue present under that type names a blocker; a link with outwardIssue present names an
+# issue this one blocks, which isn't a blocker on this issue at all. A blocker already Done doesn't
+# count.
+def openBlockingLinks(fields):
+    return [link for link in fields.get("issuelinks") or [] if isOpenBlocker(link)]
+
+
+def isOpenBlocker(link):
+    blocker = link.get("inwardIssue")
+    if link["type"]["name"] != "Blocks" or not blocker:
+        return False
+    return categoryOf(blocker["fields"]["status"]) != DONE
+
+
+def blockerFrom(raw):
+    f = raw["fields"]
+    return Blocker(key=raw["key"], summary=f.get("summary") or "", status=f["status"]["name"])
