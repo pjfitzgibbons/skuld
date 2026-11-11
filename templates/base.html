@@ -19,11 +19,18 @@
     th { color: var(--muted); font-weight: 600; }
     .key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
     .muted { color: var(--muted); }
+    header nav { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0 0 12px; }
+    .notes { border-left: 3px solid var(--rule); padding: 4px 12px; margin: 0 0 16px; }
+    .report { white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .scroll { overflow-x: auto; }
   </style>
 </head>
 <body>
 <main>
-  <header><h1>{% block heading %}Skuld{% endblock %}</h1></header>
+  <header>
+    <h1>{% block heading %}Skuld{% endblock %}</h1>
+    {% block header_links %}{% endblock %}
+  </header>
   {% block content %}{% endblock %}
 </main>
 </body>

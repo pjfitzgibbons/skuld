@@ -16,7 +16,7 @@
 - [7. Operations](#operations)
   - [7.0 Which repo](#repo-resolution)
   - [7.1 Start](#start)
-  - [7.2 Ship](#ship)
+  - [7.2 Rounds](#rounds)
   - [7.3 Finish](#finish)
   - [7.4 Commits](#tool-commits)
   - [7.5 Archiving](#archiving)
@@ -33,9 +33,9 @@
 ## 1. Purpose
 
 Skuld plans and ships work from the terminal. It holds the library, the `plan` and `pr` commands,
-the helper scripts and the definitions they share. `plan` lists what's next, and starts, opens,
-ships and finishes an issue, each in its own VS Code window on its own native macOS Desktop. `pr`
-commits, pushes, opens or updates the pull request and answers its review.
+the helper scripts and the definitions they share. `plan` lists what's next, and starts, opens and
+finishes an issue, each in its own VS Code window on its own native macOS Desktop. `pr` commits,
+pushes, opens or updates the pull request and answers its review.
 
 Issues live in one of two trackers: the ticket store, a git repo of Markdown files that skuld
 defines and works, or Jira Cloud (`cryoport.atlassian.net`) for work projects. Pull requests are
@@ -57,7 +57,7 @@ GitHub's, and they are the one GitHub integration; GitHub Issues is not used.
 | Slot | Where an issue's window lives: a native macOS Desktop's number, recorded as `<slot>=<KEY>` in the slots file (§7.1) |
 | Issue window | The VS Code window Start opens for an issue on its slot, on a multi-root workspace of the issue's worktree and the ticket store. Claude and a shell run in its integrated terminals, and the issue's pages open in its integrated browser (§7.1) |
 | Start | Moving an issue to "in progress" from `plan start`, which makes its branch and worktree and logs "Started" on the issue (§7.1) |
-| Round | One pass of review: the commit message, PR body and review replies in `<store>/reviews/<KEY>/` that `pr` sends (§7.2) |
+| Round | One pass of change and review, numbered from 0, in `<store>/reviews/<KEY>/rounds/<n>/`. Round 0 is the author's change reviewed by `/code-review medium`; each later round answers a PR review. Its report lists the findings and what the human runs next, and `pr` sends it (§7.2) |
 | Finish | The squash merge of the issue's PR, then Done, which notes the merge on the issue and leaves closing it to the human (§7.3) |
 | Next up | The open issues in plan order: the store's issues by milestone and ordinal, merged with the Jira project's JQL results (§7.6) |
 | Blocker | An open issue the issue depends on: a key in the ticket's `blocked_by`, or a Jira "Blocks" link read inward (§4.2) |
@@ -163,7 +163,7 @@ lists, `Jira` for any other. `placerFrom(cfg)` returns the `WindowPlacer`, a `Sp
 The clients:
 
 - **`plan`** (`bin/plan`, `lib/cli.py`) shows Next up in an fzf picker, and runs `new`, `set`,
-  `view`, Start, Open, Ship and Done ([GUIDE.md §3](../GUIDE.md#3-commands)).
+  `view`, Start, Open and Done ([GUIDE.md §3](../GUIDE.md#3-commands)).
 - **`pr`** commits, pushes, opens or updates the PR, posts review replies, and cleans up after a
   merge.
 - **`issue-check`** runs the checker over the store or the files named (§7.7).
@@ -220,17 +220,26 @@ through its adapter.
    ────────────────────       ───────────────────────────────          ─────────────────────────
    (1) START ───────────────▶ branch <type>/<KEY>-slug, off base ────▶ in progress, "Started" logged
                               issue window, Claude in its terminal      (a store ticket opens in a tab)
-                              Claude works · writes <store>/reviews/<KEY>/
-   (2) SHIP ────────────────▶ pr <KEY>: commit, push, open/update PR ─▶ Done boxes ticked
-                              review rounds: replies/                    (Jira: dev panel, native)
-   (3) squash merge on GitHub; the PR title and branch carry <KEY>
-   (4) DONE ────────────────▶ worktree and branch removed, base up ───▶ merge noted;
-                                                                         the human closes <KEY>
+   (2) ROUND 0 ─────────────▶ Claude implements, runs /code-review medium and fixes what it finds
+                              writes round 0: report, review, commit.txt, pr-body.md
+                              adds after-merge steps to the ticket ───▶ ## After merge
+                              opens <KEY>/report/0 in the issue window, and stops
+       the human reads it and runs pr <KEY>: commit, push, open PR, ask Copilot ─▶ Done boxes ticked
+   (3) ROUND n ─────────────▶ Copilot reviews; Claude answers each thread and fixes
+                              writes round n: replies/, report, review, commit.txt
+                              opens <KEY>/report/n, and stops
+       the human reads it and runs pr <KEY>: commit, push, reply, resolve threads
+       ... until a round's report has no open findings
+   (4) squash merge on GitHub, at any round; the PR title and branch carry <KEY>
+   (5) the human runs the report's after-merge steps against the updated base
+   (6) DONE ────────────────▶ worktree and branch removed, base up ───▶ merge noted; a store ticket
+                                                                         set to status: done;
+                                                                         the human closes a Jira <KEY>
 ```
 
 The default branch carries the code, and everything reaches it by PR. An issue's status lives in its
-tracker, and the only status change this tool makes is Start's move to "in progress". **Done never
-changes an issue's status** (§7.3).
+tracker. This tool changes it twice: Start moves an issue to "in progress", and Done sets a store
+ticket to `done`. **Done never changes a Jira issue's status** (§7.3).
 
 <a id="repo-resolution"></a>
 
@@ -240,7 +249,7 @@ Several repos can serve one project (`CIAM` spans `cryo-gitops-github` and
 `Cryoport-Authentication-Service`), so no command looks up "the" repo for a project.
 `mainCheckout()` resolves it on every call:
 
-1. **A key decides.** When the command has a key (Open, Start, Ship, Done, `view`), its prefix gives
+1. **A key decides.** When the command has a key (Open, Start, Done, `view`), its prefix gives
    the project, and the project's repos that appear in `checkouts` are the candidates. A checkout
    matches a repo by its `origin` remote, normalized (ssh or https, with or without `.git`). The
    current folder may belong to another project: `plan open CIAM-9` works from inside skuld.
@@ -297,7 +306,7 @@ never registers, so `claude agents --json` wouldn't list it.
 session from `claude agents --json` by its cwd: a cwd in `<repo>.worktrees/<KEY>` gives the key,
 and the slots file gives the key's Desktop. A session it can't place shows on `-` and pulses
 nothing. A Desktop pulses orange while one of its Claudes waits on a person (a question, a
-permission), green while one is idle with `.tmp/<KEY>/report.html` newer than the branch's last
+permission), green while one is idle with its latest round's report newer than the branch's last
 commit, and is cleared (`off`) otherwise, or when its issue leaves the slots file. Orange outranks
 green. A tick sends a pulse only when a Desktop's colour changes, and reads no store or Jira; a
 failed pulse makes the next tick send every Desktop's colour again, so a restarted SlotBar gets them
@@ -379,29 +388,49 @@ front, so the command finishes with the human at the issue's Claude, by running
 `code <workspace file>`. This runs after `showUrl()`. It is best-effort: if it fails, Start or Open
 still succeeds and says nothing.
 
-<a id="ship"></a>
+<a id="rounds"></a>
 
-### 7.2 Ship
+### 7.2 Rounds
 
-A round is written into `<store>/reviews/<KEY>/`: `commit.txt` when the tree has changes,
-`pr-body.md`, and a reply to each review thread in `replies/<comment id>.md`. For a Jira issue it
-also holds `issue.md`, the issue's description with Done boxes ticked; a store issue's Done boxes
-are ticked in the ticket's own `## Done` section.
+An issue's work is a series of rounds, numbered from 0, each in its own folder,
+`<store>/reviews/<KEY>/rounds/<n>/`. The highest `n` is the latest round. Every round ends the same
+way: Claude writes the round's files, opens its report in the issue window with
+`plan browse <KEY>/report`, and stops. The human reads the report and runs `pr <KEY>` in the issue
+window's terminal.
 
-Ship runs `ship.check()` and refuses by name a missing PR body, a missing commit message while the
-tree has changes, or a branch that isn't the issue's. On success it runs `pr <KEY>` visibly in an
-integrated terminal of the issue window. `pr` commits with `commit.txt`, pushes, and opens the PR or
-replaces its body. It then posts each reply to its thread and resolves the thread. For a Jira issue
-it applies the box changes in `issue.md` to the description, and refuses any other difference, so an
-edit made in Jira since is kept. Each file is deleted once sent, so a second `pr` sends nothing
-twice; the store's history keeps what was sent.
+Round 0 is the author's change. Claude implements the issue, runs `/code-review medium` on the
+diff, and fixes what it accepts. Its report lists those findings, each with its disposition. Each
+later round answers a review of the PR: Copilot's threads get a reply in `replies/<comment id>.md`
+and a fix where one is needed, and the report lists those findings.
+
+A round holds:
+
+- `report.md`, the round's report as text, and `review.json`, its `findings` and `dispositions`.
+  The local server renders both as pages (§7.6.1).
+- `commit.txt` when the tree has changes, and `pr-body.md`.
+- `replies/<comment id>.md`, one reply per review thread.
+- For a Jira issue, `issue.md`: the issue's description with Done boxes ticked. A store issue's Done
+  boxes are ticked in the ticket's own `## Done` section.
+
+Every report lists the commands to run. Under "This round" is `pr <KEY>`, which the server writes
+from the key. Under "After the merge" are the steps in the ticket's `## After merge` section, shown
+as the ticket gives them: commands to run against the updated default branch, and any other
+follow-up. Claude adds a step there when the work creates one. A ticket without the section has
+nothing to do after the merge.
+
+`pr` refuses by name a branch that isn't the issue's, a missing PR body, and a missing commit
+message while the tree has changes. Then it commits with `commit.txt`, pushes, and opens the PR or
+replaces its body. It posts each reply to its thread and resolves the thread. For a Jira issue it
+applies the box changes in `issue.md` to the description, and refuses any other difference, so an
+edit made in Jira since is kept. Each sent file is deleted, so a second `pr` sends nothing twice;
+the store's history keeps what was sent.
 
 `pr` writes no tracker field to link the PR. Jira's GitHub integration reads the key in the branch
 name and PR title. `done.py` finds the PR the same way, with `gh pr view <branch>` or
 `gh pr list --head <branch>`.
 
-Ship again is the next round. With nothing left to send, `pr` sends nothing, so Ship is safe to run
-again (§8).
+A round whose report has no open findings is ready to merge, but the human may merge the PR at any
+round. With nothing left to send, `pr` sends nothing, so it is safe to run again (§8).
 
 <a id="finish"></a>
 
@@ -413,12 +442,17 @@ Done shows once a PR for the issue's branch is found and merged. It removes the 
 its workspace file, brings the main checkout's base up to the merge, deletes the branch, and notes
 the PR and its merge commit on the issue: an ADF comment in Jira, a `## Log` line in a ticket.
 
-**Done never changes an issue's status.** `lib/done.py` contains no call to a transition. The
-human's Claude Code `PreToolUse` hook also blocks any Bash command recognized as moving a Jira issue
-to a terminal status (Done, Closed, Cancelled, Resolved), so a hand-run command can't do it from
-inside a Claude session either. Done's last step prints the close note (`closeNote(key)`): for Jira,
-`Close CIAM-123 in Jira` with the browse URL; for a ticket, the file to set `status: done` in. Done
-never calls `showUrl()`; the printed line is what points the human at the issue.
+**Done closes a store ticket.** After the merge line, it sets the ticket's `status: done` and
+`closed:` to the day, and regenerates `INDEX.md` with `scripts/index.py`; the watcher commits both
+(§7.7). A ticket already `done` with `closed:` set is left as it is.
+
+**Done never changes a Jira issue's status.** A Jira close can carry required fields or workflow
+conditions only a person can satisfy, so `lib/done.py` makes no Jira transition. The human's Claude
+Code `PreToolUse` hook also blocks any Bash command recognized as moving a Jira issue to a terminal
+status (Done, Closed, Cancelled, Resolved), so a hand-run command can't do it from inside a Claude
+session either. For a Jira issue, Done's last step prints the close note (`closeNote(key)`),
+`Close CIAM-123 in Jira` with the browse URL. Done never calls `showUrl()`; the printed line is what
+points the human at the issue.
 
 Done accepts an issue that is in progress or already closed, reasoning from Jira's
 `statusCategory` or the ticket's `status`, since Jira's Done-category status names vary by issue
@@ -466,7 +500,7 @@ with `after: <JIRA-KEY>` sorts directly after that Jira issue.
 
 ### 7.6.1 Opening a page
 
-`plan browse <KEY | pr#N | url> [KEY]`, Start and Open open a page through `showUrl()` in `lib/term.py`.
+`plan browse <KEY | KEY/report | pr#N | url> [KEY]`, Start and Open open a page through `showUrl()` in `lib/term.py`.
 It always prints the URL first, then opens the page in the integrated browser of the issue window (§2).
 A localhost or loopback link clicked in one of that window's terminals opens there too, through the
 `workbench.browser.openLocalhostLinks` setting Start writes into the workspace file. Nothing else opens a page. System
@@ -540,8 +574,8 @@ every write, so `plan` can't produce a file the watcher would refuse.
 `templates/issue.md`, writes the ticket, checks it and opens it in `$EDITOR`. `plan set <KEY>
 field=value…` changes front-matter fields, all or nothing, checked first. Nobody writes front matter
 by hand. A transition edits the one `status` line and reads the file back (§7.1); a log entry
-appends a dated line under `## Log`. `FileStore` answers in the same shapes `Jira` does, so Start,
-Ship and Done have no store-specific branch.
+appends a dated line under `## Log`. `FileStore` answers in the same shapes `Jira` does, so Start
+and Done have no store-specific branch.
 
 **The watcher.** `issue-watch` runs under launchd and watches `active/`, `archive/`, `milestones/`
 and `reviews/`. After a quiet period (`debounceSeconds` in `store.yml`), so a mass edit lands as one
@@ -594,8 +628,8 @@ they share:
 1. Issues live in a tracker, never in a development repo: the ticket store or Jira Cloud. Nothing
    tracker-related is committed in the repos the trackers plan.
 2. The default branch carries the code, and every change reaches it through a pull request. An
-   issue's status lives in its tracker: Start's one move sets it in progress, and **nothing else in
-   this tool changes an issue's status**; Done is structurally incapable of it (§7.3, §7.4).
+   issue's status lives in its tracker. Start sets it in progress, and Done sets a store ticket to
+   `done`; **nothing in this tool moves a Jira issue to a terminal status** (§7.3, §7.4).
 3. Every outside system is reached through its port's adapter, and every call to Jira through
    `lib/jira.py` (§6.2).
 4. Every ticket file passes the checker. `FileStore` checks before it writes, and the watcher

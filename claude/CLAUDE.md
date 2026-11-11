@@ -87,7 +87,7 @@ settings: what this repo needs is here or in `.claude/`.
   substring match by design: if it blocks a genuinely read-only command, don't work around it —
   report it and ask.
 - **The page-open hook** (`.claude/hooks/no_bare_open.py`) blocks `open` on a URL or an `.html`
-  file. Open a page with `plan browse <KEY | pr#N | url> [KEY]`, or print the URL for Peter.
+  file. Open a page with `plan browse <KEY | KEY/report | pr#N | url> [KEY]`, or print the URL for Peter.
 - **`gh pr create --fill`** copies the commit's `Assisted-by:` trailer into the PR body. Use `gh pc`.
 - **zsh globs `[]`:** quote it, `-f 'labels[]=bug'`.
 - **~/.netrc holds the Jira token.** Never `cat`, `Read` or print it; `Read(./**/.netrc)` is denied

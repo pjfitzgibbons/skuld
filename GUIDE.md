@@ -4,7 +4,7 @@ This guide covers how to set skuld up, run each command, and what each command d
 The [architecture](docs/architecture.md) says what the system is and the rules it keeps; this guide
 links to it for the reasons and doesn't repeat them.
 
-Skuld plans and ships work from the terminal. `plan` lists what's next, and starts, opens, ships and
+Skuld plans and ships work from the terminal. `plan` lists what's next, and starts, opens and
 finishes an issue, each in its own VS Code window on its own macOS Desktop. `pr` commits, pushes,
 opens or updates the pull request and answers its review. Issues live in the ticket store, a git
 repo of Markdown files, or in Jira Cloud (`cryoport.atlassian.net`).
@@ -15,7 +15,7 @@ repo of Markdown files, or in Jira Cloud (`cryoport.atlassian.net`).
 2. [Setting up](#2-setting-up)
 3. [Commands](#3-commands)
 4. [Start and Open](#4-start-and-open)
-5. [Ship and the review round](#5-ship-and-the-review-round)
+5. [Rounds](#5-rounds)
 6. [Done](#6-done)
 7. [Pages and the browser](#7-pages-and-the-browser)
 8. [The helpers](#8-the-helpers)
@@ -32,24 +32,30 @@ repo of Markdown files, or in Jira Cloud (`cryoport.atlassian.net`).
    ────────────────────       ───────────────────────────────          ─────────────────────────
    (1) START ───────────────▶ branch <type>/<KEY>-slug, off base ────▶ in progress, "Started" logged
                               issue window, Claude in its terminal      (a store ticket opens in a tab)
-                              Claude works · writes <store>/reviews/<KEY>/
-   (2) SHIP ────────────────▶ pr <KEY>: commit, push, open/update PR ─▶ Done boxes ticked
-                              review rounds: replies/                    (Jira: dev panel, native)
-   (3) squash merge on GitHub; the PR title and branch carry <KEY>
+   (2) ROUND n, from 0 ─────▶ Claude works and writes .tmp/<KEY>/: commit.txt, pr-body.md,
+                              replies/, rounds/<n>/report.md and review.json
+                              plan browse <KEY>/report shows the round's report
+       the human reads it and runs pr <KEY>: commit, push, open or ────▶ Done boxes ticked
+       update the PR, reply and resolve threads                          (Jira: dev panel, native)
+       ... one more round for each PR review
+   (3) squash merge on GitHub, at any round; the PR title and branch carry <KEY>
    (4) DONE ────────────────▶ worktree and branch removed, base up ───▶ merge noted;
                                                                          the human closes <KEY>
 ```
 
 **Claude stages the process; the human verifies and executes it.** Claude never commits, pushes,
 runs a `gh` write or writes to Jira. It writes the commit message, the PR body, review replies and
-the ticked checklist into `<store>/reviews/<KEY>/`. The human reads them and runs **Ship**, and
-`pr` sends them. Every outward write happens on a step the human runs.
+the ticked checklist into `.tmp/<KEY>/` in the issue's worktree. The human reads them and runs
+`pr <KEY>` in the issue window's terminal, or `plan ship`, which checks them first (§5), and `pr`
+sends them. Every outward write happens on a step the human runs.
+[Architecture §7](docs/architecture.md#operations) gives the target process: round 0 reviewed with
+`/code-review medium`, a report that lists the commands to run, and Done closing a store ticket.
 
-A run touches up to three places: skuld holds the code, the ticket store holds tickets and review
-files, and the configured repo holds the code being changed
-([architecture §3](docs/architecture.md#storage)). The default branch carries the code, and
-everything reaches it by PR. The only status change `plan` makes is Start's move to "in progress";
-**Done never changes an issue's status**, and the human closes the issue.
+A run touches up to three places: skuld holds the code, the ticket store holds tickets, and the
+configured repo holds the code being changed ([architecture §3](docs/architecture.md#storage)). The
+default branch carries the code, and everything reaches it by PR. The only status change `plan`
+makes is Start's move to "in progress"; **Done never changes an issue's status**, and the human
+closes the issue.
 
 ## 2. Setting up
 
@@ -114,7 +120,7 @@ macOS only. In order:
    | --- | --- | --- |
    | `jql` | `project in (<the jira entry's projects>) AND assignee = currentUser() AND statusCategory != Done ORDER BY Rank` | The Jira half of Next up |
    | `typeMap` | Story and Task `feat`, Bug `fix` | Issue type to branch prefix, merged over the default |
-   | `pr` | `~/.local/bin/pr` | The `pr` that Ship runs, by path |
+   | `pr` | `~/.local/bin/pr` | The `pr` that `plan ship` runs, by path |
    | `disposable` | `done.py`'s list | Ignored files Done may delete with a worktree |
    | `slotsFile` | `~/.cache/plan/workspaces` | The `<slot>=<KEY>` lines that place issues on Desktops |
    | `windowsFile` | `~/.cache/plan/windows` | The `<KEY>=<window id>` lines that say which window is each issue's |
@@ -244,7 +250,7 @@ pane: fields, open blockers, what it blocks, and its body or description.
 | Key | Does |
 | --- | --- |
 | `enter` | Start a new issue, or Open one in progress |
-| `ctrl-s` | Ship |
+| `ctrl-s` | `plan ship` |
 | `ctrl-d` | Done |
 | `ctrl-r` | Reload the list |
 
@@ -259,9 +265,9 @@ decides the repo (§4).
 | `plan set <KEY> field=value…` | Change a ticket's front matter, all or nothing, checked first; `blocked_by+=SK-0004` and `blocked_by-=SK-0004` add and remove one blocker |
 | `plan milestone new\|set\|list` | Manage milestones, through the checker |
 | `plan start <KEY>`, `plan open <KEY>` | Start or Open (§4); one command, one code path |
-| `plan ship [KEY]` | Ship (§5); the key defaults to the current worktree's branch |
+| `plan ship [KEY]` | Checks the round, then runs `pr` in tmux (§5); the key defaults to the current worktree's branch |
 | `plan done [KEY]` | Done (§6) |
-| `plan browse <KEY \| pr#N \| url> [KEY]` | Open a page in the issue window's browser (§7) |
+| `plan browse <KEY \| KEY n \| KEY/report[/n] \| KEY/review[/n] \| pr#N \| url> [KEY] [--port N]` | Open a page in the issue window's browser (§7) |
 | `plan serve start\|stop\|restart\|status` | Control the local server's LaunchAgent (§7); `status` prints the server's URL, whether it answers, and its pid |
 | `plan pulse <KEY> orange\|green\|off` | Pulse the issue's Desktop in SlotBar, or clear its tint (§2, step 13); exits non-zero when SlotBar isn't running |
 | `plan agents [list]` | Every Claude session, most urgent first: its state, Desktop (`-` when it can't be placed), key, issue title and name |
@@ -341,12 +347,11 @@ the window has moved off its slot (`D3, window on D4`).
 Open on an issue whose window or slot is gone recreates what's missing
 ([failure-modes.md, *Open*](docs/failure-modes.md)).
 
-## 5. Ship and the review round
+## 5. Rounds
 
 ### The round's files
 
-A round lives in `<store>/reviews/<KEY>/`, beside the issue's other rounds, and the watcher commits
-it like any other store change.
+A round's files live in `.tmp/<KEY>/` in the issue's worktree, which git ignores.
 
 | File | Written by | Sent by | Then |
 | --- | --- | --- | --- |
@@ -354,10 +359,20 @@ it like any other store change.
 | `pr-body.md` | Claude, from `references/pr-body.md` | `gh pc` for a new PR, `gh pb` to update | kept; every `pr` replaces the body |
 | `replies/<comment id>.md` | `pr_threads.py --drafts` writes the context, Claude the reply | `pr_threads.py --post`: reply, then resolve the thread | deleted once the thread resolves |
 | `issue.md` (Jira only) | Claude: the description as Jira holds it, with Done boxes ticked | `checklist.py`, only when box state is the one difference | deleted; any other difference is refused and the file kept |
-| `*.unsent` | Ship, from a file edited while `pr` ran | nobody | Done refuses until they're dealt with |
+| `*.unsent` | `plan ship`, from a file edited while `pr` ran | nobody | Done refuses until they're dealt with |
+| `rounds/<n>/report.md` | Claude: round `n`'s report, as text | nobody; the server shows it (§7) | kept, one folder per round |
+| `rounds/<n>/review.json` | Claude: round `n`'s `findings` and `dispositions` | nobody; the server shows it (§7) | kept, one folder per round |
 
 A store ticket's Done boxes are ticked in the ticket's own `## Done` section, so it has no
-`issue.md`. The store's git history keeps every file `pr` sent and deleted.
+`issue.md`.
+
+Each round's report and review are data in a numbered folder, `rounds/<n>/`, counted from 0, and
+the highest `n` is the latest round. Round 0 is the change before the PR opens; each later round
+answers a review of the PR. `plan browse <KEY>/report` opens the latest round's report, and
+`plan browse <KEY> <n>` round `n`'s. The human may merge at any round. `review.json` holds two lists of objects: `findings`, each with `file`, `line`,
+`summary` and `disposition`, and `dispositions`, each with `path`, `blob`, `passes` and `verdict`
+(see *Review: co-signing and dispositions*, below). Claude writes the data and never HTML; the local
+server renders the pages from it on each request (§7).
 
 Rules the files follow:
 
@@ -375,19 +390,20 @@ Rules the files follow:
 - **A reply file opens with an HTML comment** holding the thread's path, line, comment and diff
   hunk, so the reply is read against what it answers. `--post` strips it.
 
-### Ship
+### `plan ship`
 
-Ship runs `ship.check()`, which refuses by name: a branch that isn't the issue's, a missing
-`pr-body.md`, a tree with changes and no `commit.txt`, a reply file not named
+`plan ship` (`ctrl-s`) runs `ship.check()`, which refuses by name: a branch that isn't the issue's,
+a missing `pr-body.md`, a tree with changes and no `commit.txt`, a reply file not named
 `replies/<digits>.md`, an empty reply, or two replies to one thread. On success it runs `pr <KEY>`
-in an integrated terminal of the issue window, so its output shows as it runs.
+in a tmux window named `ship`, in the issue's tmux session (made when there is none); attach to the
+session to watch it. It opens no page, and running `pr <KEY>` yourself does the same send.
 
 - **Non-zero exit:** the terminal shows why, and nothing else happens.
 - **Zero exit:** any round file edited while `pr` ran, which `pr` has since sent and deleted, is
   saved beside it as `<file>.unsent` (`.unsent2` and so on, never over a file).
 
 `pr` writes no tracker field to link the PR; the key in the branch name and PR title does that.
-Ship again is the next round, and with nothing left to send, `pr` sends nothing.
+With nothing left to send, `pr` sends nothing, so it is safe to run again.
 
 ### `pr [done] [--no-copilot] [KEY]`
 
@@ -431,7 +447,7 @@ running `--post` is what resolves it.
 
 When an aspect of the change, or its breadth, can't be reviewed fully by reading (every call site
 of a rename, every row of a generated file), the reviewer writes a Python check script so that
-coverage is mechanical instead of eyeballed. The script goes in `<store>/reviews/<KEY>/` with the
+coverage is mechanical instead of eyeballed. The script goes in `.tmp/<KEY>/` with the
 round, unless it's worth keeping for later rounds; then it's committed with the PR, under
 `skills/jira-issues/scripts/`. Either way, its output is part of the disposition.
 
@@ -486,7 +502,9 @@ reach it through DNS rebinding.
 
 Without the venv, `start` refuses, naming `uv` when uv isn't installed and `uv sync` when it is. A
 port another process holds is refused, naming the port and the process, by `start` and by the
-server itself. launchd starts a server that stops again after 10 seconds, its throttle interval.
+server itself. launchd starts a server that stops again after 10 seconds, its throttle interval. The agent's
+PATH leads with the directory of the `gh` that `start` found, which the round pages ask for each
+issue's pull request; `plan serve stop`, then `start`, rewrites it.
 The server logs each request and each error to `~/Library/Logs/skuld-serve.log`; a `start` whose
 server never answers says to look there.
 
@@ -496,22 +514,22 @@ The server's routes only read:
 | --- | --- |
 | `/health` | `{"app": "skuld", "status": "ok"}`, which `plan serve status` asks for |
 | `/` | Every issue in progress, with links to its pages |
-| `/issues/<KEY>` | A store ticket, rendered from its Markdown |
 | `/issues/<KEY>/report`, `/issues/<KEY>/review` | A redirect to the latest round's page |
-| `/issues/<KEY>/rounds/<n>/report` | Round `n`'s report, from the round data and `git diff` |
-| `/issues/<KEY>/rounds/<n>/review` | Round `n`'s findings and dispositions |
-| `/issues/<KEY>/files/<name>` | A file from `<store>/reviews/<KEY>/` |
-| `/milestones` | Milestone progress |
+| `/issues/<KEY>/rounds/<n>/report` | Round `n`'s report, from `rounds/<n>/report.md` (§5) |
+| `/issues/<KEY>/rounds/<n>/review` | Round `n`'s findings and dispositions, from `rounds/<n>/review.json` (§5) |
 
 Pages are Jinja templates rendered from the issue's data; Claude writes round data, never HTML.
 A page's URL path keys name it, and the server renders it on each request, so a page exists as soon
 as its data does and no command publishes it. A URL whose target doesn't exist redirects to the
 nearest page that does: a missing round to the latest round, and an issue with no rounds to the
-issue's page. The redirects are 302s, since the browser caches a 301 and the latest round changes.
-An unknown key gets a 404 page that says what was asked for and what exists, and links `/`.
+issue's page: its Jira browse URL, or `/issues/<KEY>` for a store ticket, which isn't served yet and
+gets the 404 page. The redirects are 302s, since the browser caches a 301 and the latest round changes.
+An unknown key gets a 404 page that says what was asked for and what exists, and links `/`. A key
+or round that doesn't match its pattern gets the same page, before either builds a path. A round
+file that is missing or malformed shows as a note on the page, naming the file.
 Every page's header links the issue (its Jira browse URL, or `/issues/<KEY>` for a store ticket)
-and its pull request; before a PR exists, the header says so. Pages show commands to copy and have
-no buttons that act. A page is always opened at its server URL, never as a `file://` path.
+and its pull request; before a PR exists, the header says so. Pages have no buttons
+that act. A page is always opened at its server URL, never as a `file://` path.
 
 ### `plan browse`
 
@@ -519,6 +537,19 @@ no buttons that act. A page is always opened at its server URL, never as a `file
 from the current folder) or an http(s) URL. A store ticket's key is refused, naming its file, until
 the local server serves its page. `[KEY]` names the issue whose window the page belongs in when the
 target doesn't.
+
+It also opens an issue's round pages on the local server, in that issue's window:
+
+| Target | Opens |
+|---|---|
+| `KEY/report` | the latest round's report, `/issues/<KEY>/report` |
+| `KEY/review` | the latest round's review, `/issues/<KEY>/review` |
+| `KEY/report/n`, `KEY n` | round `n`'s report, `/issues/<KEY>/rounds/<n>/report` |
+| `KEY/review/n` | round `n`'s review, `/issues/<KEY>/rounds/<n>/review` |
+
+The server's port is `serverPort` from the config; `--port N` opens the page on another port, such
+as a branch's server run by hand. `--port` with any other target is refused. A word after the
+target that is a round number is the round; any other is the window's key.
 
 `plan browse` prints the URL, then picks the issue window: the target's key, else `[KEY]`, else the
 calling terminal's `PLAN_KEY`, else whichever VS Code window has focus
@@ -581,7 +612,7 @@ All are stdlib Python or shell, in `skills/jira-issues/scripts/`.
 
 The skill tells Claude to read the issue before writing about it, never from memory; to check the
 body with `outline.py` before coding; and when the work is done, to write the round's files and
-stop, so the human verifies them and runs Ship. For a review, it runs `pr_threads.py --drafts`,
+stop, so the human verifies them and runs Ship (`plan ship`). For a review, it runs `pr_threads.py --drafts`,
 fixes the code, and writes each reply under its context.
 
 The settings set `attribution.commit` to the `Assisted-by:` trailer, leave `attribution.pr` empty
@@ -684,10 +715,13 @@ lib/
   agents.py                plan agents: each Claude session's issue, Desktop and state, and the
                            pulses that show them in SlotBar
   waiting.py               the waiting markers bin/claude-waiting keeps, one per session
-  reviews.py               which slotted issues' PRs have a Copilot review on their head commit
+  reviews.py               which slotted issues' PRs have a Copilot review on their head commit,
+                           and an issue's PR URL
+  rounds.py                a round's report and review data, read from its folder
   claude_hooks.py          adds and removes bin/claude-waiting in ~/.claude/settings.json
   serve.py                 plan serve: the server's LaunchAgent through launchctl, and its status
-  server.py                the local server: Flask on 127.0.0.1, the one module that imports Flask
+  server.py                the local server: Flask on 127.0.0.1, the one module that imports Flask;
+                           its routes, the round pages' resolver and redirects
   test_*.py                the unit tests
   (the FileStore adapter, the checker and issue-watch also live in lib/)
 templates/issue.md         what plan new fills in

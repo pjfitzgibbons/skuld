@@ -42,13 +42,20 @@ def venvPython(root=ROOT):
     return os.path.join(root, ".venv", "bin", "python")
 
 
+# launchd's PATH lacks Homebrew, so the agent's PATH leads with the directory of the gh found here,
+# which the round pages ask for each issue's PR, as bin/install-agents does for its agent.
+def agentPath(which=None):
+    gh = (which or shutil.which)("gh")
+    return ":".join(([os.path.dirname(gh)] if gh else []) + ["/usr/bin", "/bin", "/usr/sbin", "/sbin"])
+
+
 # The agent runs the venv's python directly, not `uv run`, so it is one process.
-def agentPlist(root=ROOT):
+def agentPlist(root=ROOT, which=None):
     return {
         "Label": LABEL,
         "ProgramArguments": [venvPython(root), "-m", "lib.server"],
         "WorkingDirectory": root,
-        "EnvironmentVariables": {"PYTHONUNBUFFERED": "1"},
+        "EnvironmentVariables": {"PYTHONUNBUFFERED": "1", "PATH": agentPath(which)},
         "RunAtLoad": True,
         "KeepAlive": True,
         "ThrottleInterval": THROTTLE_SECONDS,

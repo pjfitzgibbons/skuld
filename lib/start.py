@@ -482,3 +482,21 @@ def startIn(jira, key, confirm, handOff, issue, checkout, common, typeMap):
         except FileNotFoundError:
             pass
     return result
+
+
+# key's worktree, found the way Start finds it, or None when it has none or can't be found. The
+# lookup needs only the key, so it asks neither Jira nor a person: a repo choice it can't make is
+# no worktree. `plan browse` and the local server's round pages both find a worktree this way.
+def issueWorktree(cfg, key):
+    typeMap = cfg.get("typeMap")
+    try:
+        checkout = mainCheckout({"key": key}, cfg.get("checkouts"), os.getcwd(), "Open", typeMap, refuseRepoPick)["checkout"]
+        porcelain = git(checkout, "worktree", "list", "--porcelain")
+        found = existingWorktree(porcelain, key, worktreeDir(checkout, key), "Open", typeMap)
+    except (RuntimeError, OSError):
+        return None
+    return found["dir"] if found and not found["main"] else None
+
+
+def refuseRepoPick(options):
+    raise RuntimeError(f"more than one repo could hold the work: {', '.join(options)}")

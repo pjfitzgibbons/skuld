@@ -1,0 +1,5 @@
+{% if round.notes %}
+<div class="notes">
+  {% for note in round.notes %}<p>{{ note }}</p>{% endfor %}
+</div>
+{% endif %}

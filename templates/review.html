@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}{{ key }} round {{ round.number }}: review{% endblock %}
+{% block heading %}{{ key }}, round {{ round.number }}: review{% endblock %}
+{% block header_links %}{% include "round_header.html" %}{% endblock %}
+{% block content %}
+{% include "round_notes.html" %}
+<h2>Findings</h2>
+{% if round.findings %}
+<div class="scroll">
+  <table>
+    <thead><tr><th>File</th><th>Line</th><th>Finding</th><th>Disposition</th></tr></thead>
+    <tbody>
+    {% for finding in round.findings %}
+      <tr><td class="key">{{ finding.file }}</td><td>{{ finding.line }}</td><td>{{ finding.summary }}</td><td>{{ finding.disposition|listed }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+  <p class="muted">No findings in this round.</p>
+{% endif %}
+<h2>Dispositions</h2>
+{% if round.dispositions %}
+<div class="scroll">
+  <table>
+    <thead><tr><th>File</th><th>Blob</th><th>Passes</th><th>Verdict</th></tr></thead>
+    <tbody>
+    {% for disposition in round.dispositions %}
+      <tr><td class="key">{{ disposition.path }}</td><td class="key">{{ ((disposition.blob or "")|string)[:12] }}</td><td>{{ disposition.passes|listed }}</td><td>{{ disposition.verdict|listed }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+  <p class="muted">No file has a disposition in this round.</p>
+{% endif %}
+{% endblock %}
