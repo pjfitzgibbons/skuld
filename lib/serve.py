@@ -221,7 +221,10 @@ class Serve:
         return self.statusAfterWaitingFor(up=False)
 
     def restart(self):
-        if not self.agent.loaded() or self.movesPort():
+        if not self.agent.loaded():
+            self.startPort = self.port  # an unloaded agent's plist still names the port to keep
+            return self.start()
+        if self.movesPort():
             return self.start()
         refuseMissingVenv(self.root)
         self.agent.restart()

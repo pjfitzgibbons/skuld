@@ -14,7 +14,7 @@ from unittest import mock
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from lib.issue import DONE, IN_PROGRESS, NEW, Blocker, Comment
-from lib.jira import Jira, readNetrc, textComment
+from lib.jira import Jira, adfToText, readNetrc, textComment
 
 
 class _FakeJiraServer:
@@ -291,6 +291,40 @@ def rawIssue(key, status, category="new"):
             "issuetype": {"name": "Story"},
         },
     }
+
+
+def adfDoc(*content):
+    return {"type": "doc", "version": 1, "content": list(content)}
+
+
+def linkedText(text, href):
+    return {"type": "text", "text": text, "marks": [{"type": "link", "attrs": {"href": href}}]}
+
+
+class AdfToTextTests(unittest.TestCase):
+    def test_headings_keep_their_level_as_markdown(self):
+        doc = adfDoc(
+            {"type": "heading", "attrs": {"level": 2}, "content": [{"type": "text", "text": "Outline"}]},
+            {"type": "heading", "attrs": {"level": 3}, "content": [{"type": "text", "text": "Sub"}]},
+        )
+        self.assertEqual(adfToText(doc), "## Outline\n### Sub")
+
+    def test_task_items_are_separate_lines_with_their_state(self):
+        item = lambda state, text: {
+            "type": "taskItem",
+            "attrs": {"state": state},
+            "content": [{"type": "text", "text": text}],
+        }
+        doc = adfDoc({"type": "taskList", "content": [item("DONE", "one"), item("TODO", "two")]})
+        self.assertEqual(adfToText(doc), "- [x] one\n- [ ] two")
+
+    def test_a_link_keeps_its_destination(self):
+        doc = adfDoc({"type": "paragraph", "content": [linkedText("abcdef1", "https://github.com/a/b/commit/abcdef1")]})
+        self.assertEqual(adfToText(doc), "[abcdef1](https://github.com/a/b/commit/abcdef1)")
+
+    def test_a_link_whose_text_is_its_destination_shows_it_once(self):
+        doc = adfDoc({"type": "paragraph", "content": [linkedText("https://x.test/", "https://x.test/")]})
+        self.assertEqual(adfToText(doc), "https://x.test/")
 
 
 class ReadNetrcTests(unittest.TestCase):

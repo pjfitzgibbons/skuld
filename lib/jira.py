@@ -51,17 +51,33 @@ def textComment(text):
     }
 
 
+# A text node's text, as `[text](href)` when it carries a link mark, so the destination isn't lost.
+# The text alone when it already is the href.
+def linkedText(node):
+    text = node.get("text") or ""
+    href = linkHref(node)
+    return f"[{text}]({href})" if href and href != text else text
+
+
+def linkHref(node):
+    for mark in node.get("marks") or []:
+        if mark.get("type") == "link":
+            return (mark.get("attrs") or {}).get("href")
+    return None
+
+
 # A minimal ADF document -> plain text renderer, for an Issue's description and comments. Only the
 # node types md_to_adf.py and Jira's own editor actually produce: paragraphs, text (with a bold/
-# code mark folded in as-is), hard breaks, bullet/ordered lists, headings and link cards. Anything
-# else just recurses into its content, so an unrecognized node still shows its text rather than
+# code mark folded in as-is, a link mark as Markdown), hard breaks, bullet/ordered lists, headings
+# (as Markdown `#` headings), task items (as `- [x]` / `- [ ]` lines) and link cards. Anything else
+# just recurses into its content, so an unrecognized node still shows its text rather than
 # vanishing silently.
 def adfText(node, indent=""):
     if not node:
         return ""
     node_type = node.get("type")
     if node_type == "text":
-        return node.get("text") or ""
+        return linkedText(node)
     if node_type == "hardBreak":
         return "\n"
     if node_type == "inlineCard":
@@ -70,7 +86,11 @@ def adfText(node, indent=""):
     if node_type == "paragraph":
         return f"{indent}{children}\n"
     if node_type == "heading":
-        return f"{indent}{children.upper()}\n"
+        level = (node.get("attrs") or {}).get("level") or 1
+        return f"{indent}{'#' * level} {children.strip()}\n"
+    if node_type == "taskItem":
+        done = (node.get("attrs") or {}).get("state") == "DONE"
+        return f"{indent}- [{'x' if done else ' '}] {children.strip()}\n"
     if node_type == "listItem":
         return f"{indent}- {children.strip()}\n"
     return children

@@ -144,6 +144,11 @@ class ServeTests(unittest.TestCase):
         self.serve().restart()
         self.assertEqual(self.agent.calls, ["install", "load"])
 
+    def test_restart_of_an_unloaded_agent_keeps_the_port_its_plist_names(self):
+        out = self.serve(agentPort=8799).restart()
+        self.assertEqual(self.agent.port(), 8799)
+        self.assertEqual(out, "http://127.0.0.1:8799/  up  pid 4242")
+
     def test_status_says_whether_it_answers(self):
         self.assertEqual(self.serve(loaded=True, up=True).status(), "http://127.0.0.1:8765/  up  pid 4242")
         self.assertEqual(self.serve().status(), "http://127.0.0.1:8765/  down")

@@ -21,7 +21,8 @@ from unittest import mock
 from lib import done as done_mod
 from lib import term
 from lib.issue import IN_PROGRESS, NEW, Comment, Issue
-from lib.done import DISPOSABLE, branchForKey, doneNote, finish
+from lib.done import DISPOSABLE, alreadyNoted, branchForKey, doneNote, finish
+from lib.jira import adfToText
 from lib.start import worktreeDir
 
 KEY = "CIAM-81"
@@ -195,6 +196,27 @@ class DoneNoteTests(unittest.TestCase):
             doneNote(pr),
             "Done: [widgets#1](https://github.com/acme/widgets/pull/1) merged as [abcdef1](https://github.com/acme/widgets/commit/abcdef1234567890).",
         )
+
+
+class AlreadyNotedTests(unittest.TestCase):
+    def test_a_note_that_links_the_commit_only_through_a_label_is_found(self):
+        pr = {"url": "https://github.com/acme/widgets/pull/1", "number": 1, "mergeCommit": {"oid": "abcdef1234567890"}}
+        href = "https://github.com/acme/widgets/commit/abcdef1234567890"
+        body = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "merged as "},
+                        {"type": "text", "text": "abcdef1", "marks": [{"type": "link", "attrs": {"href": href}}]},
+                    ],
+                }
+            ],
+        }
+        issue = inProgressIssue(comments=(Comment("plan", adfToText(body)),))
+        self.assertTrue(alreadyNoted(issue, pr))
 
 
 class FinishTests(unittest.TestCase):
