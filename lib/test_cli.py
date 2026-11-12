@@ -8,6 +8,7 @@
 # visible to cli.py immediately.
 #
 # Ported from lib/cli.test.js. Faithful, behavior-preserving port.
+import contextlib
 import io
 import json
 import os
@@ -216,6 +217,69 @@ class CmdBrowseTests(unittest.TestCase):
             self.browse()
 
 
+# `plan review KEY`: whether a request goes out. reviews.requestRound and term.openClaudeTab are
+# stubbed; what they run is their own tests'.
+class CmdReviewTests(unittest.TestCase):
+    def review(self, agentList, *args, request=".tmp/SK-0001/review/request.md"):
+        out = io.StringIO()
+        with mock.patch.object(cli.config_mod, "load", return_value=JIRA_ON), mock.patch.object(
+            cli.agents_mod, "currentAgents", return_value=agentList
+        ), mock.patch.object(cli.reviews_mod, "requestRound", return_value=request) as self.request, mock.patch.object(
+            term_mod, "openClaudeTab"
+        ) as self.open, contextlib.redirect_stdout(out):
+            main(["review", *args])
+        return out.getvalue()
+
+    def agent(self, key, state):
+        return cli.agents_mod.Agent(key, "3", state, "", "n", "/w", "/w")
+
+    def test_an_idle_claude_is_stopped_and_the_tab_opens_with_the_prompt(self):
+        said = self.review([self.agent("SK-0001", "idle")], "SK-0001")
+        self.assertEqual(self.request.call_args.args[1:], ("SK-0001", "stopped"))
+        self.assertEqual(self.open.call_args.args[0], reviews_prompt("SK-0001", ".tmp/SK-0001/review/request.md"))
+        self.assertIn("press Enter to start", said)
+
+    def test_no_claude_is_stopped_too_and_still_opens_the_tab(self):
+        self.review([], "SK-0001")
+        self.assertEqual(self.request.call_args.args[1:], ("SK-0001", "stopped"))
+        self.open.assert_called_once()
+
+    def test_a_busy_claude_of_the_issue_is_working(self):
+        self.review([self.agent("SK-0001", "busy")], "SK-0001")
+        self.assertEqual(self.request.call_args.args[1:], ("SK-0001", "working"))
+
+    def test_a_round_the_script_refuses_opens_no_tab(self):
+        with mock.patch.object(cli.config_mod, "load", return_value=JIRA_ON), mock.patch.object(
+            cli.agents_mod, "currentAgents", return_value=[]
+        ), mock.patch.object(cli.reviews_mod, "requestRound", side_effect=RuntimeError("still running")), mock.patch.object(
+            term_mod, "openClaudeTab"
+        ) as opened:
+            with self.assertRaisesRegex(RuntimeError, "still running"):
+                main(["review", "SK-0001"])
+        opened.assert_not_called()
+
+    def test_nothing_to_review_opens_no_tab(self):
+        said = self.review([], "SK-0001", request="")
+        self.open.assert_not_called()
+        self.assertIn("nothing to review", said)
+
+    def test_from_a_subdirectory_the_request_is_for_the_worktree_root(self):
+        tmp = tempfile.mkdtemp(prefix="skuld-review-")
+        self.addCleanup(shutil.rmtree, tmp)
+        top = os.path.realpath(tmp)
+        subprocess.run(["git", "init", "-q", top], check=True)
+        os.makedirs(os.path.join(top, "lib", "deep"))
+        before = os.getcwd()
+        self.addCleanup(os.chdir, before)
+        os.chdir(os.path.join(top, "lib", "deep"))
+        self.review([], "SK-0001")
+        self.assertEqual(os.path.realpath(self.request.call_args.args[0]), top)
+
+
+def reviews_prompt(key, path):
+    return cli.reviews_mod.reviewPrompt(key, path)
+
+
 class IssueWorktreeTests(unittest.TestCase):
     PORCELAIN = "worktree /repo\nHEAD a\nbranch refs/heads/main\n\nworktree /repo.worktrees/CIAM-5\nHEAD b\nbranch refs/heads/feat/CIAM-5-x\n"
 
@@ -387,7 +451,7 @@ class CmdShipTests(unittest.TestCase):
         shipWindow.assert_called_once_with("CIAM-5", self.DIR, "/Users/t/.local/bin/pr")
 
     def test_plan_go_is_an_unknown_command_now(self):
-        with self.assertRaisesRegex(RuntimeError, r'unknown command "go"; try: list, view, start, open, browse, ship, done'):
+        with self.assertRaisesRegex(RuntimeError, r'unknown command "go"; try: list, view, start, open, browse, review, ship, done'):
             main(["go", "CIAM-5"])
 
 

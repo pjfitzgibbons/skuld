@@ -28,7 +28,7 @@ settings: what this repo needs is here or in `.claude/`.
   mitigated.
 - **Reviewing a PR:** how dispositions, re-review and verbatim-fix resolution work is GUIDE.md §5,
   "Review: co-signing and dispositions."
-- **Review:** GitHub Copilot reviews each PR. `pr` asks it again whenever a push adds commits.
+- **Review:** Claude reviews each PR in the issue window's own Claude. `pr` starts a round whenever a push adds commits (GUIDE.md §5, "Claude's review").
 - **Browser checks:** a test script in Chrome or Chromium, run with the suite. The
   `chrome-devtools` MCP server (Chrome, `--isolated`) is for investigating an issue, never for
   checking a change, and never drives an issue window's integrated browser.

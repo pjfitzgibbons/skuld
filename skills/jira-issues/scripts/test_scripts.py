@@ -5,8 +5,10 @@ Run: python3 -m unittest test_scripts -v
 """
 
 import copy
+import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -816,8 +818,8 @@ class PrDone(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("run plan done CIAM-9 to clean up", result.stdout)
 
-            # The flags come in any order before the key.
-            result = subprocess.run([str(SCRIPTS / "pr.sh"), "--no-copilot", "done", "CIAM-9"], cwd=root,
+            # The done flag comes before the key.
+            result = subprocess.run([str(SCRIPTS / "pr.sh"), "done", "CIAM-9"], cwd=root,
                                     env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("run plan done CIAM-9 to clean up", result.stdout)
@@ -1230,17 +1232,131 @@ class GhBody(unittest.TestCase):
             self.assertNotIn("gh pr create", result.stdout)
 
 
-    def test_pr_create_leaves_copilot_off_with_no_copilot(self):
+    def test_pr_create_asks_no_one_to_review(self):
         with tempfile.TemporaryDirectory() as d:
             outer = Path(d)
             root = new_pr_branch(outer)
-            for no_copilot, asked in (("", True), ("1", False)):
-                env = fake_gh_env(outer, GHBODY_DRY="1", GHBODY_NO_COPILOT=no_copilot)
-                result = subprocess.run([str(SCRIPTS / "ghbody.sh"), "pr-create"], cwd=root, env=env,
-                                        capture_output=True, text=True)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("gh pr create", result.stdout)
-                self.assertEqual("--add-reviewer @copilot" in result.stdout, asked)
+            env = fake_gh_env(outer, GHBODY_DRY="1")
+            result = subprocess.run([str(SCRIPTS / "ghbody.sh"), "pr-create"], cwd=root, env=env,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("gh pr create", result.stdout)
+            self.assertNotIn("--add-reviewer", result.stdout)
+
+
+# pr.sh's review step on an open PR: a fake gh that answers the PR's state, head and URL, a bare
+# origin to push to, and a fake plan that records `plan review KEY` and exits as FAKE_PLAN_EXIT says.
+class PrReview(unittest.TestCase):
+    FAKE_GH = (
+        "#!/usr/bin/env python3\nimport os, sys\n"
+        "a = sys.argv[1:]\n"
+        "if a[:2] == ['repo', 'view']: print('main')\n"
+        "elif a[:2] == ['pr', 'view']:\n"
+        "    print({'state': 'OPEN', 'headRefOid': open(os.environ['HEAD_OID_FILE']).read().strip(),\n"
+        "           'url': 'https://example.test/pull/7'}[a[4]])\n"
+        "elif a[:1] == ['pb']: sys.exit(1 if os.path.exists(os.environ['PB_FAILS']) else 0)\n"
+    )
+    FAKE_PLAN = (
+        "#!/bin/sh\necho \"$@\" >> \"$PLAN_CALLS\"\n"
+        "[ \"${FAKE_PLAN_EXIT:-0}\" = 0 ] || { echo 'no Claude is running for CIAM-9' >&2; exit 1; }\n"
+        "echo \"review requested of CIAM-9's Claude\"\n"
+    )
+
+    # where: "own" puts the fake plan at <repo>/bin/plan beside a copy of pr.sh, "path" on PATH, "none" nowhere;
+    # "both" puts a different fake on PATH too.
+    # reviewed: the review record already names HEAD. pb_fails_first: gh pb fails on the first run, and
+    # a second run follows; the result is the second's.
+    def run_pr(self, reviewed, plan_exit="0", where="own", with_replies=False, pb_fails_first=False):
+        with tempfile.TemporaryDirectory() as d:
+            outer = Path(d)
+            root = new_pr_branch(outer)
+            git = lambda *a: subprocess.run(["git", *a], cwd=root, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "init", "-q", "--bare", str(outer / "origin.git")], check=True)
+            git("remote", "add", "origin", str(outer / "origin.git"))
+            head = git("rev-parse", "HEAD").stdout.strip()
+            if reviewed:
+                folder = root / ".tmp" / "CIAM-9" / "rounds" / "1"
+                folder.mkdir(parents=True)
+                (folder / "review.json").write_text(json.dumps({"head": head, "base": "main", "round": 1, "dispositions": [], "findings": []}))
+            (root / ".git" / "info" / "exclude").write_text(".tmp/\n")
+            bindir = outer / "bin"
+            bindir.mkdir()
+            fakes = [(bindir, "gh", self.FAKE_GH)]
+            plan_home = outer / "skuld"
+            script_dir = plan_home / "skills" / "jira-issues" / "scripts"
+            script_dir.mkdir(parents=True)
+            for name in ("pr.sh", "pr_threads.py", "ghread.py", "checklist.py", "review.py"):
+                shutil.copy(SCRIPTS / name, script_dir / name)
+            (plan_home / "bin").mkdir()
+            if where in ("own", "both"):
+                fakes.append((plan_home / "bin", "plan", self.FAKE_PLAN))
+            if where == "path":
+                fakes.append((bindir, "plan", self.FAKE_PLAN))
+            if where == "both":
+                fakes.append((bindir, "plan", self.FAKE_PLAN.replace("echo \"$@\"", "echo \"PATH $@\"")))
+            for directory, name, text in fakes:
+                (directory / name).write_text(text)
+                (directory / name).chmod(0o755)
+            (outer / "HEAD_OID").write_text(head)
+            if with_replies:
+                # a replies folder with a file that isn't a comment id fails pr_threads.py --post
+                (root / ".tmp" / "CIAM-9" / "replies").mkdir()
+                (root / ".tmp" / "CIAM-9" / "replies" / "nope.md").write_text("Fixed\n")
+            calls = outer / "plan-calls"
+            env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "HEAD_OID_FILE": str(outer / "HEAD_OID"),
+                   "PLAN_CALLS": str(calls), "FAKE_PLAN_EXIT": plan_exit,
+                   "PB_FAILS": str(outer / "pb-fails")}
+            if pb_fails_first:
+                (outer / "pb-fails").write_text("")
+                self.first = subprocess.run([str(script_dir / "pr.sh")], cwd=root, env=env, capture_output=True, text=True)
+                self.calls_after_first = calls.read_text() if calls.exists() else ""
+                (outer / "pb-fails").unlink()
+            result = subprocess.run([str(script_dir / "pr.sh")], cwd=root, env=env, capture_output=True, text=True)
+            return result, calls.read_text() if calls.exists() else ""
+
+    def test_a_push_that_adds_commits_starts_the_review_after_printing_the_url(self):
+        result, calls = self.run_pr(reviewed=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, "review CIAM-9\n")
+        self.assertLess(result.stdout.index("https://example.test/pull/7"), result.stdout.index("review requested"))
+
+    def test_a_push_that_adds_nothing_starts_no_review(self):
+        result, calls = self.run_pr(reviewed=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("no new commits since the last review; no review", result.stdout)
+        self.assertEqual(calls, "")
+
+    def test_a_pr_that_failed_after_its_push_reviews_those_commits_on_its_next_run(self):
+        result, calls = self.run_pr(reviewed=False, pb_fails_first=True)
+        self.assertNotEqual(self.first.returncode, 0)
+        self.assertEqual(self.calls_after_first, "")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, "review CIAM-9\n")
+
+    def test_a_review_that_cannot_start_says_why_and_does_not_fail_pr(self):
+        result, calls = self.run_pr(reviewed=False, plan_exit="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("no review started: no Claude is running for CIAM-9", result.stderr)
+        self.assertIn("plan review CIAM-9", result.stderr)
+
+    def test_the_review_runs_the_plan_of_the_scripts_own_repo_not_the_one_on_path(self):
+        result, calls = self.run_pr(reviewed=False, where="both")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, "review CIAM-9\n")
+
+    def test_plan_on_path_is_used_when_the_repo_has_no_bin_plan(self):
+        result, calls = self.run_pr(reviewed=False, where="path")
+        self.assertEqual(calls, "review CIAM-9\n")
+
+    def test_a_failed_send_does_not_skip_the_review(self):
+        result, calls = self.run_pr(reviewed=False, with_replies=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, "review CIAM-9\n")
+
+    def test_pr_without_plan_on_the_path_says_how_to_start_the_review(self):
+        result, calls = self.run_pr(reviewed=False, where="none")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("plan review CIAM-9", result.stderr)
 
 
 # A repo on branch CIAM-9-x, one commit ahead of a local origin/main, with a drafted PR body.

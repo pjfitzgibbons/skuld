@@ -183,12 +183,21 @@ class ReviewColouringTests(unittest.TestCase):
         self.assertEqual(agents.slottedWorktrees(found), {"SK-0041": "/p/a.worktrees/SK-0041"})
 
     def test_reviews_are_read_from_each_slotted_worktree(self):
-        reviewed = {"/p/a.worktrees/SK-0041": {"state": "OPEN", "headRefOid": "b",
-                    "reviews": [{"author": {"login": "copilot-pull-request-reviewer"}, "commit": {"oid": "b"}}]}}
+        waiting = {"state": "waiting"}
         sessions = [session("/p/a.worktrees/SK-0041"), session("/p/a.worktrees/CIAM-12")]
         with mock.patch.object(agents, "currentAgents", return_value=place(*sessions)):
-            keys = agents.checkReviews(frozenset(), readPr=reviewed.get)
+            with mock.patch.object(agents.reviews, "reviewWaiting", side_effect=lambda state: state is waiting):
+                keys = agents.checkReviews(
+                    frozenset(), readState=lambda worktree, key: waiting if key == "SK-0041" else None
+                )
         self.assertEqual(keys, frozenset({"SK-0041"}))
+
+    def test_an_issues_claude_takes_a_review_request_only_when_one_runs(self):
+        found = place(session("/p/a.worktrees/SK-0041", "idle"), session("/p/a.worktrees/CIAM-12", "busy"),
+                      session("/p/a.worktrees/CIAM-12", "idle"))
+        self.assertEqual(agents.reviewerState(found, "SK-0041"), "stopped")
+        self.assertEqual(agents.reviewerState(found, "CIAM-12"), "working")
+        self.assertIsNone(agents.reviewerState(found, "SK-0099"))
 
     def test_a_failing_claude_keeps_the_reviews_last_read(self):
         with mock.patch.object(agents, "currentAgents", side_effect=RuntimeError("claude: not found")):
@@ -202,7 +211,7 @@ class ReviewColouringTests(unittest.TestCase):
         self.assertEqual(snapshot.keys, frozenset({"SK-0041"}))
 
     def test_the_log_names_each_review_that_started_waiting(self):
-        self.assertEqual(agents.reviewLine({"SK-0041", "CIAM-12"}), "Copilot review waiting: CIAM-12, SK-0041")
+        self.assertEqual(agents.reviewLine({"SK-0041", "CIAM-12"}), "Review waiting: CIAM-12, SK-0041")
 
 
 class PulseOnChangeTests(unittest.TestCase):

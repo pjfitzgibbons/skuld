@@ -13,6 +13,7 @@ from . import config as config_mod
 from . import done as done_mod
 from . import fileissues as fileissues_mod
 from . import placer as placer_mod
+from . import reviews as reviews_mod
 from . import serve as serve_mod
 from . import ship as ship_mod
 from . import slotbar as slotbar_mod
@@ -295,6 +296,26 @@ def cmdBrowse(cfg, target, windowKey):
     term_mod.showUrl(url, key, openWorkspaceFile(cfg, key))
 
 
+# `plan review KEY`, run in KEY's worktree (or a folder of it) by `pr`: writes the next review
+# round's request (review.py request), focuses KEY's window and opens a new Claude Code tab there
+# with the line that starts the round in its prompt box, not submitted: Peter presses Enter. The tab
+# is a fresh conversation, so the round's prompt guards that its working directory is the worktree.
+# A round still running (a Claude of the issue is busy) is refused; no Claude, or an idle one,
+# counts as stopped.
+def cmdReview(cfg, key):
+    if not key:
+        raise RuntimeError("usage: plan review KEY")
+    found = agents_mod.currentAgents(cfg.get("slotsFile"), cfg.get("claudeCommand"))
+    claude = agents_mod.reviewerState(found, key) or "stopped"
+    worktree = startLib.git(os.getcwd(), "rev-parse", "--show-toplevel").strip()
+    request = reviews_mod.requestRound(worktree, key, claude)
+    if not request:
+        print(f"nothing to review for {key}; its record now names HEAD")
+        return
+    term_mod.openClaudeTab(reviews_mod.reviewPrompt(key, request), openWorkspaceFile(cfg, key))
+    print(f"review ready in a new Claude tab in {key}'s window; press Enter to start")
+
+
 PR_TARGET_RE = re.compile(r"^pr#(\d+)$")
 
 
@@ -545,6 +566,8 @@ def main(argv=None):
         return cmdStart(cfg, rest[0] if rest else None)
     if cmd == "browse":
         return cmdBrowse(cfg, rest[0] if rest else None, rest[1] if len(rest) > 1 else None)
+    if cmd == "review":
+        return cmdReview(cfg, rest[0] if rest else None)
     if cmd == "ship":
         return cmdShip(cfg, rest[0] if rest else None)
     if cmd == "done":
@@ -557,4 +580,4 @@ def main(argv=None):
         return cmdServe(cfg, rest[0] if rest else None)
     if KEY_RE.match(cmd):  # `plan CIAM-123` is shorthand for view
         return cmdView(cfg, fileissues_mod.canonicalKey(cmd))
-    raise RuntimeError(f'unknown command "{cmd}"; try: list, view, start, open, browse, ship, done, serve, pulse, agents')
+    raise RuntimeError(f'unknown command "{cmd}"; try: list, view, start, open, browse, review, ship, done, serve, pulse, agents')
