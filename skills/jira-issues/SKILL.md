@@ -25,9 +25,9 @@ An issue is a Jira issue, `<KEY>` (e.g. `CIAM-123`), its description in the issu
 
 | Command | Does |
 |---|---|
-| `gh pc [KEY]` | `gh pr create`, titled with the branch's first commit subject, body `.tmp/<KEY>/pr-body.md`, and asks Copilot to review |
+| `gh pc [KEY]` | `gh pr create`, titled with the branch's first commit subject, body `.tmp/<KEY>/pr-body.md` |
 | `gh pb [KEY]` | `gh pr edit` on this branch's PR with `.tmp/<KEY>/pr-body.md` |
-| `pr [KEY]` | What Ship runs: commits with `.tmp/<KEY>/commit.txt`, pushes, opens or updates the PR, asks Copilot again when the push adds commits, sends the replies and ticks |
+| `pr [KEY]` | What Ship runs: commits with `.tmp/<KEY>/commit.txt`, pushes, opens or updates the PR, prints its URL, sends the replies and ticks, then, when the push added commits, opens a new Claude Code tab with Claude's review of the PR (`plan review <KEY>`), which Peter starts with Enter |
 | `pr done [KEY]` | After the merge: sends any replies and ticks left, then says to press Done in `plan`, which cleans up and tells you to close the issue in Jira. Bare `pr` does the same once the PR has merged |
 
 `gh pc` and `gh pb` refuse a body containing `Assisted-by` or `Co-authored-by`. `GHBODY_DRY=1` prints the command instead.
@@ -63,7 +63,14 @@ When the work is done and tested, write `.tmp/<KEY>/commit.txt` (ending `Assiste
 
 How the reviewer co-signs, records a disposition per file, and resolves a verbatim-applied fix
 immediately is GUIDE.md §5, "Review: co-signing and dispositions." This section is the author's
-side of that same round.
+side of that same round. The review is Claude's own, started by `pr` after a push that adds commits
+(GUIDE.md §5, "Claude's review"): it posts its findings as review threads, which `pr_threads.py`
+lists and `pr` answers like any other, and keeps its record in the next round's folder, `.tmp/<KEY>/rounds/<n>/review.json`. The author
+doesn't write that file, and doesn't ask Copilot or anyone else to review.
+
+When a Claude is handed a review request (`<KEY> review: read <path of request.md> and do the review it
+describes.`), it follows request.md and nothing else: it never commits, pushes, replies
+to a thread or resolves one, and ends with `review.py finish <KEY>`.
 
 Fix the findings first. Then write each open thread's context into `.tmp/<KEY>/replies/`, one `<comment id>.md` each, and write the reply below it: "Fixed: …" saying what changed, or why not. The context, the path and line, the review comment and the last lines of the diff hunk it's on, is an HTML comment at the top, so Peter reads each reply against what it answers; `pr` strips it before posting. Run `--drafts` again after writing replies without it, and it adds the context above them.
 

@@ -435,17 +435,42 @@ def planWindowLink(handler, params):
     return f"vscode://{PLAN_WINDOW_EXTENSION}/{handler}?{quote(query, safe='')}"
 
 
-# The commands that open url for key, as (command, args) pairs run without a shell: focus the plan
-# window when its workspace file is given, then send the link.
-def browseCommands(url, key=None, workspaceFile=None):
+# The commands that send link to the plan window, as (command, args) pairs run without a shell:
+# focus the plan window when its workspace file is given, then send the link.
+def linkCommands(link, workspaceFile=None):
     commands = [("code", [workspaceFile])] if workspaceFile else []
-    commands.append(sendLinkCommand(browseLink(url, key)))
+    commands.append(sendLinkCommand(link))
     return commands
 
 
 # The command that has VS Code hand a vscode:// link to its extension.
 def sendLinkCommand(link):
     return ("code", ["--open-url", link])
+
+
+# The commands that open url for key: linkCommands() with plan-window's /browse link.
+def browseCommands(url, key=None, workspaceFile=None):
+    return linkCommands(browseLink(url, key), workspaceFile)
+
+
+# The link that opens a new Claude Code tab with prompt pre-filled, not submitted: the Claude Code
+# extension (anthropic.claude-code) registers vscode://anthropic.claude-code/open, whose optional
+# `prompt` query is "Text to pre-fill in the prompt box. Must be URL-encoded. The prompt is pre-filled
+# but not submitted automatically." It opens in whichever VS Code window is focused.
+# https://code.claude.com/docs/en/vs-code.md#launch-a-vs-code-tab-from-other-tools
+CLAUDE_CODE_EXTENSION = "anthropic.claude-code"
+
+
+def claudeTabLink(prompt):
+    return f"vscode://{CLAUDE_CODE_EXTENSION}/open?prompt={quote(prompt, safe='')}"
+
+
+# Opens a new Claude Code tab in the plan window with prompt in its box: focus the window first (the
+# link goes to the focused window), then send the link. A failed step raises: the round's
+# request.md is written and nothing else will start it.
+def openClaudeTab(prompt, workspaceFile=None):
+    for command, args in linkCommands(claudeTabLink(prompt), workspaceFile):
+        run(command, args, os.getcwd())
 
 
 # Prints url, then opens it in key's window. Every step after the print is best-effort: the printed
