@@ -50,6 +50,11 @@ class RouteTests(unittest.TestCase):
         self.assertNotIn("SK-0002", page)
         self.assertNotIn("SK-0003", page)
 
+    def test_index_links_each_key_to_its_issue_page(self):
+        self.write("SK-0001-a.md", ticket("in-progress", "Serve pages"))
+        page = self.client().get("/").get_data(as_text=True)
+        self.assertIn('<a href="/issues/SK-0001">SK-0001</a>', page)
+
     def test_index_escapes_ticket_data(self):
         self.write("SK-0001-a.md", ticket("in-progress", "<script>alert(1)</script>"))
         page = self.client().get("/").get_data(as_text=True)

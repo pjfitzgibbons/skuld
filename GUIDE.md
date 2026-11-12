@@ -227,8 +227,8 @@ macOS only. In order:
     7. Install the Claude status engine: `bin/install-agents`, from the main checkout. Its
        LaunchAgent `~/Library/LaunchAgents/dev.skuld.agents.plist` runs `plan agents tick --watch`
        from login and restarts it if it stops. Every few seconds it pulses each issue's Desktop orange
-       while its Claude waits on a person, green once its Claude is idle with a
-       `.tmp/<KEY>/report.html` newer than the branch's last commit, and clears it otherwise.
+       while its Claude waits on a person, green once its Claude is idle with its latest round's
+       `.tmp/<KEY>/rounds/<n>/report.md` newer than the branch's last commit, and clears it otherwise.
        Switching to or from a Desktop clears its colour until its Claude's state changes again.
        It also adds `bin/claude-waiting` to `~/.claude/settings.json` as a hook on Notification,
        UserPromptSubmit, PreToolUse, PostToolUse, Stop and SessionEnd, keeping your other hooks: a
@@ -513,10 +513,13 @@ The server's routes only read:
 | Route | Serves |
 | --- | --- |
 | `/health` | `{"app": "skuld", "status": "ok"}`, which `plan serve status` asks for |
-| `/` | Every issue in progress, with links to its pages |
+| `/` | Every store ticket in progress, each key linking `/issues/<KEY>` |
+| `/issues/<KEY>` | A store ticket, rendered from its Markdown. Not served yet (SK-0034) |
 | `/issues/<KEY>/report`, `/issues/<KEY>/review` | A redirect to the latest round's page |
 | `/issues/<KEY>/rounds/<n>/report` | Round `n`'s report, from `rounds/<n>/report.md` (§5) |
 | `/issues/<KEY>/rounds/<n>/review` | Round `n`'s findings and dispositions, from `rounds/<n>/review.json` (§5) |
+| `/issues/<KEY>/files/<name>` | A file from the issue's round folder. Not served yet |
+| `/milestones` | Milestone progress. Not served yet |
 
 Pages are Jinja templates rendered from the issue's data; Claude writes round data, never HTML.
 A page's URL path keys name it, and the server renders it on each request, so a page exists as soon

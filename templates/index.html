@@ -11,7 +11,7 @@
     <thead><tr><th>Issue</th><th>Title</th></tr></thead>
     <tbody>
     {% for issue in issues %}
-      <tr><td class="key">{{ issue.id }}</td><td>{{ issue.subject }}</td></tr>
+      <tr><td class="key"><a href="/issues/{{ issue.id }}">{{ issue.id }}</a></td><td>{{ issue.subject }}</td></tr>
     {% endfor %}
     </tbody>
   </table>

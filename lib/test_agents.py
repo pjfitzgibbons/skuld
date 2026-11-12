@@ -124,8 +124,8 @@ class ReportIsFreshTests(unittest.TestCase):
     def tearDown(self):
         self.dir.cleanup()
 
-    def writeReport(self, mtime):
-        path = agents.reportPath(self.worktree, "SK-0041")
+    def writeReport(self, mtime, number=0):
+        path = os.path.join(self.worktree, ".tmp", "SK-0041", "rounds", str(number), "report.md")
         os.makedirs(os.path.dirname(path))
         open(path, "w").close()
         os.utime(path, (mtime, mtime))
@@ -136,6 +136,22 @@ class ReportIsFreshTests(unittest.TestCase):
 
     def test_a_report_older_than_the_last_commit_is_not(self):
         self.writeReport(self.lastCommit - 60)
+        self.assertFalse(agents.reportIsFresh(self.worktree, "SK-0041"))
+
+    def test_the_latest_rounds_report_decides(self):
+        self.writeReport(self.lastCommit + 60, number=1)
+        self.writeReport(self.lastCommit - 60, number=2)
+        self.assertFalse(agents.reportIsFresh(self.worktree, "SK-0041"))
+
+    def test_a_round_without_its_report_is_not_fresh(self):
+        os.makedirs(os.path.join(self.worktree, ".tmp", "SK-0041", "rounds", "0"))
+        self.assertFalse(agents.reportIsFresh(self.worktree, "SK-0041"))
+
+    def test_a_report_html_outside_the_rounds_is_not_a_report(self):
+        path = os.path.join(self.worktree, ".tmp", "SK-0041", "report.html")
+        os.makedirs(os.path.dirname(path))
+        open(path, "w").close()
+        os.utime(path, (self.lastCommit + 60, self.lastCommit + 60))
         self.assertFalse(agents.reportIsFresh(self.worktree, "SK-0041"))
 
     def test_no_report_is_not_fresh(self):

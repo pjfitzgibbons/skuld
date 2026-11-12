@@ -1,4 +1,5 @@
-# A review round's data, as the local server's report and review pages read it (GUIDE §5, §7).
+# A review round's data, as the local server's report and review pages read it (GUIDE §5, §7), and
+# where the status engine (lib/agents.py) finds the latest round's report.
 # Each round is a numbered folder, <worktree>/.tmp/<KEY>/rounds/<n>/, holding report.md (the
 # round's report, Claude's prose) and review.json (its findings and per-file dispositions). Every
 # function takes the folder it reads, so moving rounds to <store>/reviews/<KEY>/ (SK-0014) changes
@@ -52,6 +53,14 @@ def roundNumbers(folder):
 def latestRound(folder):
     numbers = roundNumbers(folder)
     return numbers[-1] if numbers else None
+
+
+# The latest round's report file in folder, whether or not it exists; None when there are no rounds.
+def latestReportPath(folder):
+    number = latestRound(folder)
+    if number is None:
+        return None
+    return os.path.join(folder, str(number), REPORT_FILE)
 
 
 # Round number's data from its folder, roundFolder = <rounds folder>/<number>.
