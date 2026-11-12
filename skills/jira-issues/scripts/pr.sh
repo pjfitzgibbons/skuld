@@ -1,5 +1,5 @@
 #!/bin/sh
-# pr [done] [--no-copilot] [KEY]: commit, push and open or update the PR for the current branch, in one step that is
+# pr [done] [KEY]: commit, push and open or update the PR for the current branch, in one step that is
 # safe to repeat. Each step runs only when it has something to do:
 #
 #   commit  when the tree has changes: stages everything (.tmp/ is ignored) and commits with the
@@ -7,9 +7,17 @@
 #   push    git push -u origin HEAD; a no-op when the remote has the branch's commits
 #   PR      gh pc when the branch has no PR, else gh pb, which replaces the body with
 #           .tmp/KEY/pr-body.md
-#   Copilot when the push moved the PR's branch: asks Copilot to review it again, so each round of
-#           review fixes is reviewed in turn (gh pc asks for a new PR). --no-copilot skips both
-#           requests
+#   URL     prints the PR's URL
+#   review  straight after the PR and its URL, when HEAD isn't the head of the last review's
+#           record, or there is none, and no round is unfinished for it (review.py due):
+#           opens a new Claude Code tab in the issue's window with the review's first line typed in
+#           (plan review: review.py request, then the tab); Peter presses Enter. It returns
+#           without waiting. It runs before the
+#           replies and ticks, so a failed send can't skip it. A review that can't start prints why
+#           and how to start it; the review never fails pr. Its record is .tmp/KEY/rounds/<n>/review.json
+#           (review.py). A pr
+#           that stops after its push, before this step, reviews those commits on its next run,
+#           since the record, not the push, says what is due
 #   replies when .tmp/KEY/replies/ holds <comment id>.md files: posts each to its review thread,
 #           resolves the thread and deletes the file (pr_threads.py --post)
 #   ticks   when .tmp/KEY/issue.md exists: applies its checkbox changes to the issue's description in
@@ -92,17 +100,13 @@ refuse_smart_commits_range() {
 }
 
 finish=0
-copilot=1
 while [ $# -gt 0 ]; do
   case $1 in
     done) finish=1 ;;
-    --no-copilot) copilot=0 ;;
     *) break ;;
   esac
   shift
 done
-# gh pc reads it, so a new PR isn't sent to Copilot either.
-[ "$copilot" = 1 ] || export GHBODY_NO_COPILOT=1
 
 root=$(git rev-parse --show-toplevel)
 cd "$root"
@@ -160,28 +164,11 @@ fi
 # was never a reason to skip.
 refuse_smart_commits_range
 
-# The PR's head on GitHub before the push, so Copilot is asked again only when the push adds
-# commits. GitHub's, not the local origin/<branch>, which another clone's push leaves behind. A
-# read that fails leaves it empty, so Copilot is asked rather than the push stopped.
-head_before=""
-[ -z "$state" ] || head_before=$(gh pr view "$branch" --json headRefOid --jq .headRefOid || true)
-
 # No -q: a slow push shows its progress. A credential prompt fails at once rather than waiting.
 echo "pr: pushing $branch"
 GIT_TERMINAL_PROMPT=0 git push -u origin HEAD
 
 if [ -n "$state" ]; then
-  # Straight after the push, so a later step that fails can't leave pushed commits unreviewed. A pr
-  # stopped between the push and this request still can: the next one finds nothing new to ask about.
-  if [ "$copilot" = 0 ]; then
-    echo "pr: --no-copilot; Copilot isn't asked"
-  elif [ "$head_before" != "$(git rev-parse HEAD)" ]; then
-    echo "pr: asking Copilot to review the new commits"
-    gh pr edit "$branch" --add-reviewer @copilot >/dev/null ||
-      echo "pr: Copilot wasn't asked to review the PR; ask under Reviewers" >&2
-  else
-    echo "pr: no new commits; Copilot isn't asked again"
-  fi
   echo "pr: updating the PR body"
   gh pb "$n"
 else
@@ -189,10 +176,48 @@ else
   gh pc "$n"
 fi
 
-send_round
-
 # The PR's URL. There's no VS Code Pull Requests extension here to open it in; this is the
 # showUrl() seam's shell-side equivalent — printing it is all this script does. Opening it in a
 # terminal browser is out of scope (see GUIDE.md).
 url=$(gh pr view "$branch" --json url --jq .url)
 echo "$url"
+
+# After the URL, so it shows at once, and before the replies and ticks, so a failed send can't skip
+# it. The review runs in a new Claude Code tab of the issue's window and takes minutes; pr doesn't wait for it,
+# and a review that can't start never fails pr. It runs the repo's own bin/plan, the version of the
+# CLI that goes with this script (the plan on PATH can be another checkout's); PATH's plan is used
+# only when that file is missing.
+plan_command() {
+  if [ -x "$scripts/../../../bin/plan" ]; then
+    printf '%s\n' "$scripts/../../../bin/plan"
+  else
+    command -v plan || true
+  fi
+}
+
+start_review() {
+  # Due from the review record (review.py due): HEAD differs from the head the last round reviewed,
+  # or there is no record, and no unfinished round was requested for this HEAD. Not from whether
+  # this push moved the PR's head: a pr that stopped after its push (gh pb failing, say) leaves
+  # commits that no later push moves, and the next pr reviews them from the record. Exit 1 means
+  # nothing is due; any other failure of the check goes on to the review, which says why it can't.
+  python3 "$scripts/review.py" due "$n" 2>/dev/null && due=0 || due=$?
+  if [ "$due" = 1 ]; then
+    echo "pr: no new commits since the last review; no review"
+    return 0
+  fi
+  plan=$(plan_command)
+  if [ -z "$plan" ]; then
+    echo "pr: plan isn't on PATH, so no review started; run plan review $n in this worktree" >&2
+    return 0
+  fi
+  if started=$("$plan" review "$n" 2>&1); then
+    echo "pr: $started"
+  else
+    echo "pr: no review started: $started" >&2
+    echo "    start it by hand once that is fixed: plan review $n" >&2
+  fi
+}
+start_review
+
+send_round

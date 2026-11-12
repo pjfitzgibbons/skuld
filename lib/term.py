@@ -167,12 +167,36 @@ def browseLink(url, key=None):
     return f"vscode://{PLAN_WINDOW_EXTENSION}/browse?{quote(query, safe='')}"
 
 
-# The commands that open url in key's window, as (command, args) pairs run without a shell: focus
+# The commands that send link to key's window, as (command, args) pairs run without a shell: focus
 # the window when its workspace file is known, then send the link.
-def browseCommands(url, key=None, workspaceFile=None):
+def linkCommands(link, workspaceFile=None):
     commands = [("code", [workspaceFile])] if workspaceFile else []
-    commands.append(("code", ["--open-url", browseLink(url, key)]))
+    commands.append(("code", ["--open-url", link]))
     return commands
+
+
+def browseCommands(url, key=None, workspaceFile=None):
+    return linkCommands(browseLink(url, key), workspaceFile)
+
+
+# The link that opens a new Claude Code tab with prompt pre-filled, not submitted: the Claude Code
+# extension (anthropic.claude-code) registers vscode://anthropic.claude-code/open, whose optional
+# `prompt` query is "Text to pre-fill in the prompt box. Must be URL-encoded. The prompt is pre-filled
+# but not submitted automatically." It opens in whichever VS Code window is focused.
+# https://code.claude.com/docs/en/vs-code.md#launch-a-vs-code-tab-from-other-tools
+CLAUDE_CODE_EXTENSION = "anthropic.claude-code"
+
+
+def claudeTabLink(prompt):
+    return f"vscode://{CLAUDE_CODE_EXTENSION}/open?prompt={quote(prompt, safe='')}"
+
+
+# Opens a new Claude Code tab in key's window with prompt in its box: focus the window first (the
+# link goes to the focused window), then send the link. A failed step raises: the round's
+# request.md is written and nothing else will start it.
+def openClaudeTab(prompt, workspaceFile=None):
+    for command, args in linkCommands(claudeTabLink(prompt), workspaceFile):
+        run(command, args, os.getcwd())
 
 
 # Prints url, then opens it in key's window. Every step after the print is best-effort: the printed
