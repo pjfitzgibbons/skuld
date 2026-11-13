@@ -1,9 +1,10 @@
 #!/bin/bash
 # Installs the LaunchAgent that runs `plan agents tick --watch` from login: every few seconds it
-# pulses each issue's Desktop in SlotBar with its Claude's state, and launchd restarts it if it
-# stops (GUIDE §2). Its failures, such as SlotBar not running, go to its log. It also registers
-# bin/claude-waiting as a Claude Code hook in ~/.claude/settings.json, so a Claude that stops for a
-# person turns its Desktop red at once (lib/waiting.py); the settings' other hooks are kept.
+# colours each issue in the plan window's Issues view with its Claude's state, through the pulses
+# file (lib/pulses.py), and launchd restarts it if it stops (GUIDE §2). Its failures go to its log.
+# It also registers bin/claude-waiting as a Claude Code hook in ~/.claude/settings.json, so a Claude
+# that stops for a person counts as waiting and its issue turns orange (lib/waiting.py); the
+# settings' other hooks are kept.
 #   install-agents               install, or reinstall over a running one
 #   install-agents --uninstall   stop it, remove the agent and the hook
 set -euo pipefail

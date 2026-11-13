@@ -1,7 +1,7 @@
 {
   "name": "plan-window",
   "displayName": "plan window",
-  "description": "Opens an issue's Claude terminal and ticket when its plan workspace opens, and opens plan browse's pages in the integrated browser.",
+  "description": "Shows plan's issues in the Explorer and opens an issue's Claude terminal, shell and ticket in the plan window, and opens plan browse's pages in the integrated browser.",
   "publisher": "skuld",
   "version": "0.0.1",
   "private": true,
@@ -10,28 +10,37 @@
   "main": "./extension.js",
   "activationEvents": ["onStartupFinished", "onUri"],
   "contributes": {
+    "views": {
+      "explorer": [
+        { "id": "plan.issues", "name": "Issues" }
+      ]
+    },
     "configuration": {
       "title": "plan window",
       "properties": {
-        "plan.key": {
+        "plan.issuesFile": {
           "type": "string",
+          "default": "~/.cache/plan/issues",
           "scope": "window",
-          "description": "The issue key this window is for. Set by plan start in the issue's workspace file."
+          "description": "plan's issues file: one issue key per line, one Issues item each. Matches issuesFile in plan's config."
         },
-        "plan.worktree": {
+        "plan.command": {
           "type": "string",
+          "default": "plan",
           "scope": "window",
-          "description": "The issue's worktree, where the Claude terminal starts."
+          "description": "The plan CLI the window runs to clear an issue's colour (plan pulse <KEY> off)."
         },
-        "plan.ticket": {
+        "plan.pulsesFile": {
           "type": "string",
+          "default": "~/.cache/plan/pulses",
           "scope": "window",
-          "description": "The ticket file to keep open in a tab. Unset for a Jira issue."
+          "description": "plan's pulses file: <KEY>=orange or <KEY>=green lines that colour the Issues items. Matches pulsesFile in plan's config."
         },
-        "plan.prompt": {
+        "plan.workspaceDir": {
           "type": "string",
+          "default": "~/.cache/plan/code-workspaces",
           "scope": "window",
-          "description": "The prompt Claude starts with."
+          "description": "Where plan start writes each issue's <KEY>.code-workspace, read for its worktree, ticket and prompt. Matches workspaceDir in plan's config."
         }
       }
     }

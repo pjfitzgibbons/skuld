@@ -5,7 +5,7 @@ The [architecture](docs/architecture.md) says what the system is and the rules i
 links to it for the reasons and doesn't repeat them.
 
 Skuld plans and ships work from the terminal. `plan` lists what's next, and starts, opens, ships and
-finishes an issue, each in its own VS Code window on its own macOS Desktop. `pr` commits, pushes,
+finishes an issue. Every issue's Claude runs in one VS Code window, the plan window. `pr` commits, pushes,
 opens or updates the pull request and answers its review. Issues live in the ticket store, a git
 repo of Markdown files, or in Jira Cloud (`cryoport.atlassian.net`).
 
@@ -31,7 +31,7 @@ repo of Markdown files, or in Jira Cloud (`cryoport.atlassian.net`).
    Next up (plan order)       worktree <repo>.worktrees/<KEY>          the issue (store or Jira)
    ────────────────────       ───────────────────────────────          ─────────────────────────
    (1) START ───────────────▶ branch <type>/<KEY>-slug, off base ────▶ in progress, "Started" logged
-                              issue window, Claude in its terminal      (a store ticket opens in a tab)
+                              plan window, Claude in its terminal       (a store ticket opens in a tab)
                               Claude works · writes <store>/reviews/<KEY>/
    (2) SHIP ────────────────▶ pr <KEY>: commit, push, open/update PR ─▶ Done boxes ticked
                               review rounds: replies/                    (Jira: dev panel, native)
@@ -57,8 +57,8 @@ macOS only. In order:
 
 1. **Tools.** `git`, `gh` (signed in with `gh auth login`), Python 3.10 or later on `PATH` as
    `python3` (`/usr/bin/python3` is 3.9 and can't run the scripts), [uv](https://docs.astral.sh/uv/)
-   (`brew install uv`) for the local server's venv, VS Code with its `code` command on `PATH`, fzf, and Xcode's Command Line Tools for `swiftc` (steps 12 and 13). A menu bar for
-   the Desktops is optional: SlotBar (step 13) or SketchyBar.
+   (`brew install uv`) for the local server's venv, VS Code with its `code` command on `PATH`, and
+   fzf.
 
 2. **The Jira token in `~/.netrc`**, on a Mac that works Jira projects (step 5), never in a
    tracked file or an env var:
@@ -116,14 +116,15 @@ macOS only. In order:
    | `typeMap` | Story and Task `feat`, Bug `fix` | Issue type to branch prefix, merged over the default |
    | `pr` | `~/.local/bin/pr` | The `pr` that Ship runs, by path |
    | `disposable` | `done.py`'s list | Ignored files Done may delete with a worktree |
-   | `slotsFile` | `~/.cache/plan/workspaces` | The `<slot>=<KEY>` lines that place issues on Desktops |
-   | `windowsFile` | `~/.cache/plan/windows` | The `<KEY>=<window id>` lines that say which window is each issue's |
-   | `workspaceDir` | `~/.cache/plan/code-workspaces` | Where each issue window's throwaway `<KEY>.code-workspace` goes; Done deletes it |
-   | `spacesHelper` | `macos/build/skuld-spaces` in skuld | The helper `bin/build-spaces` builds; `plan` builds the default one itself when it is missing or older than its source |
-   | `reservedDesktops` | `[1]` | Desktops `plan` never takes for an issue |
+   | `issuesFile` | `~/.cache/plan/issues` | The issues Started or Opened and not yet Done, one `<KEY>` per line, that the Issues view and the Claude status engine read (§4, step 7) |
+   | `pulsesFile` | `~/.cache/plan/pulses` | Each issue's colour in the Issues view, one `<KEY>=orange` or `<KEY>=green` line per coloured issue, written by `plan pulse` and the Claude status engine (§2, step 12) |
+   | `workspaceDir` | `~/.cache/plan/code-workspaces` | Where the plan window's `plan.code-workspace` goes, and each issue's `<KEY>.code-workspace`, its record for plan-window; Done deletes an issue's file |
    | `netrcFile` | `~/.netrc` | Where the Jira token is, under `machine <baseUrl's host>` |
    | `claudeCommand` | `~/.local/bin/claude` | The `claude` that `plan agents` asks for its sessions, by path |
    | `serverPort` | `8765` | The local server's port on `127.0.0.1` (§7) |
+
+   A config that sets `slotsFile`, `windowsFile`, `spacesHelper` or `reservedDesktops` still
+   loads; `plan` ignores those keys.
 
 6. **The skill.** Link `skills/jira-issues/` to `~/.claude/skills/jira-issues/`, so every repo
    shares one copy.
@@ -153,13 +154,31 @@ macOS only. In order:
     ln -s "$(pwd)/vscode/plan-window" ~/.vscode/extensions/skuld.plan-window-0.0.1
     ```
 
-    When an issue window opens, it opens the ticket in a tab, starts Claude with Start's prompt in
-    a terminal beside it, and opens a shell in the panel (§4). Both terminals unset every `CLAUDE*`
-    variable the window inherited, so a window opened by `code -n` from inside a Claude session
-    still gets a Claude that registers as a session of its own. It also handles the
-    `vscode://skuld.plan-window/browse` links that `plan browse` sends (§7). It is disabled in Restricted Mode,
-    so trust the folder that holds each configured repo with its `<repo>.worktrees/`, and the
-    ticket store's folder.
+    It adds an **Issues** view to the plan window's Explorer sidebar: one item per issue in the
+    issues file (§4, step 7), in the file's order, labelled with its key. An item is tinted orange
+    or green from the pulses file. The view watches both files. With no issues file it shows no
+    items, and with no pulses file no colours.
+
+    Clicking an item opens the issue (§4, step 10). First plan-window opens the issue's ticket,
+    every time: a store ticket in an editor tab, or a Jira issue's page in the integrated browser.
+    A tab already showing it comes to the front instead of a second one opening.
+    Then it opens the shell. Then, if the plan window has the issue's `Claude <KEY>` terminal, it
+    comes to the front; otherwise plan-window creates it in the worktree and starts
+    `claude --continue` when the worktree has an earlier Claude session, or `claude` with Start's
+    prompt when it has none. Claude comes last so that it has the focus. Then plan-window clears
+    the item's colour by running `plan pulse <KEY> off`; its `plan.command` setting names the
+    `plan` to run (default `plan`), and if that fails the window shows a warning and the colour
+    stays. Both terminals unset every `CLAUDE*`
+    session variable the window inherited except `CLAUDE_CONFIG_DIR`, which says where Claude
+    keeps its config and conversations and which the `--continue` check reads. So a window opened by `code` from inside a Claude session still
+    gets a Claude that registers as a session of its own. When Done takes an issue out of the
+    issues file, the issue leaves the view, and its terminals stay open until you close them; you
+    often run `plan done` in one of them.
+
+    It also handles the `vscode://skuld.plan-window/open` links that Start and Open send and the
+    `vscode://skuld.plan-window/browse` links that `plan browse` sends (§7). It is disabled in
+    Restricted Mode, so trust the folder that holds each configured repo with its
+    `<repo>.worktrees/`, and the ticket store's folder.
 
 11. **The LaunchAgents.** `issue-watch` watches the store and commits and pushes it, and
     the local server serves issue pages (§7). Both start at login and restart if they stop. For
@@ -174,67 +193,22 @@ macOS only. In order:
     The agent runs the server from the checkout `plan serve start` ran in, so run it from the main
     checkout, not a worktree. After pulling `main`, run `uv sync` and `plan serve restart`.
 
-12. **Native Desktops.** Each issue window gets its own macOS Desktop. SIP stays on and nothing is
-    installed beyond the helper:
-    1. Run no other window manager. Aerospace, for one, holds every window on one Desktop.
-    2. In System Settings → Desktop & Dock → Mission Control, turn off "Automatically rearrange
-       Spaces based on most recent use", and leave "Displays have separate Spaces" and "When
-       switching to an application, switch to a Space with open windows" on.
-    3. In System Settings → Keyboard → Keyboard Shortcuts → Mission Control, turn on "Switch to
-       Desktop 1" through the highest Desktop an issue may use (^1 to ^N).
-    4. In Mission Control, add Desktops up to that number. `plan` never creates one.
-    5. Allow VS Code to control the computer through System Events when macOS asks, on the first
-       Start.
-    6. Build the helper with `bin/build-spaces`, or let the first Start build it. It needs
-       `swiftc` alone and no permission grant.
-    7. For SketchyBar, give each Desktop a `space` item with `associated_space=N`, and subscribe it
-       to `plan_workspaces_change` so it relabels from the slots file. Run `sketchybar --reload`
-       after adding a Desktop. For SlotBar, see step 13.
-
-13. **SlotBar**, optional. A menu-bar item that shows each Desktop, a dot on each issue's Desktop
-    and an underline under the one showing. `plan pulse` pulses a Desktop orange or green, and
-    choosing a Desktop from its menu switches to it. It reads the slots file. SlotBar and
-    SketchyBar are alternatives: whichever has its LaunchAgent loaded is the bar.
-    1. Set the menu bar to never hide: System Settings → Control Center → "Automatically hide and
-       show the menu bar" → Never. From a shell, `defaults write NSGlobalDomain _HIHideMenuBar
-       -bool false` and `defaults write com.apple.controlcenter AutoHideMenuBarOption -int 3`. A
-       SketchyBar setup that hides the menu bar hides SlotBar with it.
-    2. Stop SketchyBar if it runs: `brew services stop sketchybar`. `brew services start
-       sketchybar` brings it back, after `bin/install-slotbar --uninstall`.
-    3. Make the signing certificate once per Mac: `bin/slotbar-signing-identity`. It puts a
-       self-signed "SlotBar Local Signing" code-signing certificate in the login keychain. With it,
-       a rebuilt SlotBar keeps its Accessibility grant; signed ad-hoc, every build needs the grant
-       again.
-    4. Build, install and start it: `bin/install-slotbar`. It builds with `swiftc` into
-       `macos/build/`, installs `~/Applications/SlotBar.app` and the LaunchAgent
-       `~/Library/LaunchAgents/dev.skuld.slotbar.plist`, starts it, and says whether macOS put the
-       item in the menu bar. The first build may ask to let `codesign` use the key: choose Always
-       Allow. The agent starts SlotBar at login and restarts it after a crash; Quit SlotBar stays
-       quit until `bin/start-slotbar` or the next login. Its log is `~/Library/Logs/SlotBar.log`.
-    5. If the item doesn't appear, allow SlotBar under System Settings → Menu Bar.
-    6. Grant Accessibility when SlotBar asks, so it can send ^N: System Settings → Privacy &
-       Security → Device Control and Data Access on macOS 27, Accessibility before it. Desktops
-       whose ^N shortcut is off (step 12.3) are greyed out in its menu. If the grant is on but
-       SlotBar keeps asking, the entry is from an earlier signature:
-       `tccutil reset Accessibility dev.skuld.slotbar`, then `bin/start-slotbar` and grant again.
-
-    7. Install the Claude status engine: `bin/install-agents`, from the main checkout. Its
-       LaunchAgent `~/Library/LaunchAgents/dev.skuld.agents.plist` runs `plan agents tick --watch`
-       from login and restarts it if it stops. Every few seconds it pulses each issue's Desktop orange
-       while its Claude waits on a person, green once its Claude is idle with a
-       `.tmp/<KEY>/report.html` newer than the branch's last commit, and clears it otherwise.
-       Switching to or from a Desktop clears its colour until its Claude's state changes again.
-       It also adds `bin/claude-waiting` to `~/.claude/settings.json` as a hook on Notification,
-       UserPromptSubmit, PreToolUse, PostToolUse, Stop and SessionEnd, keeping your other hooks: a
-       Claude that stops for a permission, a question or input turns its Desktop orange as its system
-       notification shows. Once a minute it also checks each slotted issue's PR with `gh`, and
-       turns the Desktop orange while Copilot's review is on the PR's head commit, until the next
-       push. Its log is `~/Library/Logs/plan-agents.log`;
-       `bin/install-agents --uninstall` removes the agent and the hook.
-
-    To rebuild after pulling `main`, run `bin/install-slotbar` and `bin/install-agents` again from
-    the main checkout. SlotBar is replaced while running, and the grant carries over.
-    `bin/test-slotbar` runs its tests.
+12. **The Claude status engine.** Run `bin/install-agents` from the main checkout. Its LaunchAgent
+    `~/Library/LaunchAgents/dev.skuld.agents.plist` runs `plan agents tick --watch` from login and
+    restarts it if it stops. Every few seconds it sets each issue's colour in the pulses file:
+    orange while its Claude waits on a person, green once its Claude is idle with a
+    `.tmp/<KEY>/report.html` newer than the branch's last commit, and none otherwise, or once the
+    issue leaves the issues file. It writes the file only when an issue's colour changes, so a
+    colour cleared by clicking the issue's item stays clear until its Claude's state changes
+    again.
+    It also adds `bin/claude-waiting` to `~/.claude/settings.json` as a hook on Notification,
+    UserPromptSubmit, PreToolUse, PostToolUse, Stop and SessionEnd, keeping your other hooks: a
+    Claude that stops for a permission, a question or input turns its issue orange as its system
+    notification shows. Once a minute it also checks, with `gh`, the PR of each issue in the issues
+    file that has a Claude, and turns the issue orange while Copilot's review is on the PR's head
+    commit, until the next push. Its log is `~/Library/Logs/plan-agents.log`;
+    `bin/install-agents --uninstall` removes the agent and the hook. After pulling `main`, run
+    `bin/install-agents` again from the main checkout.
 
 ## 3. Commands
 
@@ -261,14 +235,14 @@ decides the repo (§4).
 | `plan start <KEY>`, `plan open <KEY>` | Start or Open (§4); one command, one code path |
 | `plan ship [KEY]` | Ship (§5); the key defaults to the current worktree's branch |
 | `plan done [KEY]` | Done (§6) |
-| `plan browse <KEY \| pr#N \| url> [KEY]` | Open a page in the issue window's browser (§7) |
+| `plan browse <KEY \| pr#N \| url> [KEY]` | Open a page in the plan window's browser (§7) |
 | `plan serve start\|stop\|restart\|status` | Control the local server's LaunchAgent (§7); `status` prints the server's URL, whether it answers, and its pid |
-| `plan pulse <KEY> orange\|green\|off` | Pulse the issue's Desktop in SlotBar, or clear its tint (§2, step 13); exits non-zero when SlotBar isn't running |
-| `plan agents [list]` | Every Claude session, most urgent first: its state, Desktop (`-` when it can't be placed), key, issue title and name |
-| `plan agents status` | The same sessions on one line, as symbols on each Desktop: `⏳` waiting, `◆` done, `●` busy, `■` blocked, `○` idle |
-| `plan agents --json` | The listing as JSON: each session's key, Desktop, state, title, name and cwd |
-| `plan agents pick` | The listing in fzf; `enter` brings the chosen session's issue window forward |
-| `plan agents tick [--watch]` | Pulse each Desktop in SlotBar once from its Claudes' states; `--watch` keeps doing so, as its LaunchAgent does (§2, step 13.7) |
+| `plan pulse <KEY> orange\|green\|off` | Set the issue's colour in the pulses file, which tints its item in the Issues view; `off` removes its line (§2, step 10) |
+| `plan agents [list]` | Every Claude session, most urgent first: its state, issue key (`-` when its key isn't in the issues file), issue title and name |
+| `plan agents status` | The same sessions on one line, as symbols beside each issue key: `⏳` waiting, `◆` done, `●` busy, `■` blocked, `○` idle |
+| `plan agents --json` | The listing as JSON: each session's key, state, title, name and cwd |
+| `plan agents pick` | The listing in fzf; `enter` opens the chosen session's issue in the plan window |
+| `plan agents tick [--watch]` | Set each issue's colour in the pulses file once from its Claudes' states; `--watch` keeps doing so, as its LaunchAgent does (§2, step 12) |
 | `plan archive` | Move closed tickets past `archiveAfterDays` to `archive/` |
 | `plan init-store` | Make an empty store's folders |
 | `pr [done] [--no-copilot] [KEY]` | Send a round (§5) |
@@ -304,41 +278,32 @@ runs only when it has something to do:
    and refuses if the read-back `statusCategory` isn't `indeterminate`. Store: `FileStore` sets
    `status: in-progress` and reads the file back. Then "Started" is logged: an ADF comment in
    Jira, a `## Log` line in the ticket.
-7. **Place the issue on a slot.** `SpacesPlacer` does this, and
-   `term.writeSlot()` records `<slot>=<KEY>` through a temp file and a rename. SketchyBar is told
-   to relabel its bar (`sketchybar --trigger plan_workspaces_change`, skipped when it isn't
-   installed). Every command that touches slots first sweeps the slots file through the placer,
-   dropping lines whose issue window is gone.
-   `SpacesPlacer` reads the Desktops and VS Code's windows through `skuld-spaces`. It reuses the
-   issue's slot if that Desktop holds no VS Code window. Otherwise it takes the first Desktop
-   that exists, isn't in `reservedDesktops`, holds no VS Code window and is no other issue's
-   slot. Start refuses, with nothing opened, when there is no such Desktop, when the Desktop
-   doesn't exist, when its ^N shortcut is off (naming the setting), or when the helper reports a
-   SkyLight call missing.
-8. **Open the issue window.** Write `<KEY>.code-workspace` to `workspaceDir`, listing the
-   worktree and the ticket store. Start sends the Desktop's ^N shortcut through System Events, waits until
-   that Desktop shows, and runs `code` on the workspace file. A window id that wasn't there before
-   is the new window, recorded in `windowsFile`; it is never found by its title. When no new
-   window appears and VS Code has switched to another Desktop instead, the workspace was already
-   open there, and Start takes the frontmost VS Code window as the issue's. A window on a Desktop
-   other than the one switched to is left there, and its slot is rewritten to that Desktop, with
-   a note. When that Desktop is another issue's slot, the note says to drag the window to a free
-   Desktop and run `plan open <KEY>`. Claude starts in one integrated terminal with a prompt
-   naming the issue, and a shell waits in another; both carry the issue's key in their
-   environment. When the window is already open, Open reuses it, rewrites the slot when the
-   window sits on another Desktop, and never moves it.
-9. **Put the issue beside Claude.** A Jira issue's browse URL is printed, then opens in the
-   issue window's integrated browser, as `plan browse` opens it (§7). Each step after the print
-   is best-effort. A store ticket opens in an editor tab, on the ticket file in the window's store
-   folder. The URL or file path is printed either way.
-10. **Focus the issue.** Switch to the slot and focus the issue window with Claude's terminal
-    in front, so the command ends with the human at the issue's Claude: `code <workspace file>`
-    switches to the window's Desktop.
+7. **Add the issue to the issues file and the plan workspace.** `term.addIssue(key)` appends
+   `<KEY>` as a line of `issuesFile`, unless it is there already, through a temp file and a
+   rename, so a reader never sees a half-written file. The key stays until Done removes it,
+   whether or not the plan window is open. The issue's worktree is added as a folder of the plan
+   workspace file, `plan.code-workspace` in `workspaceDir`, written the same way. The plan
+   workspace also lists the folder of each configured ticket store, which Done never removes. The Issues view
+   and the Claude status engine read the issues file; `plan list` and the picker do not.
+8. **Open the plan window.** Write the issue's `<KEY>.code-workspace` to `workspaceDir`, with its
+   key, worktree and prompt, and its ticket: `plan.ticket`, a store ticket's file, or
+   `plan.ticketUrl`, a Jira issue's browse URL, set only when there is no `plan.ticket`. It is
+   for plan-window to read; no window opens on it. Then run
+   `code` on the plan workspace file. `code` opens the plan window, or raises it, wherever it is.
+   VS Code knows a window by its workspace file's path, so Open never opens a second plan window,
+   and `plan` never moves one. A failed `code` stops Start, naming the step and the `code` command
+   to run by hand.
+9. **Print the ticket.** A Jira issue's browse URL, or a store ticket's file path, is printed.
+   The ticket opens beside Claude when the issue is opened (step 10): a store ticket in an editor
+   tab, a Jira issue's page in the plan window's integrated browser.
+10. **Open the issue.** Send `vscode://skuld.plan-window/open?key=<KEY>` with `code --open-url`, which opens the issue in
+    the plan window as a click on its item does (§2, step 10), so the command ends with the human
+    at the issue's Claude. Its terminals carry the issue's key in their environment. This step is
+    best-effort: if it fails, Start or Open still succeeds and prints `couldn't open <KEY> in the
+    plan window: <error>; click it in the Issues view` on stderr. A click on the issue's item
+    does what the link would have done.
 
-`plan list` and the picker show each issue's slot (`D3`), and both Desktops when
-the window has moved off its slot (`D3, window on D4`).
-
-Open on an issue whose window or slot is gone recreates what's missing
+Open on an issue whose worktree or plan-window folder is gone recreates what's missing
 ([failure-modes.md, *Open*](docs/failure-modes.md)).
 
 ## 5. Ship and the review round
@@ -380,7 +345,7 @@ Rules the files follow:
 Ship runs `ship.check()`, which refuses by name: a branch that isn't the issue's, a missing
 `pr-body.md`, a tree with changes and no `commit.txt`, a reply file not named
 `replies/<digits>.md`, an empty reply, or two replies to one thread. On success it runs `pr <KEY>`
-in an integrated terminal of the issue window, so its output shows as it runs.
+in an integrated terminal of the plan window, so its output shows as it runs.
 
 - **Non-zero exit:** the terminal shows why, and nothing else happens.
 - **Zero exit:** any round file edited while `pr` ran, which `pr` has since sent and deleted, is
@@ -448,8 +413,8 @@ fast-forward to `origin/<base>`.
 
 The changes: fast-forward the base, `git worktree remove`, delete the workspace file (a warning if it won't go), delete every
 branch named for the issue whose tip is in the PR, note the PR and merge commit on the issue (an ADF
-comment in Jira, a `## Log` line in a ticket), free the issue's workspace slot, and print the close
-note:
+comment in Jira, a `## Log` line in a ticket), remove the issue's lines from the issues file and the pulses file and its folder from the plan
+workspace (the ticket store's folder stays), and print the close note:
 
 ```text
 Close CIAM-123 in Jira: https://cryoport.atlassian.net/browse/CIAM-123
@@ -517,31 +482,27 @@ no buttons that act. A page is always opened at its server URL, never as a `file
 
 `plan browse` takes a Jira key (the issue's page), `pr#N` (the pull request, as `gh` finds it
 from the current folder) or an http(s) URL. A store ticket's key is refused, naming its file, until
-the local server serves its page. `[KEY]` names the issue whose window the page belongs in when the
-target doesn't.
+the local server serves its page. `[KEY]` names the issue the page belongs to when the target doesn't.
 
-`plan browse` prints the URL, then picks the issue window: the target's key, else `[KEY]`, else the
-calling terminal's `PLAN_KEY`, else whichever VS Code window has focus
-([architecture §7.6.1](docs/architecture.md#open-url)). It runs `code <workspace file>` to focus
-that window, then `code --open-url` with a `vscode://skuld.plan-window/browse?url=…&key=<KEY>`
-link. VS Code hands the link to the focused window, and plan-window opens the page in its
-integrated browser. A window whose `plan.key` isn't the link's key refuses it with a
-`plan window: …` notice, so a page never opens in another issue's window when focus moves between
-the two commands. Run `plan browse` again from the issue's window.
+`plan browse` prints the URL and takes the issue from the target's key, else `[KEY]`, else the
+calling terminal's `PLAN_KEY` ([architecture §7.6.1](docs/architecture.md#open-url)). It runs
+`code` on the plan workspace file to focus the plan window, then `code --open-url` with a
+`vscode://skuld.plan-window/browse?url=…&key=<KEY>` link. VS Code hands the link to the focused
+window, and plan-window opens the page in its integrated browser.
 
-A localhost or loopback link clicked in an issue window's terminal opens in its integrated browser
-too: Start writes `workbench.browser.openLocalhostLinks` into the window's workspace file. Any other
+A localhost or loopback link clicked in a terminal of the plan window opens in its integrated
+browser too, through `workbench.browser.openLocalhostLinks` in the plan workspace file. Any other
 clicked link goes to the system browser; open it with `plan browse <url>`.
 
 Every step is best-effort; the printed URL stands on its own. System `open` is never used for a
-page, since it sends the page to the default browser, outside every issue window. The
+page, since it sends the page to the default browser, outside the plan window. The
 `no_bare_open.py` hook refuses it in an agent's shell (§9).
 
 ### Browser automation and tests
 
 Browser tests are scripts that run in Chrome or Chromium with the test suite. The
 `chrome-devtools` MCP server (Chrome, `--isolated`) is for investigating an issue, not for
-checking a change. Neither runs in an issue window, whose integrated browser is the human's own.
+checking a change. Neither runs in the plan window, whose integrated browser is the human's own.
 
 ## 8. The helpers
 
@@ -611,9 +572,9 @@ These recur through the code, and they're worth taking away even without the too
    GitHub credentials.
 8. **A refusal that names its fix** instead of recovery code.
 9. **Outside systems behind ports.** Each tracker, GitHub and git remote is reached through its
-   port's adapter, and the `WindowPlacer` (`lib/placer.py`, `lib/spaces.py`)
-   alone runs `code`, `skuld-spaces` and System Events, so the rest of `lib/`
-   tests without a real terminal ([architecture §6](docs/architecture.md#components)).
+   port's adapter ([architecture §6](docs/architecture.md#components)). The plan window opens
+   with one `code` call through `run`, the subprocess seam that every Start and Open test fakes,
+   so `lib/`'s tests need no window server.
 10. **A gate that fails loudly.** The watcher commits nothing that fails the checker, and says so
     in a notification and a log.
 
@@ -639,11 +600,10 @@ and the exit code out. The server's routes run through Flask's test client, with
 
 ## 12. Limits
 
-- **macOS only:** native Desktops, launchd and the Keychain-free `~/.netrc` setup
-  all assume it.
+- **macOS only:** launchd and the Keychain-free `~/.netrc` setup assume it.
 - **One user and one Jira site:** `cryoport.atlassian.net`, with the `netrc` machine name in
   config.
-- **No in-terminal browsing:** pages open in the issue window's integrated browser, never in a TUI
+- **No in-terminal browsing:** pages open in the plan window's integrated browser, never in a TUI
   browser or through system `open`.
 - **GitHub only for pull requests;** GitHub Issues is not used.
 
@@ -657,19 +617,9 @@ bin/
   plan                     plan's entry point
   jira-get                 one read-only Jira GET with ~/.netrc auth
   gh-aliases.yml           gh pc and gh pb
-  build-spaces             builds macos/build/skuld-spaces with swiftc
-  build-slotbar            builds and signs macos/build/SlotBar.app, slotbar-pulse inside it
-  install-slotbar          installs SlotBar and its LaunchAgent, or --uninstall removes them
-  start-slotbar            starts SlotBar through its LaunchAgent after Quit
-  slotbar-signing-identity makes SlotBar's self-signed code-signing certificate, once per Mac
-  test-slotbar             builds and runs SlotBar's core tests
   install-agents           installs the LaunchAgent running plan agents tick --watch and the
                            claude-waiting hook, or --uninstall removes both
   claude-waiting           Claude Code hook: marks a session waiting on a person, clears it after
-macos/spaces.swift         skuld-spaces: read-only SkyLight calls listing Desktops and VS Code windows
-macos/slotbar/             SlotBar: SlotCore.swift (slots, pulses, shortcuts, Desktop numbering;
-                           Foundation only) and its tests, slotbar.swift (the menu-bar item),
-                           pulse.swift (slotbar-pulse), Info.plist
 lib/
   cli.py                   subcommand dispatch and the fzf picker
   config.py                reads the machine config and store.yml
@@ -677,14 +627,12 @@ lib/
   start.py                 Start and Open: repo resolution, names, worktrees, the lock
   ship.py                  Ship's checks and round-file naming
   done.py                  Done: checks, then changes, then the close note
-  term.py                  the workspace file, the slots file, SketchyBar's trigger, Ship's tmux window
-  placer.py                the WindowPlacer port, Placement and placerFrom()
-  spaces.py                SpacesPlacer: native Desktops through skuld-spaces and System Events
-  slotbar.py               plan pulse: a key's Desktop from the slots file, sent to slotbar-pulse
-  agents.py                plan agents: each Claude session's issue, Desktop and state, and the
-                           pulses that show them in SlotBar
+  term.py                  the workspace files, the issues file, the code call, Ship's tmux window
+  pulses.py                plan pulse: an issue's colour, written to the pulses file
+  agents.py                plan agents: each Claude session's issue and state, and the
+                           colours that show them in the Issues view
   waiting.py               the waiting markers bin/claude-waiting keeps, one per session
-  reviews.py               which slotted issues' PRs have a Copilot review on their head commit
+  reviews.py               which issues in the issues file have a Copilot review on their PR's head commit
   claude_hooks.py          adds and removes bin/claude-waiting in ~/.claude/settings.json
   serve.py                 plan serve: the server's LaunchAgent through launchctl, and its status
   server.py                the local server: Flask on 127.0.0.1, the one module that imports Flask
@@ -700,9 +648,10 @@ claude/
   settings.json            attribution, permissions, the hooks
   hooks/                   no_ai_attribution.py, no_terminal_jira_transition.py,
                            no_bare_open.py, and a test for each
-vscode/plan-window/        the VS Code extension that opens an issue window's ticket and Claude
-                           terminal, and plan browse's pages: extension.js (the VS Code calls), plan.js (what they
-                           need, from the plan.* settings), plan.test.js
+vscode/plan-window/        the VS Code extension that opens an issue's ticket and Claude
+                           terminal in the plan window, plan browse's pages and the Explorer's
+                           Issues view: package.json, extension.js (the VS Code calls), plan.js
+                           (what they need, from the plan.* settings), plan.test.js
 docs/
   architecture.md          what the system is, and its rules (§10)
   failure-modes.md         each command's failure-mode table

@@ -1,0 +1,9 @@
+#!/bin/bash
+# Stands in for the plan CLI in the e2e suite. Appends its arguments to plan.log in the run's
+# fixture directory, and fails when the fixture has created plan-fails there.
+set -u
+echo "$*" >> "$PLAN_E2E_ROOT/plan.log"
+if [ -e "$PLAN_E2E_ROOT/plan-fails" ]; then
+  echo "fixture plan failure" >&2
+  exit 1
+fi

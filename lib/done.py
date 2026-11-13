@@ -31,7 +31,7 @@ from .start import (
     worktrees,
 )
 from .ship import prLink, unsentIn
-from . import term
+from . import pulses, term
 
 # The status categories Done accepts: "indeterminate" (In Progress) and "done", either of which a
 # merge's comment or an earlier Done's cleanup may still have work left to do under. "new" (To Do)
@@ -229,7 +229,7 @@ def checkMerged(dir, pr, removing, disposable):
 # FIRST here, and the PR lookup (prFromBranch) moves after it, inside finishIn, once a branch name
 # is in hand. If no worktree and no branch for the key can be found at all, there is nothing to
 # resolve a PR from, and finish() must refuse rather than guess at a branch name.
-def finish(jira, checkouts, key, view=None, disposable=None, typeMap=None, slotsFile=None, cwd=None, pickRepo=None, workspaceDir=None):
+def finish(jira, checkouts, key, view=None, disposable=None, typeMap=None, issuesFile=None, cwd=None, pickRepo=None, workspaceDir=None, pulsesFile=None):
     if view is None:
         view = prFromBranch
     if disposable is None:
@@ -260,7 +260,7 @@ def finish(jira, checkouts, key, view=None, disposable=None, typeMap=None, slots
     release = lock(common, key, "Done")
     result = {"dir": None, "notes": []}
     try:
-        finishIn(jira, key, project, checkout, common, pr, found, porcelain, result, disposable, typeMap, slotsFile, workspaceDir)
+        finishIn(jira, key, project, checkout, common, pr, found, porcelain, result, disposable, typeMap, issuesFile, workspaceDir, pulsesFile)
         return result
     except Exception as error:
         error.result = result
@@ -296,7 +296,7 @@ def issueWorktreePath(resolved, checkout, key):
     return worktreeDir(checkout, key)
 
 
-def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result, disposable, typeMap=None, slotsFile=None, workspaceDir=None):
+def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result, disposable, typeMap=None, issuesFile=None, workspaceDir=None, pulsesFile=None):
     if typeMap is None:
         typeMap = DEFAULT_TYPE_MAP
     notes = result["notes"]
@@ -472,9 +472,14 @@ def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result,
         notes.append(f"Added the note to {key}.")
     notes.append(jira.closeNote(key))
 
-    # Rule 4: the issue is finished, so its workspace slot (if any) is freed, the same way
-    # Start/Open label it (term.writeSlot). Done opens no browser -- only
-    # the "Close KEY in Jira" note above, once, ever points Peter at the issue.
-    term.removeSlot(key, slotsFile)
-    # The issue window's workspace file is a throwaway: one that won't delete is a warning, not a failure.
-    notes.extend(term.removeWorkspaceFiles(key, issueWorktreePath(resolved, checkout, key), workspaceDir))
+    # Rule 4: the issue is finished, so it leaves the issues file that Start/Open added it to
+    # (term.addIssue), its colour leaves the pulses file, and its worktree's folder leaves the plan
+    # workspace (term.addFolders); the store's folder stays for the other issues. Done opens no
+    # browser -- only the "Close KEY in Jira" note above, once, ever points Peter at the issue.
+    worktree = issueWorktreePath(resolved, checkout, key)
+    term.removeIssue(key, issuesFile)
+    pulses.clearPulse(key, pulsesFile)
+    settings = term.planSettings(issuesFile, pulses.resolvePulsesFile(pulsesFile), workspaceDir)
+    term.removeFolder(worktree, term.planWorkspacePath(workspaceDir), settings)
+    # The issue's workspace file is a throwaway: one that won't delete is a warning, not a failure.
+    notes.extend(term.removeWorkspaceFiles(key, worktree, workspaceDir))

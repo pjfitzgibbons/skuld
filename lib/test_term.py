@@ -2,13 +2,16 @@
 # a session named CIAM-12. term.py must target every tmux call with the exact-match "=name" form.
 # term.py talks to tmux through start.py's run() (subprocess), so these tests patch
 # `lib.term.run` directly (term.py did `from .start import run`, binding its own name at import
-# time), and assert the exact argv each tool would see, never spawning a real process. The slots
-# file itself is a real temp file, since its write-temp-then-rename logic is what's under test.
+# time), and assert the exact argv each tool would see, never spawning a real process. The issues
+# file and plan workspace are real temp files, since their lock and write-temp-then-rename logic
+# is what's under test.
 #
 # See lib/term.py's module comment and docs/architecture.md §7.1.
+import io
 import json
 import os
 import tempfile
+import threading
 import unittest
 import urllib.parse
 from unittest import mock
@@ -46,52 +49,6 @@ class TermTests(unittest.TestCase):
             self.assertFalse(term.hasSession("CIAM-1"))
             self.assertTrue(term.hasSession("CIAM-12"))
 
-    def test_writeSlot_then_lookupSlot_round_trips_and_replaces_the_same_slots_line(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            slots = os.path.join(tmp, "workspaces")
-            with mock.patch.object(term, "run", return_value=""):
-                term.writeSlot("CIAM-1", "3", slots)
-                term.writeSlot("CIAM-2", "3", slots)  # replaces CIAM-1's line for Desktop 3
-            self.assertIsNone(term.lookupSlot("CIAM-1", slots))
-            self.assertEqual(term.lookupSlot("CIAM-2", slots), "3")
-
-    def test_writeSlot_moves_a_keys_slot_rather_than_giving_it_two(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            slots = os.path.join(tmp, "workspaces")
-            with mock.patch.object(term, "run", return_value=""):
-                term.writeSlot("CIAM-1", "3", slots)
-                term.writeSlot("CIAM-1", "4", slots)
-            self.assertEqual(term.slotEntries(slots), [("4", "CIAM-1")])
-
-    def test_writeSlot_runs_no_command(self):
-        calls = []
-        with tempfile.TemporaryDirectory() as tmp:
-            slots = os.path.join(tmp, "workspaces")
-            with mock.patch.object(term, "run", side_effect=lambda c, a, cwd: calls.append([c, *a])):
-                term.writeSlot("CIAM-1", "3", slots)
-        self.assertEqual(calls, [])
-
-    def test_removeSlot_drops_only_the_matching_line(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            slots = os.path.join(tmp, "workspaces")
-            with mock.patch.object(term, "run", return_value=""):
-                term.writeSlot("CIAM-1", "3", slots)
-                term.writeSlot("CIAM-2", "4", slots)
-                term.removeSlot("CIAM-1", slots)
-            self.assertIsNone(term.lookupSlot("CIAM-1", slots))
-            self.assertEqual(term.lookupSlot("CIAM-2", slots), "4")
-
-    def test_removeSlot_no_op_when_key_absent_does_not_write_or_trigger(self):
-        calls = []
-        with tempfile.TemporaryDirectory() as tmp:
-            slots = os.path.join(tmp, "workspaces")
-            with open(slots, "w", encoding="utf8") as f:
-                f.write("4=CIAM-2\n")
-            with mock.patch.object(term, "run", side_effect=lambda c, a, cwd: calls.append([c, *a])):
-                term.removeSlot("CIAM-1", slots)
-            self.assertEqual(calls, [])
-            self.assertEqual(term.lookupSlot("CIAM-2", slots), "4")
-
     # Ship and Go used to be separate terminal windows -- a "ship" window with nvim+lazygit for a
     # standalone review step, and a "go" window that ran `pr`. The review step is removed (DECIDED,
     # before Report.html exists) and shipWindow() now does what goWindow() used to: run `pr <key>`
@@ -116,19 +73,300 @@ class TermTests(unittest.TestCase):
         self.assertFalse(any("nvim" in c or "lazygit" in c for c in calls))
         self.assertFalse(any(c[1] == "split-window" for c in calls))
 
+# The issues file: one <KEY> per line, in the order issues were added, each once.
+class IssuesFileTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.file = os.path.join(self.dir.name, "plan", "issues")
+
+    def write(self, text):
+        os.makedirs(os.path.dirname(self.file), exist_ok=True)
+        with open(self.file, "w", encoding="utf8") as f:
+            f.write(text)
+
+    def read(self):
+        with open(self.file, encoding="utf8") as f:
+            return f.read()
+
+    def test_added_issues_round_trip_in_the_order_added(self):
+        term.addIssue("SK-0041", self.file)
+        term.addIssue("CIAM-12", self.file)
+        self.assertEqual(term.issueKeys(self.file), ["SK-0041", "CIAM-12"])
+        self.assertEqual(self.read(), "SK-0041\nCIAM-12\n")
+
+    def test_adding_a_listed_issue_again_keeps_one_line_in_its_place(self):
+        term.addIssue("SK-0041", self.file)
+        term.addIssue("CIAM-12", self.file)
+        term.addIssue("SK-0041", self.file)
+        self.assertEqual(term.issueKeys(self.file), ["SK-0041", "CIAM-12"])
+
+    def test_removing_drops_only_that_issue(self):
+        self.write("SK-0041\nCIAM-12\nSK-0045\n")
+        term.removeIssue("CIAM-12", self.file)
+        self.assertEqual(self.read(), "SK-0041\nSK-0045\n")
+
+    def test_removing_an_unlisted_issue_writes_nothing(self):
+        self.write("SK-0041\n\nnot a key\n")
+        before = os.stat(self.file).st_mtime_ns
+        term.removeIssue("CIAM-12", self.file)
+        self.assertEqual(self.read(), "SK-0041\n\nnot a key\n")
+        self.assertEqual(os.stat(self.file).st_mtime_ns, before)
+
+    def test_a_missing_file_is_empty_and_removing_from_it_creates_nothing(self):
+        self.assertEqual(term.issueKeys(self.file), [])
+        term.removeIssue("SK-0041", self.file)
+        self.assertFalse(os.path.exists(self.file))
+
+    def test_a_half_written_or_hand_edited_file_keeps_its_keys_and_skips_the_rest(self):
+        self.write("SK-0041\n\n  CIAM-12  \n3=SK-0045\ngarbage\nSK-0041\nCIAM-1")
+        self.assertEqual(term.issueKeys(self.file), ["SK-0041", "CIAM-12", "CIAM-1"])
+
+    def test_the_next_write_drops_the_lines_that_arent_keys(self):
+        self.write("SK-0041\ngarbage\n")
+        term.addIssue("CIAM-12", self.file)
+        self.assertEqual(self.read(), "SK-0041\nCIAM-12\n")
+
+    def test_writing_leaves_no_temp_file_behind(self):
+        term.addIssue("SK-0041", self.file)
+        self.assertEqual(sorted(os.listdir(os.path.dirname(self.file))), ["issues", "issues.lock"])
+
+
+# Review finding 1: two writers that read the same file before either wrote it lost one write, and
+# shared one temp name. Each read-modify-write now holds the file's lock, and each write has a temp
+# file of its own.
+class SharedFileWriteTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.issuesFile = os.path.join(self.dir.name, "issues")
+        self.planWorkspace = os.path.join(self.dir.name, "plan.code-workspace")
+
+    # Runs write in a thread while this test holds path's lock, and returns whether it had written
+    # before the lock was released and after.
+    def writeWhileLocked(self, path, write, written):
+        thread = threading.Thread(target=write)
+        with term.locked(path):
+            thread.start()
+            thread.join(0.3)
+            before = written()
+        thread.join(5)
+        return before, written()
+
+    def test_adding_an_issue_waits_for_the_lock(self):
+        written = lambda: term.issueKeys(self.issuesFile) == ["SK-0041"]
+        self.assertEqual(self.writeWhileLocked(self.issuesFile, lambda: term.addIssue("SK-0041", self.issuesFile), written), (False, True))
+
+    def test_removing_an_issue_waits_for_the_lock(self):
+        term.addIssue("SK-0041", self.issuesFile)
+        written = lambda: term.issueKeys(self.issuesFile) == []
+        self.assertEqual(self.writeWhileLocked(self.issuesFile, lambda: term.removeIssue("SK-0041", self.issuesFile), written), (False, True))
+
+    def test_adding_and_removing_a_folder_wait_for_the_lock(self):
+        folders = lambda: term.readPlanWorkspace(self.planWorkspace)["folders"]
+        add = lambda: term.addFolders(["/w/SK-0041"], self.planWorkspace, SETTINGS)
+        self.assertEqual(self.writeWhileLocked(self.planWorkspace, add, lambda: folders() != []), (False, True))
+        remove = lambda: term.removeFolder("/w/SK-0041", self.planWorkspace, SETTINGS)
+        self.assertEqual(self.writeWhileLocked(self.planWorkspace, remove, lambda: folders() == []), (False, True))
+
+    def test_writers_at_once_lose_no_issue(self):
+        keys = [f"SK-{n:04d}" for n in range(1, 21)]
+        threads = [threading.Thread(target=term.addIssue, args=(key, self.issuesFile)) for key in keys]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(5)
+        self.assertEqual(sorted(term.issueKeys(self.issuesFile)), keys)
+
+    def test_writers_at_once_lose_no_folder(self):
+        folders = [f"/w/SK-{n:04d}" for n in range(1, 21)]
+        threads = [threading.Thread(target=term.addFolders, args=([folder], self.planWorkspace, SETTINGS)) for folder in folders]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(5)
+        self.assertEqual(sorted(f["path"] for f in term.readPlanWorkspace(self.planWorkspace)["folders"]), folders)
+
+    # The writer's read must happen inside the lock: another writer's change, made while the lock is
+    # held, is then in what the writer reads once it gets the lock.
+    def test_a_writer_reads_the_file_after_it_gets_the_lock(self):
+        thread = threading.Thread(target=term.addIssue, args=("SK-0041", self.issuesFile))
+        with term.locked(self.issuesFile):
+            thread.start()
+            thread.join(0.3)
+            term.writeLines(self.issuesFile, ["CIAM-12"])
+        thread.join(5)
+        self.assertEqual(term.issueKeys(self.issuesFile), ["CIAM-12", "SK-0041"])
+
+    def test_a_new_file_is_readable_by_others_as_the_umask_allows(self):
+        old = os.umask(0o022)
+        self.addCleanup(os.umask, old)
+        term.writeAtomically(self.issuesFile, "SK-0041\n")
+        self.assertEqual(os.stat(self.issuesFile).st_mode & 0o777, 0o644)
+
+    def test_a_rewritten_file_keeps_its_mode(self):
+        for mode in (0o600, 0o664):
+            with self.subTest(mode=oct(mode)):
+                term.writeAtomically(self.issuesFile, "SK-0041\n")
+                os.chmod(self.issuesFile, mode)
+                term.writeAtomically(self.issuesFile, "CIAM-12\n")
+                self.assertEqual(os.stat(self.issuesFile).st_mode & 0o777, mode)
+
+    def test_each_write_has_a_temp_file_of_its_own_beside_the_file(self):
+        temps = []
+        replace = os.replace
+
+        def recordingReplace(source, target):
+            temps.append(source)
+            replace(source, target)
+
+        with mock.patch.object(term.os, "replace", side_effect=recordingReplace):
+            term.writeAtomically(self.issuesFile, "SK-0041\n")
+            term.writeAtomically(self.issuesFile, "CIAM-12\n")
+        self.assertEqual(len(set(temps)), 2)
+        for temp in temps:
+            self.assertEqual(os.path.dirname(temp), self.dir.name)
+            self.assertNotEqual(temp, f"{self.issuesFile}.tmp")
+
+    def test_a_failed_write_leaves_the_file_and_no_temp_file(self):
+        term.addIssue("SK-0041", self.issuesFile)
+        with mock.patch.object(term.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                term.addIssue("CIAM-12", self.issuesFile)
+        self.assertEqual(sorted(os.listdir(self.dir.name)), ["issues", "issues.lock"])
+        self.assertEqual(term.issueKeys(self.issuesFile), ["SK-0041"])
+
+
+# The plan window: `code <plan workspace>`, then the open link, through run(), and nothing else.
+class PlanWindowTests(unittest.TestCase):
+    def test_opening_runs_code_on_the_plan_workspace(self):
+        calls = []
+        with mock.patch.object(term, "run", side_effect=lambda c, a, cwd: calls.append([c, *a])):
+            term.openPlanWindow("/w/plan.code-workspace")
+        self.assertEqual(calls, [["code", "/w/plan.code-workspace"]])
+
+    def test_a_failed_code_stops_naming_the_command_to_run_by_hand(self):
+        with mock.patch.object(term, "run", side_effect=RuntimeError("code /w/plan.code-workspace: No such file or directory")):
+            with self.assertRaisesRegex(RuntimeError, r"(?s)opening the plan window failed: .*Open it by hand: code /w/plan\.code-workspace"):
+                term.openPlanWindow("/w/plan.code-workspace")
+
+    def test_revealing_opens_the_issues_link(self):
+        calls = []
+        with mock.patch.object(term, "run", side_effect=lambda c, a, cwd: calls.append([c, *a])):
+            term.revealIssue("SK-0041")
+        self.assertEqual(calls, [["code", "--open-url", "vscode://skuld.plan-window/open?key%3DSK-0041"]])
+
+    def test_a_failed_reveal_prints_one_line_to_stderr_and_returns(self):
+        err = io.StringIO()
+        with mock.patch.object(term, "run", side_effect=RuntimeError("code: not found")), mock.patch("sys.stderr", err):
+            term.revealIssue("SK-0041")
+        self.assertEqual(
+            err.getvalue(),
+            "couldn't open SK-0041 in the plan window: code: not found; click it in the Issues view\n",
+        )
+
+    def test_the_open_link_is_encoded_as_the_browse_link_is(self):
+        self.assertEqual(term.openLink("CIAM-12"), "vscode://skuld.plan-window/open?key%3DCIAM-12")
+        self.assertTrue(term.browseLink("https://x/", "CIAM-12").endswith("%26key%3DCIAM-12"))
+
+
+SETTINGS = {"plan.issuesFile": "/c/issues", "plan.pulsesFile": "/c/pulses", "plan.workspaceDir": "/c/ws"}
+
+
+class PlanWorkspaceTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.path = os.path.join(self.dir.name, "ws", "plan.code-workspace")
+
+    def write(self, text):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        with open(self.path, "w") as f:
+            f.write(text)
+
+    def folders(self):
+        return term.readPlanWorkspace(self.path)["folders"]
+
+    def test_the_default_sits_in_the_workspace_folder(self):
+        self.assertEqual(term.planWorkspacePath("/cache/ws"), "/cache/ws/plan.code-workspace")
+
+    def test_folders_are_added_in_order_once_each(self):
+        term.addFolders(["/w/SK-0041"], self.path, SETTINGS)
+        term.addFolders(["/w/CIAM-12"], self.path, SETTINGS)
+        term.addFolders(["/w/SK-0041"], self.path, SETTINGS)
+        self.assertEqual(self.folders(), [{"path": "/w/SK-0041"}, {"path": "/w/CIAM-12"}])
+
+    def test_several_folders_are_added_in_one_write_each_once(self):
+        term.addFolders(["/w/SK-0041", "/issues"], self.path, SETTINGS)
+        term.addFolders(["/w/CIAM-12", "/issues"], self.path, SETTINGS)
+        self.assertEqual(self.folders(), [{"path": "/w/SK-0041"}, {"path": "/issues"}, {"path": "/w/CIAM-12"}])
+
+    def test_removing_drops_only_that_folder(self):
+        term.addFolders(["/w/SK-0041"], self.path, SETTINGS)
+        term.addFolders(["/w/CIAM-12"], self.path, SETTINGS)
+        term.removeFolder("/w/SK-0041", self.path, SETTINGS)
+        self.assertEqual(self.folders(), [{"path": "/w/CIAM-12"}])
+
+    def test_a_folder_named_through_a_symlink_is_the_same_folder(self):
+        real = os.path.join(self.dir.name, "real")
+        os.makedirs(real)
+        link = os.path.join(self.dir.name, "link")
+        os.symlink(real, link)
+        term.addFolders([link], self.path, SETTINGS)
+        term.addFolders([real], self.path, SETTINGS)
+        self.assertEqual(self.folders(), [{"path": link}])
+        term.removeFolder(real, self.path, SETTINGS)
+        self.assertEqual(self.folders(), [])
+
+    def test_removing_an_unlisted_folder_writes_nothing(self):
+        term.removeFolder("/w/SK-0041", self.path, SETTINGS)
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_existing_settings_are_kept(self):
+        self.write('{"folders": [{"path": "/w/A-1"}], "settings": {"window.title": "plan"}}')
+        term.addFolders(["/w/SK-0041"], self.path, SETTINGS)
+        with open(self.path) as f:
+            self.assertEqual(
+                json.load(f),
+                {"folders": [{"path": "/w/A-1"}, {"path": "/w/SK-0041"}], "settings": {"window.title": "plan", **SETTINGS}},
+            )
+
+    def test_every_write_sets_the_plan_settings_over_stale_ones(self):
+        self.write('{"folders": [], "settings": {"plan.issuesFile": "/old/issues", "editor.tabSize": 2}}')
+        term.addFolders(["/w/SK-0041"], self.path, SETTINGS)
+        self.assertEqual(term.readPlanWorkspace(self.path)["settings"], {"plan.issuesFile": "/c/issues", "editor.tabSize": 2, "plan.pulsesFile": "/c/pulses", "plan.workspaceDir": "/c/ws"})
+
+    def test_the_plan_settings_are_the_expanded_paths(self):
+        settings = term.planSettings(None, "/p/pulses", None)
+        self.assertEqual(
+            settings,
+            {
+                "plan.issuesFile": os.path.expanduser("~/.cache/plan/issues"),
+                "plan.pulsesFile": "/p/pulses",
+                "plan.workspaceDir": os.path.expanduser("~/.cache/plan/code-workspaces"),
+            },
+        )
+        self.assertEqual(term.planSettings("/i", "/p", "/ws")["plan.workspaceDir"], "/ws")
+
+    def test_a_missing_file_is_an_empty_workspace(self):
+        self.assertEqual(term.readPlanWorkspace(self.path), {"folders": []})
+
+    def test_a_garbage_file_is_an_empty_workspace_the_next_write_repairs(self):
+        for garbage in ("{not json", "[1, 2]", '{"folders": 3}'):
+            with self.subTest(garbage=garbage):
+                self.write(garbage)
+                self.assertEqual(self.folders(), [])
+                term.addFolders(["/w/SK-0041"], self.path, SETTINGS)
+                self.assertEqual(self.folders(), [{"path": "/w/SK-0041"}])
+
+    def test_writing_leaves_no_temp_file_behind(self):
+        term.addFolders(["/w/SK-0041"], self.path, SETTINGS)
+        self.assertEqual(sorted(os.listdir(os.path.dirname(self.path))), ["plan.code-workspace", "plan.code-workspace.lock"])
+
+
 class IssueWorkspaceFileTests(unittest.TestCase):
     def test_the_file_sits_in_the_workspace_folder_named_for_the_issue(self):
         self.assertEqual(term.workspaceFilePath("SK-0030", "/cache/ws"), "/cache/ws/SK-0030.code-workspace")
-
-    def test_an_issue_with_a_legacy_file_keeps_it_so_its_open_window_is_reused(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            worktree = os.path.join(tmp, "repo.worktrees", "SK-0030")
-            workspaceDir = os.path.join(tmp, "ws")
-            self.assertEqual(term.issueWorkspaceFilePath("SK-0030", worktree, workspaceDir), term.workspaceFilePath("SK-0030", workspaceDir))
-            legacy = term.legacyWorkspaceFilePath(worktree, "SK-0030")
-            os.makedirs(os.path.dirname(legacy))
-            open(legacy, "w").close()
-            self.assertEqual(term.issueWorkspaceFilePath("SK-0030", worktree, workspaceDir), legacy)
 
     def test_removing_takes_the_file_and_the_legacy_one_beside_the_worktree(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -169,6 +407,15 @@ class IssueWorkspaceFileTests(unittest.TestCase):
     def test_a_jira_issue_has_no_ticket_setting(self):
         workspace = term.issueWorkspace("CIAM-1", "/w/CIAM-1", "/issues", "Work on Jira CIAM-1")
         self.assertNotIn("plan.ticket", workspace["settings"])
+
+    def test_a_jira_issue_has_its_browse_url_as_plan_ticketUrl(self):
+        url = "https://jira.example/browse/CIAM-1"
+        settings = term.issueWorkspace("CIAM-1", "/w/CIAM-1", "/issues", "p", None, url)["settings"]
+        self.assertEqual(settings["plan.ticketUrl"], url)
+
+    def test_a_store_issue_has_no_plan_ticketUrl(self):
+        settings = term.issueWorkspace("SK-0030", "/w", "/issues", "p", "/issues/SK-0030-x.md", "https://x/")["settings"]
+        self.assertNotIn("plan.ticketUrl", settings)
 
     def test_the_written_file_reads_back_as_the_same_workspace(self):
         workspace = term.issueWorkspace("CIAM-1", "/w/CIAM-1", "/issues", "p")

@@ -12,10 +12,9 @@ from . import agents as agents_mod
 from . import config as config_mod
 from . import done as done_mod
 from . import fileissues as fileissues_mod
-from . import placer as placer_mod
+from . import pulses as pulses_mod
 from . import serve as serve_mod
 from . import ship as ship_mod
-from . import slotbar as slotbar_mod
 from . import start as startLib
 from . import term as term_mod
 from .jira import KEY_RE, Jira, projectOf
@@ -167,17 +166,10 @@ def mergeRows(jiraRows, skRows):
 # way it did under the old tab-delimited `--delimiter \t`/`--with-nth 1,2,3` setup. cmdPicker
 # below no longer passes either option: it isn't needed to extract `{1}`, and dropping it avoids
 # re-introducing a tab-joined display when fzf re-renders the (now space-padded) fields.
-#
-# slotLabels ({KEY: label}, from the WindowPlacer) adds a column after status: where each issue's
-# window is ("D3", or "D3, window on D4" when its window is elsewhere). With no slots at all there
-# is no column.
-def issueRows(cfg, slotLabels=None):
+def issueRows(cfg):
     skRows = fileissues_mod.FileIssues({"dir": config_mod.issueStoreFrom(cfg)}).list()
     issues = mergeRows(jiraNextUp(cfg), skRows)
-    slotLabels = slotLabels or {}
     columns = [lambda issue: issue["id"], lambda issue: issue["status"]]
-    if slotLabels:
-        columns.append(lambda issue: slotLabels.get(issue["id"], ""))
     widths = [max((len(column(issue)) for issue in issues), default=0) for column in columns]
     rows = []
     for issue in issues:
@@ -197,9 +189,7 @@ def jiraNextUp(cfg):
 
 # `plan list`: the picker's rows, printed plainly -- already column-aligned (issueRows()).
 def cmdList(cfg):
-    placer = placer_mod.placerFrom(cfg)
-    placer.sweep()
-    rows = issueRows(cfg, placer.slotLabels())
+    rows = issueRows(cfg)
     for row in rows:
         print(row["line"])
 
@@ -233,15 +223,16 @@ def cmdView(cfg, key):
     print(jira.browseUrl(key))
 
 
-# `plan start`/`plan open <KEY>`: start.start(), then open or focus the issue's VS Code window
-# through the configured WindowPlacer (lib/placer.py). Open is the same call as Start (start.py's
-# ACTION/startIn already handle "already has a worktree" by reusing it); the terminal tool doesn't
-# need two code paths.
+# `plan start`/`plan open <KEY>`: start.start(), then write the issue's workspace file (the plan.*
+# settings; it isn't opened), add the issue to the issues file and its worktree to the plan
+# workspace, open or raise the plan window with `code <plan workspace>` (term.openPlanWindow; VS
+# Code places it, ADR 0004), and ask plan-window to bring the issue forward. Open is the same call
+# as Start (start.py's ACTION/startIn already handle "already has a worktree" by reusing it); the
+# terminal tool doesn't need two code paths.
 def cmdStart(cfg, key):
     startLib.checkId(key, "Start")
+    store = config_mod.issueStoreFrom(cfg)  # no store stops Start before anything changes
     jira = jiraFrom(cfg, key)
-    placer = placer_mod.placerFrom(cfg)
-    placer.sweep()
     result = startLib.start(jira, cfg.get("checkouts"), key, confirmBlockers, typeMap=cfg.get("typeMap"))
     if not result:
         print("Not started.")
@@ -249,18 +240,39 @@ def cmdStart(cfg, key):
     for note in result["notes"]:
         print(note)
     ticket = jira.browseUrl(key) if fileissues_mod.isFileBacked(key) else None
-    workspaceFile = writeIssueWorkspaceFile(cfg, key, result["dir"], ticket)
-    placement = placer.openWindow(key, workspaceFile)
-    for note in placement.notes:
-        print(note)
-    print(f"{placement.where} ready.")
-    if ticket:
-        print(ticket)  # the plan-window extension opens it in a tab
-    else:
-        # Start runs in whatever terminal invoked `plan start`, not the new issue's own window,
-        # so the page is aimed at the issue's key rather than the caller's.
-        term_mod.showUrl(jira.browseUrl(key), key, workspaceFile)
-    placer.focus(placement, workspaceFile)
+    ticketUrl = None if ticket else jira.browseUrl(key)
+    writeIssueWorkspaceFile(cfg, key, result["dir"], store, ticket, ticketUrl)
+    addToIssuesFile(cfg, key)
+    planWorkspace = addToPlanWorkspace(cfg, result["dir"], store)
+    term_mod.openPlanWindow(planWorkspace)
+    term_mod.revealIssue(key)
+    print(f"{key} ready.")
+    # Only printed: the /open link has plan-window open the ticket file in a tab, or the Jira page
+    # (plan.ticketUrl) in the integrated browser, so showUrl() here would open the page twice.
+    print(ticket or ticketUrl)
+
+
+def addToIssuesFile(cfg, key):
+    path = term_mod.resolveIssuesFile(cfg.get("issuesFile"))
+    with term_mod.step("adding the issue to the issues file", f"Check that {os.path.dirname(path)} is writable."):
+        term_mod.addIssue(key, cfg.get("issuesFile"))
+
+
+# The issue's worktree, and the ticket store's folder unless the plan workspace already lists it.
+def addToPlanWorkspace(cfg, worktree, store):
+    path = planWorkspaceFrom(cfg)
+    with term_mod.step("adding the issue's folder to the plan workspace", f"Check that {os.path.dirname(path)} is writable."):
+        term_mod.addFolders([worktree, store], path, planSettingsFrom(cfg))
+    return path
+
+
+def planWorkspaceFrom(cfg):
+    return term_mod.planWorkspacePath(cfg.get("workspaceDir"))
+
+
+def planSettingsFrom(cfg):
+    pulsesFile = pulses_mod.resolvePulsesFile(cfg.get("pulsesFile"))
+    return term_mod.planSettings(cfg.get("issuesFile"), pulsesFile, cfg.get("workspaceDir"))
 
 
 # What Claude is first asked to do. A store issue names its ticket file: "Work on Jira SK-0003"
@@ -274,25 +286,25 @@ def claudePrompt(key, ticket):
     )
 
 
-def writeIssueWorkspaceFile(cfg, key, worktree, ticket):
-    path = term_mod.issueWorkspaceFilePath(key, worktree, cfg.get("workspaceDir"))
-    workspace = term_mod.issueWorkspace(
-        key, worktree, config_mod.issueStoreFrom(cfg), claudePrompt(key, ticket), ticket
-    )
+# ticket is a store issue's ticket file; ticketUrl is a Jira issue's browse URL, None otherwise.
+def writeIssueWorkspaceFile(cfg, key, worktree, store, ticket, ticketUrl=None):
+    path = term_mod.workspaceFilePath(key, cfg.get("workspaceDir"))
+    workspace = term_mod.issueWorkspace(key, worktree, store, claudePrompt(key, ticket), ticket, ticketUrl)
     with term_mod.step("writing the issue's workspace file", f"Check that {os.path.dirname(path)} is writable."):
         term_mod.writeWorkspaceFile(path, workspace)
     return path
 
 
-# `plan browse <KEY | pr#N | url> [KEY]`: print the page's URL, then open it in an issue window's
-# integrated browser (architecture §7.6.1). The window is the target's key, else the [KEY] given,
-# else the calling terminal's PLAN_KEY, else whichever VS Code window has focus.
+# `plan browse <KEY | pr#N | url> [KEY]`: print the page's URL, then open it in the plan window's
+# integrated browser (architecture §7.6.1). The issue is the target's key, else the [KEY] given,
+# else the calling terminal's PLAN_KEY; the plan window is raised first when its workspace exists,
+# else the link goes to whichever VS Code window has focus.
 def cmdBrowse(cfg, target, windowKey):
     if not target:
         raise RuntimeError("usage: plan browse <KEY | pr#N | url> [KEY]")
     url, targetKey = browseTarget(cfg, target)
     key = targetKey or windowKey or os.environ.get("PLAN_KEY") or None
-    term_mod.showUrl(url, key, openWorkspaceFile(cfg, key))
+    term_mod.showUrl(url, key, existingPlanWorkspace(cfg))
 
 
 PR_TARGET_RE = re.compile(r"^pr#(\d+)$")
@@ -319,28 +331,10 @@ def issuePageUrl(cfg, key):
     return jira.browseUrl(key)
 
 
-# The issue window's workspace file when it exists, for `code` to focus: the file Start and Open
-# use, the legacy one beside the worktree while it still exists. None for no key or no file, and the
-# link goes to the focused window, where a key the window doesn't carry is refused.
-def openWorkspaceFile(cfg, key):
-    if not key:
-        return None
-    path = term_mod.issueWorkspaceFilePath(key, issueWorktree(cfg, key), cfg.get("workspaceDir"))
+# The plan workspace when it exists, for `code` to raise the plan window; None before any Start.
+def existingPlanWorkspace(cfg):
+    path = planWorkspaceFrom(cfg)
     return path if os.path.exists(path) else None
-
-
-# key's worktree, found the way Start finds it, or None when it has none or can't be found. The
-# lookup needs only the key, so it asks neither Jira nor Peter: a repo choice it can't make is no
-# worktree, and the page still goes out.
-def issueWorktree(cfg, key):
-    typeMap = cfg.get("typeMap")
-    try:
-        checkout = startLib.mainCheckout({"key": key}, cfg.get("checkouts"), os.getcwd(), "Open", typeMap, refuseRepoPick)["checkout"]
-        porcelain = startLib.git(checkout, "worktree", "list", "--porcelain")
-        found = startLib.existingWorktree(porcelain, key, startLib.worktreeDir(checkout, key), "Open", typeMap)
-    except (RuntimeError, OSError):
-        return None
-    return found["dir"] if found and not found["main"] else None
 
 
 def refuseRepoPick(options):
@@ -380,14 +374,14 @@ def cmdDone(cfg, key):
         key = keyFromBranch(currentBranch(dir))
     startLib.checkId(key, "Done")
     jira = jiraFrom(cfg, key)
-    placer_mod.placerFrom(cfg).sweep()
     result = done_mod.finish(
         jira,
         cfg.get("checkouts"),
         key,
         disposable=cfg.get("disposable"),
         typeMap=cfg.get("typeMap"),
-        slotsFile=cfg.get("slotsFile"),
+        issuesFile=cfg.get("issuesFile"),
+        pulsesFile=cfg.get("pulsesFile"),
         workspaceDir=cfg.get("workspaceDir"),
         cwd=dir,
     )
@@ -410,18 +404,18 @@ def shellQuote(value):
     return "'" + str(value).replace("'", "'\\''") + "'"
 
 
-# `plan pulse <KEY> <orange|green|off>`: pulse the issue's Desktop in SlotBar, or clear its tint.
+# `plan pulse <KEY> <orange|green|off>`: colour the issue's item in the Issues view, or clear it.
 def cmdPulse(cfg, key, color):
     startLib.checkId(key, "Pulse")
-    slotbar_mod.pulse(key, color, cfg.get("slotsFile"))
+    pulses_mod.pulse(key, color, cfg.get("issuesFile"), cfg.get("pulsesFile"))
 
 
 AGENTS_USAGE = "plan agents [status | list | pick | tick [--watch]] [--json]"
 
 
-# `plan agents`: every Claude session, its issue, Desktop and state (lib/agents.py). `status` is one
+# `plan agents`: every Claude session, its issue and state (lib/agents.py). `status` is one
 # line; `list` (the default) is the table; `--json` is the listing as JSON; `pick` chooses a
-# session in fzf and brings its issue window forward; `tick` pulses each Desktop once, and
+# session in fzf and brings its issue forward in the plan window; `tick` pulses each issue once, and
 # `tick --watch` keeps doing so, as the LaunchAgent does (bin/install-agents).
 def cmdAgents(cfg, args):
     words = [arg for arg in args if not arg.startswith("--")]
@@ -432,7 +426,7 @@ def cmdAgents(cfg, args):
     if what not in ("status", "list", "pick") or len(words) > 1:
         raise RuntimeError(f"usage: {AGENTS_USAGE}")
     if what == "status":
-        print(agents_mod.statusLine(agents_mod.currentAgents(cfg.get("slotsFile"), cfg.get("claudeCommand"))))
+        print(agents_mod.statusLine(agents_mod.currentAgents(cfg.get("issuesFile"), cfg.get("claudeCommand"))))
         return None
     agents = listedAgents(cfg)
     if "--json" in flags:
@@ -445,7 +439,7 @@ def cmdAgents(cfg, args):
 
 
 def listedAgents(cfg):
-    agents = agents_mod.currentAgents(cfg.get("slotsFile"), cfg.get("claudeCommand"))
+    agents = agents_mod.currentAgents(cfg.get("issuesFile"), cfg.get("claudeCommand"))
     return agents_mod.withTitles(agents, lambda key: issueTitle(cfg, key))
 
 
@@ -455,17 +449,20 @@ def issueTitle(cfg, key):
     return jiraFrom(cfg, key).issue(key)["fields"]["summary"]
 
 
+# One tick writes what differs from the pulses file as it stands; the watch loop starts from it too.
 def agentsTick(cfg, keepWatching):
+    issuesFile, pulsesFile, claudeCommand = cfg.get("issuesFile"), cfg.get("pulsesFile"), cfg.get("claudeCommand")
     if keepWatching:
-        return agents_mod.watch(cfg.get("slotsFile"), cfg.get("claudeCommand"))  # runs until stopped
-    _, failures = agents_mod.tick({}, cfg.get("slotsFile"), cfg.get("claudeCommand"))
+        return agents_mod.watch(issuesFile, pulsesFile, claudeCommand)  # runs until stopped
+    sent = pulses_mod.readPulses(pulsesFile)
+    _, failures = agents_mod.tick(sent, issuesFile, pulsesFile, claudeCommand)
     for failure in failures:
         print(failure, file=sys.stderr)
     return 1 if failures else None
 
 
-# fzf over the table; enter brings the chosen session's issue window forward with `code` on its
-# workspace file, the way Open does (lib/spaces.py's focus()).
+# fzf over the table; enter raises the plan window with `code` and brings the chosen session's issue
+# forward in it, the way Open does (term.openPlanWindow(), term.revealIssue()).
 def pickAgent(cfg, agents):
     menu = "\n".join(f"{i}\t{line}" for i, line in enumerate(agents_mod.tableLines(agents)))
     chosen = subprocess.run(
@@ -482,11 +479,11 @@ def focusAgent(cfg, agent):
     if not agent.key:
         print(f"{agent.name} isn't in an issue's worktree; it runs in {agent.cwd}")
         return
-    workspaceFile = term_mod.issueWorkspaceFilePath(agent.key, agent.worktree, cfg.get("workspaceDir"))
-    if not os.path.exists(workspaceFile):
-        print(f"{agent.key} has no issue window; plan open {agent.key} opens one")
+    if agent.key not in term_mod.issueKeys(cfg.get("issuesFile")):
+        print(f"{agent.key} isn't in the plan window; plan open {agent.key} adds it")
         return
-    startLib.run("code", [workspaceFile], os.getcwd())
+    term_mod.openPlanWindow(planWorkspaceFrom(cfg))
+    term_mod.revealIssue(agent.key)
 
 
 # `plan serve start|stop|restart|status`: control the local server's LaunchAgent (lib/serve.py).
@@ -514,11 +511,9 @@ def cmdPicker(cfg, argv0=None):
         "--bind",
         f"ctrl-r:reload({self_} list)",
     ]
-    placer = placer_mod.placerFrom(cfg)
-    placer.sweep()
     fzf = subprocess.Popen(["fzf", *args], stdin=subprocess.PIPE, stdout=None, stderr=None)
     try:
-        rows = issueRows(cfg, placer.slotLabels())
+        rows = issueRows(cfg)
         fzf.stdin.write("\n".join(r["line"] for r in rows).encode("utf8"))
         fzf.stdin.close()
     except Exception as error:

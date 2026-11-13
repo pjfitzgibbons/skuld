@@ -1,78 +1,224 @@
-# The issue window's plumbing: the VS Code workspace file, the issue-label slots file that
-# SlotBar reads, opening a page in the window's integrated browser, and Ship's tmux window. All via subprocess, like
-# start.py's run(); no vscode import, no new deps. Where an issue's window goes on screen is the
-# WindowPlacer's job (lib/placer.py, lib/spaces.py); this module only reads and writes the files.
+# The plan window's plumbing: each issue's workspace file, the plan workspace that holds every
+# started issue's worktree, opening the plan window with `code`, the issues file that the Issues
+# view and the Claude status engine read, opening a page in the window's integrated browser, and
+# Ship's tmux window. All via subprocess, like start.py's run(); no vscode import, no new deps.
+# VS Code places the window: `code <plan workspace>` opens it, or raises it wherever it is
+# (ADR 0004).
 #
-# The slots file (~/.cache/plan/workspaces by default) holds `<Desktop number>=<KEY>` lines, so
-# SlotBar (macos/slotbar/) can mark Desktop 3 as CIAM-123's. See docs/architecture.md §7.1 and GUIDE.md §4.
+# The issues file (~/.cache/plan/issues by default) holds one `<KEY>` per line: each issue Started
+# or Opened and not yet Done. See docs/architecture.md §7.1 and GUIDE.md §4.
+import fcntl
 import json
 import os
+import re
+import secrets
+import stat
+import sys
 from contextlib import contextmanager
 from urllib.parse import quote, urlencode, urlparse
 
 from .start import expandHome, run
 
-VSCODE_BUNDLE_ID = "com.microsoft.VSCode"
-DEFAULT_SLOTS_FILE = "~/.cache/plan/workspaces"
+DEFAULT_ISSUES_FILE = "~/.cache/plan/issues"
+ISSUE_KEY = re.compile(r"^[A-Z][A-Z0-9]*-[0-9]+$")
 
 
-def resolveSlotsFile(slotsFile=None):
-    return expandHome(slotsFile or DEFAULT_SLOTS_FILE)
+def resolveIssuesFile(issuesFile=None):
+    return expandHome(issuesFile or DEFAULT_ISSUES_FILE)
 
 
-def readSlots(slotsFile=None):
-    path = resolveSlotsFile(slotsFile)
+# The issues file's keys, in file order, each once. A missing file is empty, and a line that isn't
+# a key (blank, or left by a hand edit) is skipped, so a damaged file never stops a reader.
+def issueKeys(issuesFile=None):
+    try:
+        with open(resolveIssuesFile(issuesFile), "r", encoding="utf8") as f:
+            lines = f.read().split("\n")
+    except FileNotFoundError:
+        return []
+    return uniqueKeys(line.strip() for line in lines)
+
+
+def uniqueKeys(lines):
+    return list(dict.fromkeys(line for line in lines if ISSUE_KEY.match(line)))
+
+
+# Appends key unless the file already lists it. The Issues view rereads the file on its own.
+def addIssue(key, issuesFile=None):
+    path = resolveIssuesFile(issuesFile)
+    with locked(path):
+        keys = issueKeys(path)
+        if key not in keys:
+            writeLines(path, [*keys, key])
+
+
+# Drops key's line, writing only when the file lists it.
+def removeIssue(key, issuesFile=None):
+    path = resolveIssuesFile(issuesFile)
+    with locked(path):
+        keys = issueKeys(path)
+        if key in keys:
+            writeLines(path, [k for k in keys if k != key])
+
+
+# --- Writing the shared files: the issues file, the pulses file and the plan workspace ---
+#
+# Start, Open, Done, `plan pulse` and the status engine all change these files, from separate
+# processes. Each change reads the file, changes it and writes it back while holding locked(path),
+# so two writers never both build on the same old contents and lose one change. Each write goes to
+# a temp file of its own beside the file, then is renamed over it, so a reader never sees a
+# half-written file and two writers never share a temp file.
+
+# Holds an exclusive lock on <path>.lock for the block; it is released when the block ends, or when
+# the process dies. A lock file per shared file, so each file's writers wait only for each other.
+@contextmanager
+def locked(path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(f"{path}.lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+# One line per item.
+def writeLines(path, lines):
+    writeAtomically(path, "".join(f"{line}\n" for line in lines))
+
+
+# The temp file is created with 0644 (the umask applies), then given the mode the target already
+# has, so a file others read stays readable; mkstemp's 0600 would otherwise replace it.
+def writeAtomically(path, text):
+    folder = os.path.dirname(path)
+    os.makedirs(folder, exist_ok=True)
+    tmp = os.path.join(folder, f".{os.path.basename(path)}.{secrets.token_hex(6)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        with os.fdopen(fd, "w", encoding="utf8") as f:
+            keepMode(f.fileno(), path)
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        removeIfThere(tmp)
+        raise
+
+
+def keepMode(fd, path):
+    try:
+        os.fchmod(fd, stat.S_IMODE(os.stat(path).st_mode))
+    except FileNotFoundError:
+        pass
+
+
+def removeIfThere(path):
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+
+# --- The plan window: one VS Code window on the plan workspace, a folder per started issue ---
+#
+# The plan workspace (<workspaceDir>/plan.code-workspace) lists the worktree of each issue in the
+# issues file, and the ticket store's folder. Start and Open add the issue's folder and the
+# store's, and Done removes only the issue's. Every write also sets the plan.* settings that tell
+# plan-window where the issues file, the pulses file and the issue records are (planSettings());
+# every other key, and every other setting, is kept as it is.
+PLAN_WORKSPACE_NAME = "plan.code-workspace"
+
+
+def planWorkspacePath(workspaceDir=None):
+    return os.path.join(expandHome(workspaceDir or DEFAULT_WORKSPACE_DIR), PLAN_WORKSPACE_NAME)
+
+
+# The plan workspace as a dict with a `folders` list. A missing file is an empty workspace; so is
+# one that isn't a JSON object, and a `folders` that isn't a list is an empty one, so a damaged
+# file never stops Start, and the next write repairs it.
+def readPlanWorkspace(path):
     try:
         with open(path, "r", encoding="utf8") as f:
-            lines = [line for line in f.read().split("\n") if line.strip()]
-    except FileNotFoundError:
-        lines = []
-    return path, lines
+            workspace = json.load(f)
+    except (FileNotFoundError, ValueError):
+        workspace = {}
+    if not isinstance(workspace, dict):
+        workspace = {}
+    if not isinstance(workspace.get("folders"), list):
+        workspace["folders"] = []
+    return workspace
 
 
-def writeSlotsLines(path, lines):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf8") as f:
-        f.write("\n".join(lines) + ("\n" if lines else ""))
-    os.replace(tmp, path)  # write-then-rename, so a reader never sees a half-written file.
+# Whether folder is worktree's entry. Paths are compared resolved: git lists a worktree by its real
+# path (/private/var/... on macOS) where Start may have named it through a symlink (/var/...).
+def isFolderOf(folder, worktree):
+    return isinstance(folder, dict) and isinstance(folder.get("path"), str) and os.path.realpath(folder["path"]) == os.path.realpath(worktree)
 
 
-# The slot (a Desktop number) currently labelled for key, or None: the line ending "=<key>" in the
-# slots file.
-def lookupSlot(key, slotsFile=None):
-    for slot, k in slotEntries(slotsFile):
-        if k == key:
-            return slot
-    return None
+# The settings plan-window reads from the plan workspace, each an expanded path. pulsesFile is
+# already resolved (lib/pulses.py's resolvePulsesFile()), since pulses.py builds on this module.
+def planSettings(issuesFile, pulsesFile, workspaceDir):
+    return {
+        "plan.issuesFile": resolveIssuesFile(issuesFile),
+        "plan.pulsesFile": pulsesFile,
+        "plan.workspaceDir": expandHome(workspaceDir or DEFAULT_WORKSPACE_DIR),
+    }
 
 
-# Every `<slot>=<KEY>` line, as (slot, key) pairs in file order; a line without "=" is skipped.
-def slotEntries(slotsFile=None):
-    _, lines = readSlots(slotsFile)
-    return [tuple(line.split("=", 1)) for line in lines if "=" in line]
+# Appends each of paths as a folder unless the plan workspace already lists it, and sets settings.
+def addFolders(paths, path, settings):
+    def add(folders):
+        for added in paths:
+            if not any(isFolderOf(folder, added) for folder in folders):
+                folders = [*folders, {"path": added}]
+        return folders
+
+    with locked(path):
+        updatePlanWorkspace(path, add, settings)
 
 
-# Write `<slot>=<KEY>`, replacing any existing line for that slot (a slot labels one issue at a
-# time) and the key's own old line (an issue has one slot), via write-temp-then-rename. SlotBar
-# rereads the file on its own.
-def writeSlot(key, slot, slotsFile=None):
-    path, lines = readSlots(slotsFile)
-    kept = [line for line in lines if not line.startswith(f"{slot}=") and not line.endswith(f"={key}")]
-    kept.append(f"{slot}={key}")
-    writeSlotsLines(path, kept)
+# Drops worktree's folder and sets settings, writing only when the plan workspace lists it, so
+# Done on an issue the file doesn't list leaves the file alone.
+def removeFolder(worktree, path, settings):
+    def remove(folders):
+        return [folder for folder in folders if not isFolderOf(folder, worktree)]
+
+    with locked(path):
+        if any(isFolderOf(folder, worktree) for folder in readPlanWorkspace(path)["folders"]):
+            updatePlanWorkspace(path, remove, settings)
 
 
-# Drop key's line (if any). A no-op write is skipped.
-def removeSlot(key, slotsFile=None):
-    path, lines = readSlots(slotsFile)
-    kept = [line for line in lines if not line.endswith(f"={key}")]
-    if kept != lines:
-        writeSlotsLines(path, kept)
+# Rewrites the plan workspace with changeFolders applied to its folders and settings merged into
+# its settings, writing only when that changes it.
+def updatePlanWorkspace(path, changeFolders, settings):
+    workspace = readPlanWorkspace(path)
+    changed = {**workspace, "folders": changeFolders(workspace["folders"]), "settings": withSettings(workspace.get("settings"), settings)}
+    if changed != workspace:
+        writeWorkspaceFile(path, changed)
 
 
-# The issue window's workspace file is a throwaway, kept outside every repo in one folder,
-# workspaceDir (config, default ~/.cache/plan/code-workspaces), named for the issue. Done deletes it.
+# A settings value that isn't an object is replaced, like a damaged `folders`.
+def withSettings(existing, settings):
+    return {**(existing if isinstance(existing, dict) else {}), **settings}
+
+
+# Opens the plan window, or raises it wherever it is. A failure stops Start, naming the command to
+# run by hand.
+def openPlanWindow(planWorkspace):
+    with step("opening the plan window", f"Open it by hand: code {planWorkspace}"):
+        run("code", [planWorkspace], os.getcwd())
+
+
+# Asks plan-window to bring key's issue forward, sending the link with `code --open-url` as browse
+# does: the OS `open` hands a vscode:// link to whichever window VS Code picks. Callers run
+# openPlanWindow() just before, so the plan window is already forward. Best-effort: a failure prints
+# one line, and the issue can be clicked in the Issues view.
+def revealIssue(key):
+    command, args = sendLinkCommand(openLink(key))
+    try:
+        run(command, args, os.getcwd())
+    except (RuntimeError, OSError) as error:
+        print(f"couldn't open {key} in the plan window: {error}; click it in the Issues view", file=sys.stderr)
+
+
+# The issue's record: a throwaway workspace file, kept outside every repo in one folder,
+# workspaceDir (config, default ~/.cache/plan/code-workspaces), named for the issue. plan-window
+# reads an issue's plan.* settings from it and nowhere else; it is never opened. Done deletes it.
 DEFAULT_WORKSPACE_DIR = "~/.cache/plan/code-workspaces"
 
 
@@ -80,18 +226,8 @@ def workspaceFilePath(key, workspaceDir=None):
     return os.path.join(expandHome(workspaceDir or DEFAULT_WORKSPACE_DIR), f"{key}.code-workspace")
 
 
-# The file Start and Open write and run `code` on. VS Code knows a window by its workspace file's
-# path, so an issue whose legacy file still exists keeps it until Done deletes it: a new path would
-# open a second window beside the one already open. worktree is None when it isn't known, and then
-# only the current file can be meant.
-def issueWorkspaceFilePath(key, worktree, workspaceDir=None):
-    legacy = legacyWorkspaceFilePath(worktree, key) if worktree else None
-    if legacy and os.path.exists(legacy):
-        return legacy
-    return workspaceFilePath(key, workspaceDir)
-
-
-# Where Start wrote the file before it moved to workspaceDir: beside the worktree, in <repo>.worktrees/.
+# Where Start wrote the file before it moved to workspaceDir: beside the worktree, in
+# <repo>.worktrees/. Nothing writes it now; Done still deletes one an older Start left behind.
 def legacyWorkspaceFilePath(worktree, key):
     return os.path.join(os.path.dirname(worktree), f"{key}.code-workspace")
 
@@ -115,11 +251,11 @@ def removeThrowaway(path):
     return None
 
 
-# The issue window's workspace file contents: the worktree and the ticket store as its folders, the
-# key in the window title and in every terminal's environment, and the plan.* settings the
-# plan-window extension reads (vscode/plan-window) to open the ticket and start Claude. ticket is
-# None for a Jira issue, which has no ticket file.
-def issueWorkspace(key, worktree, store, prompt, ticket=None):
+# The issue's record: the worktree and the ticket store as its folders (the worktree first), the key in the window title and in every terminal's environment, and the plan.*
+# settings the plan-window extension reads (vscode/plan-window) to open the ticket and start
+# Claude. A store issue has a ticket file (plan.ticket); a Jira issue has none, and has its browse
+# URL (plan.ticketUrl) instead.
+def issueWorkspace(key, worktree, store, prompt, ticket=None, ticketUrl=None):
     settings = {
         "window.title": f"{key}${{separator}}${{activeEditorShort}}",
         "terminal.integrated.env.osx": {"PLAN_KEY": key},
@@ -130,24 +266,20 @@ def issueWorkspace(key, worktree, store, prompt, ticket=None):
     }
     if ticket:
         settings["plan.ticket"] = ticket
+    elif ticketUrl:
+        settings["plan.ticketUrl"] = ticketUrl
     return {"folders": [{"path": worktree}, {"path": store}], "settings": settings}
 
 
 def writeWorkspaceFile(path, workspace):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf8") as f:
-        json.dump(workspace, f, indent=2)
-        f.write("\n")
-    os.replace(tmp, path)
+    writeAtomically(path, json.dumps(workspace, indent=2) + "\n")
 
 
-# --- Opening a page in the issue window's integrated browser (architecture §7.6.1) ---
+# --- Opening a page in the plan window's integrated browser (architecture §7.6.1) ---
 #
-# VS Code sends a vscode:// link to the focused window, so `code <workspace file>` first focuses the
-# issue's window, then `code --open-url` hands plan-window's /browse handler the page. The link
-# carries the key, and the handler refuses it in any window whose plan.key differs, so a link that
-# lands in the wrong window after focus moved is refused rather than opened.
+# VS Code sends a vscode:// link to the focused window, so `code <plan workspace>` first focuses the
+# plan window, then `code --open-url` hands plan-window's /browse handler the page, with the key of
+# the issue it belongs to.
 PLAN_WINDOW_EXTENSION = "skuld.plan-window"
 
 
@@ -163,16 +295,30 @@ def browseLink(url, key=None):
     params = {"url": url}
     if key:
         params["key"] = key
+    return planWindowLink("browse", params)
+
+
+# The vscode:// link that has plan-window bring key's issue forward, encoded as browseLink() is.
+def openLink(key):
+    return planWindowLink("open", {"key": key})
+
+
+def planWindowLink(handler, params):
     query = urlencode(params, quote_via=quote, safe="")
-    return f"vscode://{PLAN_WINDOW_EXTENSION}/browse?{quote(query, safe='')}"
+    return f"vscode://{PLAN_WINDOW_EXTENSION}/{handler}?{quote(query, safe='')}"
 
 
-# The commands that open url in key's window, as (command, args) pairs run without a shell: focus
-# the window when its workspace file is known, then send the link.
+# The commands that open url for key, as (command, args) pairs run without a shell: focus the plan
+# window when its workspace file is given, then send the link.
 def browseCommands(url, key=None, workspaceFile=None):
     commands = [("code", [workspaceFile])] if workspaceFile else []
-    commands.append(("code", ["--open-url", browseLink(url, key)]))
+    commands.append(sendLinkCommand(browseLink(url, key)))
     return commands
+
+
+# The command that has VS Code hand a vscode:// link to its extension.
+def sendLinkCommand(link):
+    return ("code", ["--open-url", link])
 
 
 # Prints url, then opens it in key's window. Every step after the print is best-effort: the printed
@@ -189,7 +335,7 @@ def showUrl(url, key=None, workspaceFile=None):
         pass
 
 
-# A step of opening the issue window that failed stops Start with the step named and what to do by
+# A step of opening the plan window that failed stops Start with the step named and what to do by
 # hand (GUIDE §4); whatever the earlier steps opened stays open.
 @contextmanager
 def step(name, byHand):

@@ -1,0 +1,10 @@
+#!/bin/bash
+# Stands in for Claude in the e2e suite. Reports how it was started, to its terminal and to
+# claude.log in the run's fixture directory, then stays open like a Claude waiting for input.
+set -u
+others=$(env | sed -n 's/^\(CLAUDE[A-Za-z0-9_]*\)=.*/\1/p' | grep -vx CLAUDE_CONFIG_DIR | sort | paste -sd, -)
+args=""
+for arg in "$@"; do args="$args [$arg]"; done
+printf 'key=%s\targs=%s\tconfig_dir=%s\tother_claude_variables=%s\n' \
+  "${PLAN_KEY-}" "${args# }" "${CLAUDE_CONFIG_DIR-unset}" "${others:-none}" | tee -a "$PLAN_E2E_ROOT/claude.log"
+exec sleep 600

@@ -1,5 +1,5 @@
 # Which issues have a Copilot review waiting on their open PR: the status engine (lib/agents.py)
-# turns those Desktops orange. A review is waiting while Copilot has reviewed the PR's head commit;
+# turns those issues orange. A review is waiting while Copilot has reviewed the PR's head commit;
 # the next push moves the head and clears it, so nothing here keeps state.
 #
 # It asks `gh pr view` in each issue's worktree, which finds the PR by the worktree's branch. That

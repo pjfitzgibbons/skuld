@@ -1,7 +1,0 @@
-#!/bin/bash
-# Builds macos/spaces.swift into macos/build/skuld-spaces with the Command Line Tools' swiftc.
-set -euo pipefail
-root=$(cd "$(dirname "$(realpath "$0")")/.." && pwd)
-mkdir -p "$root/macos/build"
-swiftc -O -o "$root/macos/build/skuld-spaces" "$root/macos/spaces.swift"
-echo "$root/macos/build/skuld-spaces"

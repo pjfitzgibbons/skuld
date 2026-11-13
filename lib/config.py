@@ -66,17 +66,14 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #                  the default ~/.netrc. Default: None (jira.py falls back to ~/.netrc itself).
 #   baseUrl        The Jira site's base URL, e.g. "https://cryoport.atlassian.net". Required
 #                  once `jira` names a project (jiraSettingsFrom()). Default: None.
-#   slotsFile      Path to the "<Desktop number>=<KEY>" file the placer writes so SlotBar
-#                  can mark a Desktop with the issue it holds.
-#                  Default: "~/.cache/plan/workspaces".
-#   windowsFile    Path to the "<KEY>=<window id>" file that says which VS Code window is each
-#                  issue's. Default: "~/.cache/plan/windows".
-#   workspaceDir   Folder for each issue window's throwaway <KEY>.code-workspace file, outside
-#                  every repo; Done deletes the issue's. Default: "~/.cache/plan/code-workspaces".
-#   spacesHelper   Path to the skuld-spaces helper (macos/spaces.swift). Default:
-#                  macos/build/skuld-spaces in this repo, which the placer builds with swiftc when
-#                  it's missing or older than its source.
-#   reservedDesktops Desktop numbers Start never takes for an issue. Default: [1].
+#   issuesFile     Path to the issues file: one "<KEY>" line per issue Started or Opened and not
+#                  yet Done, which the Issues view and the Claude status engine read (lib/term.py).
+#                  Default: "~/.cache/plan/issues".
+#   pulsesFile     Path to the pulses file: "<KEY>=orange" or "<KEY>=green" lines that colour the
+#                  Issues view's items (lib/pulses.py). Default: "~/.cache/plan/pulses".
+#   workspaceDir   Folder for each issue's throwaway <KEY>.code-workspace file (its plan.*
+#                  settings), outside every repo, which Done deletes, and for the plan window's
+#                  plan.code-workspace (lib/term.py). Default: "~/.cache/plan/code-workspaces".
 #   issueStore     The issue store's checkout: the folder of SK-<nnnn> ticket files
 #                  (lib/fileissues.py's FileIssues), its own git repo, e.g.
 #                  "~/programming/skuld-project/issues". `~` is expanded. Default: None -- the
@@ -98,11 +95,9 @@ def defaults():
         "typeMap": DEFAULT_TYPE_MAP,
         "netrcFile": None,
         "baseUrl": None,
-        "slotsFile": "~/.cache/plan/workspaces",
-        "windowsFile": "~/.cache/plan/windows",
+        "issuesFile": "~/.cache/plan/issues",
+        "pulsesFile": "~/.cache/plan/pulses",
         "workspaceDir": "~/.cache/plan/code-workspaces",
-        "spacesHelper": None,
-        "reservedDesktops": [1],
         "issueStore": None,
         "claudeCommand": "~/.local/bin/claude",
         "serverPort": 8765,
@@ -138,7 +133,18 @@ def refuseRetiredKeys(parsed, file):
 
 # Keys a config may still set from an earlier front end; they're read by nothing now, so a config
 # that sets one still loads, with a warning.
-IGNORED_KEYS = ("ghosttyApp", "aerospaceConfig", "windowPlacer", "browserApp", "browserBundleId", "project")
+IGNORED_KEYS = (
+    "ghosttyApp",
+    "aerospaceConfig",
+    "windowPlacer",
+    "browserApp",
+    "browserBundleId",
+    "project",
+    "slotsFile",
+    "windowsFile",
+    "spacesHelper",
+    "reservedDesktops",
+)
 
 
 def warnIgnoredKeys(parsed, file):
