@@ -1,0 +1,15 @@
+{# The header every round page shares: the issue, its PR, the round's other page and the other rounds. #}
+<nav aria-label="Issue">
+  <a href="{{ issueUrl }}">{{ key }}</a>
+  {% if prUrl %}<a href="{{ prUrl }}">Pull request</a>{% else %}<span class="muted">No pull request yet</span>{% endif %}
+  {% if page == "report" %}<a href="/issues/{{ key }}/rounds/{{ round.number }}/review">Review</a>{% else %}<a href="/issues/{{ key }}/rounds/{{ round.number }}/report">Report</a>{% endif %}
+  <a href="/">In progress</a>
+</nav>
+{% if rounds|length > 1 %}
+<nav aria-label="Rounds">
+  <span class="muted">Rounds:</span>
+  {% for n in rounds %}
+    {% if n == round.number %}<strong aria-current="page">{{ n }}</strong>{% else %}<a href="/issues/{{ key }}/rounds/{{ n }}/{{ page }}">{{ n }}</a>{% endif %}
+  {% endfor %}
+</nav>
+{% endif %}

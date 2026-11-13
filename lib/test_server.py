@@ -3,6 +3,7 @@
 # lib -t .` to include them.
 import errno
 import importlib.util
+import json
 import os
 import socket
 import tempfile
@@ -49,6 +50,11 @@ class RouteTests(unittest.TestCase):
         self.assertNotIn("SK-0002", page)
         self.assertNotIn("SK-0003", page)
 
+    def test_index_links_each_key_to_its_issue_page(self):
+        self.write("SK-0001-a.md", ticket("in-progress", "Serve pages"))
+        page = self.client().get("/").get_data(as_text=True)
+        self.assertIn('<a href="/issues/SK-0001">SK-0001</a>', page)
+
     def test_index_escapes_ticket_data(self):
         self.write("SK-0001-a.md", ticket("in-progress", "<script>alert(1)</script>"))
         page = self.client().get("/").get_data(as_text=True)
@@ -82,6 +88,227 @@ class RouteTests(unittest.TestCase):
 
     def test_index_with_nothing_in_progress_says_so(self):
         self.assertIn("No store ticket is in progress", self.client().get("/").get_data(as_text=True))
+
+
+# What the round pages ask about an issue, answered from a temp dir standing in for its worktree.
+class FakeIssues:
+    def __init__(self, worktree, known=("SK-0001", "CIAM-5"), pr=None):
+        self.root, self.known, self.pr, self.calls = worktree, known, pr, []
+
+    def isKnown(self, key):
+        self.calls.append(("isKnown", key))
+        return key in self.known
+
+    def issueUrl(self, key):
+        return f"/issues/{key}" if key.startswith("SK-") else f"https://jira.example/browse/{key}"
+
+    def worktree(self, key):
+        self.calls.append(("worktree", key))
+        return self.root
+
+    def prUrl(self, worktree):
+        return self.pr
+
+
+REVIEW = {
+    "findings": [{"file": "lib/server.py", "line": 12, "summary": "A <b>bold</b> claim", "disposition": "fixed"}],
+    "dispositions": [{"path": "lib/server.py", "blob": "0123456789abcdef", "passes": ["bugs", "clean-code"], "verdict": "OK"}],
+}
+
+
+@unittest.skipUnless(HAS_FLASK, "Flask is in skuld's uv venv; run under `uv run`")
+class RoundPageTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.store = os.path.join(self.dir.name, "store")
+        self.worktree = os.path.join(self.dir.name, "worktree")
+        os.makedirs(self.store)
+        self.issues = FakeIssues(self.worktree)
+
+    def round(self, number, key="SK-0001", report="Round report", review=REVIEW):
+        path = os.path.join(self.worktree, ".tmp", key, "rounds", str(number))
+        os.makedirs(path)
+        if report is not None:
+            with open(os.path.join(path, "report.md"), "w", encoding="utf8") as f:
+                f.write(report)
+        if review is not None:
+            with open(os.path.join(path, "review.json"), "w", encoding="utf8") as f:
+                json.dump(review, f)
+
+    def get(self, path):
+        app = server.createApp({"issueStore": self.store}, issues=self.issues)
+        return app.test_client().get(path)
+
+    def page(self, path):
+        response = self.get(path)
+        self.assertEqual(response.status_code, 200, path)
+        return response.get_data(as_text=True)
+
+    def assertRedirects(self, path, to):
+        response = self.get(path)
+        self.assertEqual(response.status_code, 302, path)
+        self.assertEqual(response.headers["Location"], to)
+
+    def test_a_rounds_report_shows_its_report(self):
+        self.round(1, report="What changed <and why>")
+        page = self.page("/issues/SK-0001/rounds/1/report")
+        self.assertIn("SK-0001, round 1: report", page)
+        self.assertIn("What changed &lt;and why&gt;", page)
+
+    def test_a_rounds_review_shows_its_findings_and_dispositions(self):
+        self.round(1)
+        page = self.page("/issues/SK-0001/rounds/1/review")
+        self.assertIn("A &lt;b&gt;bold&lt;/b&gt; claim", page)
+        self.assertIn("fixed", page)
+        self.assertIn("0123456789ab<", page)
+        self.assertIn("bugs, clean-code", page)
+
+    def test_each_round_shows_its_own_data(self):
+        self.round(0, report="the author's change")
+        self.round(1, report="the first review")
+        self.assertIn("the author&#39;s change", self.page("/issues/SK-0001/rounds/0/report"))
+        self.assertIn("the first review", self.page("/issues/SK-0001/rounds/1/report"))
+
+    def test_round_0_alone_is_the_latest(self):
+        self.round(0)
+        self.assertRedirects("/issues/SK-0001/report", "/issues/SK-0001/rounds/0/report")
+
+    def test_a_round_with_a_leading_zero_is_404(self):
+        self.round(0)
+        self.assertEqual(self.get("/issues/SK-0001/rounds/00/report").status_code, 404)
+
+    def test_the_issues_pages_redirect_to_the_latest_rounds(self):
+        self.round(1)
+        self.round(2)
+        self.assertRedirects("/issues/SK-0001/report", "/issues/SK-0001/rounds/2/report")
+        self.assertRedirects("/issues/SK-0001/review", "/issues/SK-0001/rounds/2/review")
+
+    def test_a_missing_round_redirects_to_the_latest_rounds_page(self):
+        self.round(1)
+        self.round(3)
+        self.assertRedirects("/issues/SK-0001/rounds/99/report", "/issues/SK-0001/rounds/3/report")
+        self.assertRedirects("/issues/SK-0001/rounds/2/review", "/issues/SK-0001/rounds/3/review")
+
+    def test_an_issue_with_no_rounds_redirects_to_the_issues_page(self):
+        self.assertRedirects("/issues/SK-0001/report", "/issues/SK-0001")
+        self.assertRedirects("/issues/CIAM-5/rounds/1/review", "https://jira.example/browse/CIAM-5")
+
+    def test_an_issue_with_no_worktree_redirects_to_the_issues_page(self):
+        self.issues.root = None
+        self.assertRedirects("/issues/SK-0001/report", "/issues/SK-0001")
+
+    def test_an_unpadded_store_key_redirects_to_its_canonical_key(self):
+        self.assertRedirects("/issues/SK-1/rounds/2/report", "/issues/SK-0001/rounds/2/report")
+
+    def test_an_unknown_key_gets_the_404_page_linking_the_index(self):
+        with open(os.path.join(self.store, "SK-0002-a.md"), "w", encoding="utf8") as f:
+            f.write(ticket("in-progress", "Something in progress"))
+        response = self.get("/issues/CIAM-9/report")
+        page = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("/issues/CIAM-9/report", page)
+        self.assertIn("CIAM-9 isn&#39;t an issue this Mac knows", page)
+        self.assertIn('href="/issues/SK-0002/report"', page)
+        self.assertIn('href="/"', page)
+
+    def test_any_other_address_gets_the_404_page(self):
+        response = self.get("/issues/SK-0001/rounds/1/diff")
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("No page is served at this address", response.get_data(as_text=True))
+
+    def test_a_traversal_in_the_key_or_round_is_404_and_reads_nothing(self):
+        self.round(1)
+        for path in (
+            "/issues/../report",
+            "/issues/%2E%2E/report",
+            "/issues/SK-0001/rounds/../report",
+            "/issues/SK-0001/rounds/%2E%2E/review",
+            "/issues/SK-0001/rounds/..%2F..%2Fetc/report",
+            "/issues/..%2F..%2Fetc/rounds/1/report",
+        ):
+            with self.subTest(path=path):
+                self.issues.calls.clear()
+                self.assertEqual(self.get(path).status_code, 404)
+                self.assertEqual(self.issues.calls, [])
+
+    def test_an_empty_round_names_what_is_missing(self):
+        self.round(1, report=None, review=None)
+        report = self.page("/issues/SK-0001/rounds/1/report")
+        review = self.page("/issues/SK-0001/rounds/1/review")
+        self.assertIn("report.md is missing from this round.", report)
+        self.assertIn("review.json is missing from this round.", review)
+        self.assertIn("No findings in this round.", review)
+
+    def test_a_malformed_review_names_the_problem(self):
+        self.round(1, review={"findings": "none", "dispositions": [{"path": "a", "blob": 7, "verdict": ["one", "two"]}]})
+        page = self.page("/issues/SK-0001/rounds/1/review")
+        self.assertIn("isn&#39;t a list", page)
+        self.assertIn("one, two", page)
+
+    def test_both_headers_link_the_issue_and_the_pr(self):
+        self.round(1)
+        self.issues.pr = "https://github.com/o/r/pull/9"
+        for page in ("report", "review"):
+            with self.subTest(page=page):
+                shown = self.page(f"/issues/SK-0001/rounds/1/{page}")
+                self.assertIn('href="/issues/SK-0001"', shown)
+                self.assertIn('href="https://github.com/o/r/pull/9"', shown)
+
+    def test_both_headers_say_when_there_is_no_pr(self):
+        self.round(1, key="CIAM-5")
+        for page in ("report", "review"):
+            with self.subTest(page=page):
+                shown = self.page(f"/issues/CIAM-5/rounds/1/{page}")
+                self.assertIn('href="https://jira.example/browse/CIAM-5"', shown)
+                self.assertIn("No pull request yet", shown)
+
+    def test_the_header_links_the_other_page_and_the_other_rounds(self):
+        self.round(1)
+        self.round(2)
+        page = self.page("/issues/SK-0001/rounds/2/report")
+        self.assertIn('href="/issues/SK-0001/rounds/2/review"', page)
+        self.assertIn('href="/issues/SK-0001/rounds/1/report"', page)
+
+    def test_a_store_that_cant_be_read_is_a_404_page_not_a_500(self):
+        def broken(key):
+            raise ValueError("ordinal: soon isn't a number")
+
+        self.issues.isKnown = broken
+        response = self.get("/issues/SK-0001/report")
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("ordinal: soon", response.get_data(as_text=True))
+
+
+@unittest.skipUnless(HAS_FLASK, "Flask is in skuld's uv venv; run under `uv run`")
+class IssueLocatorTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.cfg = {"issueStore": self.dir.name, "jira": {"CIAM": {}}, "baseUrl": "https://jira.example"}
+        self.issues = server.IssueLocator(self.cfg)
+
+    def test_a_store_ticket_is_known_when_its_file_exists(self):
+        with open(os.path.join(self.dir.name, "SK-0001-a.md"), "w", encoding="utf8") as f:
+            f.write(ticket("open", "A"))
+        self.assertTrue(self.issues.isKnown("SK-0001"))
+        self.assertFalse(self.issues.isKnown("SK-0002"))
+
+    def test_a_jira_key_is_known_when_the_config_names_its_project(self):
+        self.assertTrue(self.issues.isKnown("CIAM-5"))
+        self.assertFalse(self.issues.isKnown("OTHER-5"))
+
+    def test_issue_urls(self):
+        self.assertEqual(self.issues.issueUrl("SK-0001"), "/issues/SK-0001")
+        self.assertEqual(self.issues.issueUrl("CIAM-5"), "https://jira.example/browse/CIAM-5")
+
+    def test_the_worktree_and_pr_come_from_start_and_reviews(self):
+        with mock.patch.object(server.start_mod, "issueWorktree", return_value="/w") as worktree, \
+                mock.patch.object(server.reviews_mod, "prUrl", return_value="https://pr") as prUrl:
+            self.assertEqual(self.issues.worktree("CIAM-5"), "/w")
+            self.assertEqual(self.issues.prUrl("/w"), "https://pr")
+        worktree.assert_called_once_with(self.cfg, "CIAM-5")
+        prUrl.assert_called_once_with("/w")
 
 
 @unittest.skipUnless(HAS_FLASK, "Flask is in skuld's uv venv; run under `uv run`")

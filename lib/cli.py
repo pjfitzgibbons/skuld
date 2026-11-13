@@ -7,12 +7,14 @@ import os
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 
 from . import agents as agents_mod
 from . import config as config_mod
 from . import done as done_mod
 from . import fileissues as fileissues_mod
 from . import placer as placer_mod
+from . import rounds as rounds_mod
 from . import serve as serve_mod
 from . import ship as ship_mod
 from . import slotbar as slotbar_mod
@@ -69,7 +71,7 @@ def currentBranch(dir):
 def resolveDir(cfg, jira, key):
     typeMap = cfg.get("typeMap")
     issue = jira.issue(key)
-    checkout = startLib.mainCheckout(issue, cfg.get("checkouts"), os.getcwd(), "Ship", typeMap, refuseRepoPick)["checkout"]
+    checkout = startLib.mainCheckout(issue, cfg.get("checkouts"), os.getcwd(), "Ship", typeMap, startLib.refuseRepoPick)["checkout"]
     porcelain = startLib.git(checkout, "worktree", "list", "--porcelain")
     found = startLib.existingWorktree(porcelain, key, startLib.worktreeDir(checkout, key), "Ship", typeMap)
     if not found:
@@ -284,22 +286,74 @@ def writeIssueWorkspaceFile(cfg, key, worktree, ticket):
     return path
 
 
-# `plan browse <KEY | pr#N | url> [KEY]`: print the page's URL, then open it in an issue window's
-# integrated browser (architecture §7.6.1). The window is the target's key, else the [KEY] given,
-# else the calling terminal's PLAN_KEY, else whichever VS Code window has focus.
-def cmdBrowse(cfg, target, windowKey):
-    if not target:
-        raise RuntimeError("usage: plan browse <KEY | pr#N | url> [KEY]")
-    url, targetKey = browseTarget(cfg, target)
-    key = targetKey or windowKey or os.environ.get("PLAN_KEY") or None
+BROWSE_USAGE = "usage: plan browse <KEY | KEY n | KEY/report[/n] | KEY/review[/n] | pr#N | url> [KEY] [--port N]"
+
+
+# `plan browse`: print the page's URL, then open it in an issue window's integrated browser
+# (architecture §7.6.1). The window is the target's key, else the [KEY] given, else the calling
+# terminal's PLAN_KEY, else whichever VS Code window has focus.
+def cmdBrowse(cfg, args):
+    request = browseRequest(args)
+    url, targetKey = browseTarget(cfg, request)
+    key = targetKey or request.windowKey or os.environ.get("PLAN_KEY") or None
     term_mod.showUrl(url, key, openWorkspaceFile(cfg, key))
 
 
+# What `plan browse` was asked: the target, and after it either a round number (KEY n, round n's
+# report) or the key of the window to open in; port overrides config's serverPort.
+@dataclass
+class BrowseRequest:
+    target: str
+    round: int | None = None
+    windowKey: str | None = None
+    port: int | None = None
+
+
+def browseRequest(args):
+    words, port = withoutPortOption(args)
+    if not 1 <= len(words) <= 2:
+        raise RuntimeError(BROWSE_USAGE)
+    target, second = words[0], (words[1] if len(words) > 1 else None)
+    if second and rounds_mod.isRoundNumber(second):
+        return BrowseRequest(target, round=int(second), port=port)
+    return BrowseRequest(target, windowKey=second, port=port)
+
+
+# args without `--port N` (or `--port=N`), and N as a port number, or None when it isn't given.
+def withoutPortOption(args):
+    words, port, rest = [], None, list(args)
+    while rest:
+        word = rest.pop(0)
+        if word == "--port":
+            if not rest:
+                raise RuntimeError("--port needs a port number")
+            port = portNumber(rest.pop(0))
+        elif word.startswith("--port="):
+            port = portNumber(word.split("=", 1)[1])
+        else:
+            words.append(word)
+    return words, port
+
+
+def portNumber(text):
+    if not (text.isdigit() and 0 < int(text) < 65536):
+        raise RuntimeError(f'--port takes a port number, not "{text}"')
+    return int(text)
+
+
 PR_TARGET_RE = re.compile(r"^pr#(\d+)$")
+ROUND_PAGE_RE = re.compile(r"^(?P<key>[^/]+)/(?P<page>[^/]+)(?:/(?P<round>[^/]+))?$")
 
 
-# (url, the key it belongs to or None) for a browse target: a key, pr#N or an http(s) URL.
-def browseTarget(cfg, target):
+# (url, the key it belongs to or None) for a browse request: a round page on the local server, a
+# key, pr#N or an http(s) URL.
+def browseTarget(cfg, request):
+    page = roundPage(request)
+    if page:
+        return serverPageUrl(cfg, request.port, *page), page[0]
+    if request.port is not None:
+        raise RuntimeError("--port is for the local server's report and review pages only")
+    target = request.target
     if KEY_RE.match(target):
         return issuePageUrl(cfg, target), target
     pr = PR_TARGET_RE.match(target)
@@ -307,7 +361,43 @@ def browseTarget(cfg, target):
         return ship_mod.pullRequest(os.getcwd(), pr.group(1), "url")["url"], None
     if term_mod.isWebUrl(target):
         return target, None
-    raise RuntimeError(f'plan browse takes a key, pr#N or an http(s) URL, not "{target}"')
+    raise RuntimeError(f'plan browse takes a key, KEY/report, KEY/review, pr#N or an http(s) URL, not "{target}"')
+
+
+# (key, round number or None, page) when the request names a round page: `KEY n` is round n's
+# report, `KEY/report` and `KEY/review` the latest round's page, `KEY/<page>/n` round n's. None for
+# any other target.
+def roundPage(request):
+    target, number = request.target, request.round
+    if KEY_RE.match(target):
+        return (target, number, "report") if number is not None else None
+    shorthand = ROUND_PAGE_RE.match(target)
+    if not shorthand:
+        if number is not None:
+            raise RuntimeError(f'a round number follows a key, not "{target}"')
+        return None
+    return roundPageFrom(shorthand, number)
+
+
+def roundPageFrom(shorthand, number):
+    typedKey, page, typedRound = shorthand["key"], shorthand["page"], shorthand["round"]
+    key = fileissues_mod.canonicalKey(typedKey)
+    if not KEY_RE.match(key):
+        raise RuntimeError(f"\"{typedKey}\" isn't an issue key")
+    if page not in rounds_mod.PAGES:
+        raise RuntimeError(f"an issue's pages are {' and '.join(rounds_mod.PAGES)}, not \"{page}\"")
+    if typedRound is not None:
+        if number is not None:
+            raise RuntimeError("give the round once: KEY/report/n or KEY n")
+        if not rounds_mod.isRoundNumber(typedRound):
+            raise RuntimeError(f'a round is a number from 0, not "{typedRound}"')
+        number = int(typedRound)
+    return key, number, page
+
+
+def serverPageUrl(cfg, port, key, number, page):
+    base = serve_mod.serverUrl(port or serve_mod.portFrom(cfg))
+    return base + rounds_mod.pagePath(key, number, page).lstrip("/")
 
 
 # A Jira issue's browse URL. A store ticket's page comes from the local server, which isn't built
@@ -325,26 +415,8 @@ def issuePageUrl(cfg, key):
 def openWorkspaceFile(cfg, key):
     if not key:
         return None
-    path = term_mod.issueWorkspaceFilePath(key, issueWorktree(cfg, key), cfg.get("workspaceDir"))
+    path = term_mod.issueWorkspaceFilePath(key, startLib.issueWorktree(cfg, key), cfg.get("workspaceDir"))
     return path if os.path.exists(path) else None
-
-
-# key's worktree, found the way Start finds it, or None when it has none or can't be found. The
-# lookup needs only the key, so it asks neither Jira nor Peter: a repo choice it can't make is no
-# worktree, and the page still goes out.
-def issueWorktree(cfg, key):
-    typeMap = cfg.get("typeMap")
-    try:
-        checkout = startLib.mainCheckout({"key": key}, cfg.get("checkouts"), os.getcwd(), "Open", typeMap, refuseRepoPick)["checkout"]
-        porcelain = startLib.git(checkout, "worktree", "list", "--porcelain")
-        found = startLib.existingWorktree(porcelain, key, startLib.worktreeDir(checkout, key), "Open", typeMap)
-    except (RuntimeError, OSError):
-        return None
-    return found["dir"] if found and not found["main"] else None
-
-
-def refuseRepoPick(options):
-    raise RuntimeError(f"more than one repo could hold the work: {', '.join(options)}")
 
 
 # `plan ship [KEY]`: ship.check()'s pre-flight, then `pr <KEY>` visibly in a tmux window. KEY, when
@@ -544,7 +616,7 @@ def main(argv=None):
     if cmd in ("start", "open"):
         return cmdStart(cfg, rest[0] if rest else None)
     if cmd == "browse":
-        return cmdBrowse(cfg, rest[0] if rest else None, rest[1] if len(rest) > 1 else None)
+        return cmdBrowse(cfg, rest)
     if cmd == "ship":
         return cmdShip(cfg, rest[0] if rest else None)
     if cmd == "done":

@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}{{ key }} round {{ round.number }}: report{% endblock %}
+{% block heading %}{{ key }}, round {{ round.number }}: report{% endblock %}
+{% block header_links %}{% include "round_header.html" %}{% endblock %}
+{% block content %}
+{% include "round_notes.html" %}
+{% if round.report is not none %}
+  <div class="report">{{ round.report }}</div>
+{% endif %}
+{% endblock %}

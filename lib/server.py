@@ -8,13 +8,18 @@ import logging
 import os
 import socket
 import sys
+from dataclasses import dataclass
 
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, redirect, render_template, request
 from werkzeug.serving import make_server
 
 from . import config as config_mod
 from . import fileissues as fileissues_mod
+from . import reviews as reviews_mod
+from . import rounds as rounds_mod
 from . import serve as serve_mod
+from . import start as start_mod
+from .jira import KEY_RE, Jira
 
 TEMPLATES = os.path.join(serve_mod.ROOT, "templates")
 IN_PROGRESS = "indeterminate"  # fileissues' status category for in-progress
@@ -26,10 +31,13 @@ STORE_ERRORS = (RuntimeError, OSError, ValueError)
 log = logging.getLogger("skuld.server")
 
 
-# Templates ending in .html autoescape, so issue data never renders as markup.
-def createApp(cfg):
+# Templates ending in .html autoescape, so issue data never renders as markup. issues finds what
+# the round pages need about an issue; the tests pass one that reads a temp dir.
+def createApp(cfg, issues=None):
+    issues = issues or IssueLocator(cfg)
     app = Flask(__name__, template_folder=TEMPLATES)
     app.config["TRUSTED_HOSTS"] = TRUSTED_HOSTS
+    app.add_template_filter(listed)
 
     @app.get("/health")
     def health():
@@ -43,7 +51,135 @@ def createApp(cfg):
             return render_template("index.html", issues=[], problem=str(error))
         return render_template("index.html", issues=issues, problem=None)
 
+    @app.get("/issues/<key>/<any(report, review):page>")
+    def latestRoundPage(key, page):
+        return roundPage(issues, cfg, key, None, page)
+
+    @app.get("/issues/<key>/rounds/<number>/<any(report, review):page>")
+    def numberedRoundPage(key, number, page):
+        return roundPage(issues, cfg, key, number, page)
+
+    @app.errorhandler(404)
+    def notFoundPage(error):
+        return notFound(cfg, "No page is served at this address.")
+
     return app
+
+
+# The page, a 302 to the nearest one (the browser caches a 301, and the latest round changes), or
+# the 404 page. A store or config that can't be read shows on the 404 page, never as a 500.
+def roundPage(issues, cfg, key, number, page):
+    try:
+        target = resolveRoundPage(issues, key, number, page)
+        if isinstance(target, Redirect):
+            return redirect(target.url, code=302)
+        if isinstance(target, NotFound):
+            return notFound(cfg, target.reason)
+        return renderRound(issues, target, page)
+    except STORE_ERRORS as error:
+        return notFound(cfg, str(error))
+
+
+@dataclass
+class Redirect:
+    url: str
+
+
+@dataclass
+class NotFound:
+    reason: str
+
+
+@dataclass
+class Show:
+    key: str
+    number: int
+    worktree: str
+    roundsFolder: str
+    rounds: list
+
+
+# Where /issues/<key>[/rounds/<number>]/<page> goes. The key and round are matched against their
+# patterns before either builds a path, so a URL can't name a folder outside the issue's rounds.
+def resolveRoundPage(issues, key, number, page):
+    if not KEY_RE.match(key):
+        return NotFound(f'"{key}" isn\'t an issue key.')
+    if number is not None and not rounds_mod.isRoundNumber(number):
+        return NotFound(f'"{number}" isn\'t a round number.')
+    canonical = fileissues_mod.canonicalKey(key)
+    if canonical != key:
+        return Redirect(rounds_mod.pagePath(canonical, number, page))
+    if not issues.isKnown(key):
+        return NotFound(f"{key} isn't an issue this Mac knows: no store ticket, and no Jira project in the config.")
+    worktree = issues.worktree(key)
+    folder = rounds_mod.roundsFolder(worktree, key) if worktree else None
+    numbers = rounds_mod.roundNumbers(folder) if folder else []
+    if not numbers:
+        return Redirect(issues.issueUrl(key))
+    if number is None or int(number) not in numbers:
+        return Redirect(rounds_mod.pagePath(key, numbers[-1], page))
+    return Show(key, int(number), worktree, folder, numbers)
+
+
+def renderRound(issues, show, page):
+    found = rounds_mod.readRound(os.path.join(show.roundsFolder, str(show.number)), show.number)
+    return render_template(
+        f"{page}.html",
+        key=show.key,
+        round=found,
+        rounds=show.rounds,
+        page=page,
+        issueUrl=issues.issueUrl(show.key),
+        prUrl=issues.prUrl(show.worktree),
+    )
+
+
+# The 404 page: what was asked for, why it isn't here, and the issues that are.
+def notFound(cfg, reason):
+    try:
+        existing, problem = issuesInProgress(cfg), None
+    except STORE_ERRORS as error:
+        existing, problem = [], str(error)
+    page = render_template("notfound.html", asked=request.path, reason=reason, issues=existing, problem=problem)
+    return page, 404
+
+
+# A list as "a, b"; anything else as itself. review.json's passes and verdicts may be either.
+def listed(value):
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value)
+    return value
+
+
+# What the round pages need about an issue, from the machine config: whether this Mac knows it, its
+# page, its worktree and its pull request.
+class IssueLocator:
+    def __init__(self, cfg):
+        self.cfg = cfg
+
+    def isKnown(self, key):
+        if not fileissues_mod.isFileBacked(key):
+            return fileissues_mod.projectOf(key) in config_mod.jiraProjects(self.cfg)
+        try:
+            self.store().issue(key)
+        except RuntimeError:
+            return False
+        return True
+
+    # A store ticket's server page (SK-0034), or a Jira issue's browse URL.
+    def issueUrl(self, key):
+        if fileissues_mod.isFileBacked(key):
+            return f"/issues/{key}"
+        return Jira(config_mod.jiraSettingsFrom(self.cfg)).browseUrl(key)
+
+    def worktree(self, key):
+        return start_mod.issueWorktree(self.cfg, key)
+
+    def prUrl(self, worktree):
+        return reviews_mod.prUrl(worktree)
+
+    def store(self):
+        return fileissues_mod.FileIssues({"dir": config_mod.issueStoreFrom(self.cfg)})
 
 
 # The store's tickets in progress, in work order. Jira's are left out: the server makes no Jira call.

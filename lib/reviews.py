@@ -4,7 +4,8 @@
 #
 # It asks `gh pr view` in each issue's worktree, which finds the PR by the worktree's branch. That
 # costs a GitHub call per issue, so the watch loop asks once a minute on its own thread, and a call
-# that hangs is given up after GH_TIMEOUT_SECONDS.
+# that hangs is given up after GH_TIMEOUT_SECONDS. prUrl() finds the same PR's URL for the local
+# server's round pages.
 import json
 import subprocess
 
@@ -38,7 +39,17 @@ def copilotReviewWaiting(pr):
 
 # The PR for the worktree's branch, or None when it has none, gh fails, or gh takes too long.
 def readPr(worktree, ghCommand=None):
-    command = [expandHome(ghCommand or DEFAULT_GH_COMMAND), "pr", "view", "--json", "state,reviews,headRefOid"]
+    return prView(worktree, "state,reviews,headRefOid", ghCommand)
+
+
+# The URL of the worktree's PR, or None when readPr would be None. The round pages' header links it.
+def prUrl(worktree, ghCommand=None):
+    return (prView(worktree, "url", ghCommand) or {}).get("url")
+
+
+# `gh pr view --json <fields>` in worktree, which finds the PR by the worktree's branch.
+def prView(worktree, fields, ghCommand=None):
+    command = [expandHome(ghCommand or DEFAULT_GH_COMMAND), "pr", "view", "--json", fields]
     try:
         answer = subprocess.run(
             command, cwd=worktree, capture_output=True, text=True, check=True, timeout=GH_TIMEOUT_SECONDS

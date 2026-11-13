@@ -17,7 +17,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 
-from . import reviews, slotbar, term, waiting
+from . import reviews, rounds, slotbar, term, waiting
 from .start import expandHome, git, run
 
 DEFAULT_CLAUDE_COMMAND = "~/.local/bin/claude"
@@ -208,13 +208,17 @@ def readSessions(claudeCommand=None):
 
 
 def reportPath(worktree, key):
-    return os.path.join(worktree, ".tmp", key, "report.html")
+    return rounds.latestReportPath(rounds.roundsFolder(worktree, key))
 
 
-# The report exists and was written after the branch's last commit. Any git failure is "not fresh".
+# The latest round's report exists and was written after the branch's last commit. No rounds, or any
+# git failure, is "not fresh".
 def reportIsFresh(worktree, key):
+    path = reportPath(worktree, key)
+    if path is None:
+        return False
     try:
-        reportTime = os.path.getmtime(reportPath(worktree, key))
+        reportTime = os.path.getmtime(path)
         lastCommit = int(git(worktree, "log", "-1", "--format=%ct").strip() or 0)
     except (OSError, RuntimeError, ValueError):
         return False

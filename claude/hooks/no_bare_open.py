@@ -29,7 +29,7 @@ HTML_FILE = re.compile(r"\.html?(?:[?#].*)?$", re.IGNORECASE)
 
 BLOCKED = (
     "BLOCKED: system `open` sends a page to the default browser, outside every "
-    "issue window. Open it with `plan browse <KEY | pr#N | url> [KEY]`, which "
+    "issue window. Open it with `plan browse <KEY | KEY/report | pr#N | url> [KEY]`, which "
     "opens it in the issue window's integrated browser (docs/architecture.md §7.6.1). Where `plan browse` isn't "
     "available, print the URL for the person to open instead.\n"
 )

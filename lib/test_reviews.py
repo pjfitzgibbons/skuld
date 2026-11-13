@@ -61,5 +61,18 @@ class ReadPrTests(unittest.TestCase):
         self.assertIn("state,reviews,headRefOid", run.call_args.args[0])
 
 
+class PrUrlTests(unittest.TestCase):
+    def test_the_worktrees_pr_url(self):
+        answer = subprocess.CompletedProcess("gh", 0, stdout='{"url": "https://github.com/o/r/pull/9"}')
+        with mock.patch.object(reviews.subprocess, "run", return_value=answer) as run:
+            self.assertEqual(reviews.prUrl("/w"), "https://github.com/o/r/pull/9")
+        self.assertEqual(run.call_args.args[0][-2:], ["--json", "url"])
+
+    def test_no_pr_is_none(self):
+        failed = subprocess.CalledProcessError(1, "gh")
+        with mock.patch.object(reviews.subprocess, "run", side_effect=failed):
+            self.assertIsNone(reviews.prUrl("/w"))
+
+
 if __name__ == "__main__":
     unittest.main()

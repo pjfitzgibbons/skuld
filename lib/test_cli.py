@@ -11,6 +11,7 @@
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -155,7 +156,7 @@ class CmdBrowseTests(unittest.TestCase):
         for key in workspaceFiles:
             open(term_mod.workspaceFilePath(key, tmp), "w").close()
         with mock.patch.object(cli.config_mod, "load", return_value=cfg), mock.patch.object(
-            cli, "issueWorktree", return_value=worktree
+            startLib, "issueWorktree", return_value=worktree
         ), mock.patch.dict(
             os.environ, env or {}, clear=False
         ), mock.patch.object(term_mod, "showUrl") as showUrl:
@@ -208,12 +209,62 @@ class CmdBrowseTests(unittest.TestCase):
 
     def test_anything_else_is_refused(self):
         for target in ("file:///etc/passwd", "javascript:alert(1)", "pr#x"):
-            with self.subTest(target=target), self.assertRaisesRegex(RuntimeError, "a key, pr#N or an http\\(s\\) URL"):
+            with self.subTest(target=target), self.assertRaisesRegex(RuntimeError, "a key, KEY/report, KEY/review, pr#N or an http\\(s\\) URL"):
                 self.browse(target)
 
     def test_no_target_says_how(self):
         with self.assertRaisesRegex(RuntimeError, "usage: plan browse"):
             self.browse()
+
+    SERVER = {**JIRA_ON, "serverPort": 8737}
+
+    def test_a_round_page_opens_on_the_local_server_in_its_issues_window(self):
+        cases = {
+            ("SK-1/report",): "http://127.0.0.1:8737/issues/SK-0001/report",
+            ("SK-0001/review",): "http://127.0.0.1:8737/issues/SK-0001/review",
+            ("SK-0001/report/2",): "http://127.0.0.1:8737/issues/SK-0001/rounds/2/report",
+            ("SK-0001/review/2",): "http://127.0.0.1:8737/issues/SK-0001/rounds/2/review",
+            ("SK-0001", "2"): "http://127.0.0.1:8737/issues/SK-0001/rounds/2/report",
+            ("SK-0001", "0"): "http://127.0.0.1:8737/issues/SK-0001/rounds/0/report",
+            ("SK-0001/review/0",): "http://127.0.0.1:8737/issues/SK-0001/rounds/0/review",
+            ("CIAM-1", "3"): "http://127.0.0.1:8737/issues/CIAM-1/rounds/3/report",
+        }
+        for args, url in cases.items():
+            with self.subTest(args=args):
+                shown = self.browse(*args, env={"PLAN_KEY": "SK-0002"}, cfg=self.SERVER)
+                self.assertEqual(shown[:2], (url, url.split("/issues/")[1].split("/")[0]))
+
+    def test_port_overrides_the_configured_server_port(self):
+        for args in (("SK-0001/report", "--port", "8799"), ("--port=8799", "SK-0001", "2")):
+            with self.subTest(args=args):
+                url = self.browse(*args, cfg=self.SERVER)[0]
+                self.assertTrue(url.startswith("http://127.0.0.1:8799/issues/SK-0001/"), url)
+
+    def test_a_key_then_a_key_still_names_the_window(self):
+        shown = self.browse("https://example.com/x", "SK-2", cfg=self.SERVER)
+        self.assertEqual(shown[:2], ("https://example.com/x", "SK-0002"))
+
+    def test_a_bad_round_page_is_refused_naming_what_is_wrong(self):
+        cases = {
+            ("SK-0001/notes",): "pages are report and review, not \"notes\"",
+            ("SK-0001/report/01",): "a round is a number from 0",
+            ("SK-0001/report/..",): "a round is a number from 0",
+            ("SK-0001/report/0", "0"): "give the round once",
+            ("pr#9", "0"): "a round number follows a key",
+            ("../report",): "isn't an issue key",
+            ("SK-0001/report/2", "3"): "give the round once",
+            ("pr#9", "2"): "a round number follows a key",
+            ("SK-0001/report", "--port", "0"): "--port takes a port number",
+            ("SK-0001/report", "--port"): "--port needs a port number",
+            ("https://example.com/x", "--port", "8799"): "--port is for the local server",
+        }
+        for args, message in cases.items():
+            with self.subTest(args=args), self.assertRaisesRegex(RuntimeError, re.escape(message)):
+                self.browse(*args, cfg=self.SERVER)
+
+    def test_too_many_words_says_how(self):
+        with self.assertRaisesRegex(RuntimeError, "usage: plan browse"):
+            self.browse("SK-0001", "2", "SK-0002", cfg=self.SERVER)
 
 
 class IssueWorktreeTests(unittest.TestCase):
@@ -223,7 +274,7 @@ class IssueWorktreeTests(unittest.TestCase):
         with mock.patch.object(startLib, "mainCheckout", side_effect=mainCheckout) as mc, mock.patch.object(
             startLib, "git", return_value=self.PORCELAIN
         ):
-            return cli.issueWorktree({}, "CIAM-5"), mc
+            return startLib.issueWorktree({}, "CIAM-5"), mc
 
     def test_finds_the_issues_worktree_from_the_key_alone(self):
         found, mc = self.lookup(lambda *a: {"checkout": "/repo"})
@@ -375,16 +426,27 @@ class CmdShipTests(unittest.TestCase):
         check.assert_called_once_with(self.DIR, "CIAM-5")
         shipWindow.assert_not_called()
 
-    def test_passing_check_runs_pr_in_tmux_with_correct_argv(self):
+    def ship(self):
+        cfg = {**JIRA_ON, "checkouts": {}, "pr": "~/.local/bin/pr"}
+        calls = []
         with mock.patch.object(cli, "resolveDir", return_value=self.DIR), mock.patch.object(
             ship_mod, "check", return_value={"branch": "feat/CIAM-5-x", "dirty": False, "problems": []}
         ), mock.patch.object(startLib, "expandHome", return_value="/Users/t/.local/bin/pr") as expandHome, mock.patch.object(
-            term_mod, "shipWindow"
-        ) as shipWindow:
-            code = cli.cmdShip({**JIRA_ON, "checkouts": {}, "pr": "~/.local/bin/pr"}, "CIAM-5")
+            term_mod, "shipWindow", side_effect=lambda *a: calls.append(("shipWindow", *a))
+        ), mock.patch.object(
+            term_mod, "showUrl", side_effect=lambda *a: calls.append(("showUrl", *a))
+        ):
+            code = cli.cmdShip(cfg, "CIAM-5")
+        return code, calls, expandHome
+
+    def test_passing_check_runs_pr_in_tmux_with_correct_argv(self):
+        code, calls, expandHome = self.ship()
         self.assertIsNone(code)
         expandHome.assert_called_once_with("~/.local/bin/pr")
-        shipWindow.assert_called_once_with("CIAM-5", self.DIR, "/Users/t/.local/bin/pr")
+        self.assertEqual(calls[0], ("shipWindow", "CIAM-5", self.DIR, "/Users/t/.local/bin/pr"))
+
+    def test_opens_no_page_since_the_agent_opened_the_report_before_pr(self):
+        self.assertEqual([call[0] for call in self.ship()[1]], ["shipWindow"])
 
     def test_plan_go_is_an_unknown_command_now(self):
         with self.assertRaisesRegex(RuntimeError, r'unknown command "go"; try: list, view, start, open, browse, ship, done'):

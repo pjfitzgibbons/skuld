@@ -159,6 +159,14 @@ class AgentPlistTests(unittest.TestCase):
         self.assertTrue(plist["KeepAlive"])
         self.assertEqual(plist["ThrottleInterval"], serve.THROTTLE_SECONDS)
 
+    def test_path_leads_with_the_directory_of_gh(self):
+        plist = serve.agentPlist("/opt/skuld", which=lambda name: "/opt/homebrew/bin/gh")
+        self.assertEqual(plist["EnvironmentVariables"]["PATH"], "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+
+    def test_path_without_gh_is_the_system_path(self):
+        plist = serve.agentPlist("/opt/skuld", which=lambda name: None)
+        self.assertEqual(plist["EnvironmentVariables"]["PATH"], "/usr/bin:/bin:/usr/sbin:/sbin")
+
     def test_logs_to_the_log_file(self):
         plist = serve.agentPlist("/opt/skuld")
         self.assertEqual(plist["StandardOutPath"], serve.LOG_FILE)
