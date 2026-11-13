@@ -326,6 +326,11 @@ class AdfToTextTests(unittest.TestCase):
         doc = adfDoc({"type": "paragraph", "content": [linkedText("https://x.test/", "https://x.test/")]})
         self.assertEqual(adfToText(doc), "https://x.test/")
 
+    def test_block_and_embed_cards_show_their_url(self):
+        for cardType in ("blockCard", "embedCard"):
+            doc = adfDoc({"type": cardType, "attrs": {"url": "https://github.com/a/b/commit/abcdef1"}})
+            self.assertEqual(adfToText(doc), "https://github.com/a/b/commit/abcdef1")
+
 
 class ReadNetrcTests(unittest.TestCase):
     def _write(self, content):

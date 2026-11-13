@@ -33,8 +33,8 @@ CODE_SECONDS = 10
 # CommonMark with GitHub's tables, strikethrough and task lists. html off: raw HTML in a ticket is
 # escaped as text, and markdown-it refuses javascript: and data: links, so nothing a ticket says
 # becomes markup the renderer didn't write.
-# A ticket's file name in the store, SK-0034-some-slug.md, and the key it starts with.
-TICKET_FILE_RE = re.compile(r"^([A-Z][A-Z0-9]*-\d+)-[^/]*\.md$")
+# A ticket's file name in the store, SK-0034-some-slug.md or SK-0034.md, and the key it starts with.
+TICKET_FILE_RE = re.compile(r"^([A-Z][A-Z0-9]*-\d+)(?:-[^/]*)?\.md$")
 INDEX_FILE = "INDEX.md"
 
 MARKDOWN = (

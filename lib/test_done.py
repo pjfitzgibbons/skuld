@@ -317,6 +317,16 @@ class FinishTests(unittest.TestCase):
             finish(jira, s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
         self.assertTrue(os.path.exists(s["dir"]))
 
+    def test_reads_the_issue_only_once_the_keys_lock_is_held(self):
+        s = self.sandbox()
+        lockFile = os.path.join(s["checkout"], ".git", f"plan-busy-{KEY}")
+        jira = FakeStore(inProgressIssue())
+        locked = []
+        read = jira.issue
+        jira.issue = lambda key=None: locked.append(os.path.exists(lockFile)) or read(key)
+        finish(jira, s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        self.assertEqual(locked, [True])
+
     def test_refuses_issue_thats_still_to_do(self):
         s = self.sandbox()
         jira = FakeStore(Issue(key=KEY, summary="x", status="To Do", category=NEW, issueType="Story"))

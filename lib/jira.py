@@ -66,12 +66,16 @@ def linkHref(node):
     return None
 
 
+# ADF nodes that show a link as a card: the URL is in attrs, and the node has no content.
+CARD_NODES = ("inlineCard", "blockCard", "embedCard")
+
+
 # A minimal ADF document -> plain text renderer, for an Issue's description and comments. Only the
 # node types md_to_adf.py and Jira's own editor actually produce: paragraphs, text (with a bold/
 # code mark folded in as-is, a link mark as Markdown), hard breaks, bullet/ordered lists, headings
-# (as Markdown `#` headings), task items (as `- [x]` / `- [ ]` lines) and link cards. Anything else
-# just recurses into its content, so an unrecognized node still shows its text rather than
-# vanishing silently.
+# (as Markdown `#` headings), task items (as `- [x]` / `- [ ]` lines) and link cards (inline, block
+# and embed, each as its URL). Anything else just recurses into its content, so an unrecognized
+# node still shows its text rather than vanishing silently.
 def adfText(node, indent=""):
     if not node:
         return ""
@@ -80,7 +84,7 @@ def adfText(node, indent=""):
         return linkedText(node)
     if node_type == "hardBreak":
         return "\n"
-    if node_type == "inlineCard":
+    if node_type in CARD_NODES:
         return (node.get("attrs") or {}).get("url") or ""
     children = "".join(adfText(child, indent) for child in node.get("content") or [])
     if node_type == "paragraph":

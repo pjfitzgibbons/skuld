@@ -105,6 +105,16 @@ class ServeTests(unittest.TestCase):
         self.assertEqual(self.agent.calls, ["install", "unload", "load"])
         self.assertEqual(out, "http://127.0.0.1:8800/  up  pid 4242")
 
+    def test_restart_with_the_port_a_legacy_plist_runs_on_kicks_the_agent(self):
+        out = self.serve(loaded=True, up=True, port=8765).restart()
+        self.assertEqual(self.agent.calls, ["restart"])
+        self.assertEqual(out, "http://127.0.0.1:8765/  up  pid 4242")
+
+    def test_restart_with_another_port_moves_a_legacy_plists_server(self):
+        out = self.serve(loaded=True, up=True, port=8800).restart()
+        self.assertEqual(self.agent.calls, ["install", "unload", "load"])
+        self.assertEqual(out, "http://127.0.0.1:8800/  up  pid 4242")
+
     def test_start_on_a_running_server_changes_nothing(self):
         out = self.serve(loaded=True, up=True).start()
         self.assertEqual(self.agent.calls, [])

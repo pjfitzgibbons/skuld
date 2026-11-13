@@ -8,7 +8,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-HAS_FLASK = importlib.util.find_spec("flask") is not None
+# server imports all three, so a Python with only Flask would fail at import.
+HAS_FLASK = all(importlib.util.find_spec(name) for name in ("flask", "markdown_it", "mdit_py_plugins"))
 if HAS_FLASK:
     from lib import server, term
     from lib.filestore import FileStore
@@ -120,6 +121,12 @@ Open issues in the order to work them.
         self.assertIn('<a href="/issues/SK-0002">SK-0002</a>', page)
         self.assertEqual(page.count('href="/issues/SK-0002"'), 2)
         self.assertIn('<a href="/issues/SK-0005">SK-0005</a>', page)
+
+    def test_index_links_a_ticket_file_named_by_its_key_alone(self):
+        self.write("SK-0001.md", ticket("todo", "Bare"))
+        self.write("INDEX.md", "- [SK-0001] Bare\n\n[SK-0001]: SK-0001.md\n")
+        page = self.client().get("/").get_data(as_text=True)
+        self.assertIn('<a href="/issues/SK-0001">SK-0001</a>', page)
 
     def test_index_unlinks_store_files_without_a_page(self):
         self.write("INDEX.md", self.INDEX)

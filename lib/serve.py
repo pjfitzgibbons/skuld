@@ -196,7 +196,8 @@ class Serve:
     def __init__(self, cfg, agent=None, answers=answers, portHolder=portHolder, waitSeconds=5.0, root=ROOT, port=None):
         self.agent = agent or LaunchAgent()
         self.requestedPort = port
-        self.startPort = port or portFrom(cfg)
+        self.configPort = portFrom(cfg)
+        self.startPort = port or self.configPort
         self.port = port or self.agent.port() or self.startPort
         self.answers = answers
         self.portHolder = portHolder
@@ -206,7 +207,7 @@ class Serve:
     def start(self):
         self.port = self.startPort
         refuseMissingVenv(self.root)
-        if self.agent.loaded() and self.agent.port() in (self.port, None) and self.answers(self.port):
+        if self.agent.loaded() and self.runningPort() == self.port and self.answers(self.port):
             return self.status()
         self.refusePortInUse()
         self.agent.install(agentPlist(self.root, self.port))
@@ -230,8 +231,12 @@ class Serve:
         self.agent.restart()
         return self.statusAfterWaitingFor(up=True)
 
+    # A plist without --port (one written before the flag) runs the server on serverPort.
+    def runningPort(self):
+        return self.agent.port() or self.configPort
+
     def movesPort(self):
-        return self.requestedPort is not None and self.requestedPort != self.agent.port()
+        return self.requestedPort is not None and self.requestedPort != self.runningPort()
 
     # The URL, up or down, and the agent's pid while launchd runs it, even one that doesn't answer.
     def status(self):

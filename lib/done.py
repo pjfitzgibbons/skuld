@@ -223,6 +223,16 @@ def checkMerged(dir, pr, removing, disposable):
         )
 
 
+# The issue as it stands now. Read once the key's lock is held, so a note another Done posted and
+# released the lock after is in its comments, and alreadyNoted() sees it.
+def finishableIssue(store, key):
+    issue = store.issue(key)
+    # The panel's row can be older than the issue.
+    if issue.category not in FINISHES:
+        raise RuntimeError(f"{key} is {issue.status}; refresh Next up")
+    return issue
+
+
 # Finish issue key. view(cwd, branch) resolves the PR from the branch, prFromBranch by default, or a
 # fake in a test. Returns { dir, notes }: the worktree it removed, or None, and what each step did.
 # A Done that fails part way raises with that result as error.result, so Peter learns what it changed.
@@ -241,10 +251,6 @@ def finish(store, checkouts, key, view=None, disposable=None, typeMap=None, slot
     if cwd is None:
         cwd = os.getcwd()
     checkId(key, "Done")
-    issue = store.issue(key)
-    # The panel's row can be older than the issue.
-    if issue.category not in FINISHES:
-        raise RuntimeError(f"{key} is {issue.status}; refresh Next up")
     mc = mainCheckout(key, checkouts, cwd, "Done", typeMap, pickRepo)
     project, checkout, common = mc["project"], mc["checkout"], mc["common"]
 
@@ -261,6 +267,7 @@ def finish(store, checkouts, key, view=None, disposable=None, typeMap=None, slot
     release = lock(common, key, "Done")
     result = {"dir": None, "notes": []}
     try:
+        issue = finishableIssue(store, key)
         finishIn(store, issue, project, checkout, common, pr, found, porcelain, result, disposable, typeMap, slotsFile, workspaceDir)
         return result
     except Exception as error:
