@@ -132,11 +132,12 @@ reused. It is zero-padded to four digits, so a listing of the store sorts in num
 `plan` pads a key typed without the zeros (`SK-12` is `SK-0012`). Its file is `<KEY>-<slug>.md`, the slug fixed when the file is made, so a retitle doesn't
 rename it.
 
-Its branch is `<type>/<KEY>-<slug>`, with the prefix chosen from the issue's type: a Jira
-Story or Task, or a store `task` or `question`, is `feat/`; a Bug or `bug` is `fix/`; anything else
-`chore/`. Its worktree is `<repo>.worktrees/<KEY>` beside the main checkout. A commit message names
-the issue in its subject, e.g. `Add X (CIAM-123)`, which is what Jira's GitHub integration matches.
-No commit or merge changes an issue's status (§7.3), so there is no `fixes`/`refs` distinction.
+Its branch is `<type>/<KEY>-<slug>`, with the prefix chosen from the issue's type name by the
+config's `typeMap` ([GUIDE.md §2](../GUIDE.md#2-setting-up)), matched without regard to case:
+`story` and `task` are `feat/`, `bug` is `fix/`, and anything else is `chore/`. Its worktree is
+`<repo>.worktrees/<KEY>` beside the main checkout. A commit message names the issue in its subject,
+e.g. `Add X (CIAM-123)`, which is what Jira's GitHub integration matches. No commit or merge changes
+an issue's status (§7.3), so there is no `fixes`/`refs` distinction.
 
 <a id="components"></a>
 
@@ -157,8 +158,17 @@ a module interface with one class per adapter:
 | `GitRemote` | fetch, push, rebase onto the base, add and remove worktrees | `git` |
 | `WindowPlacer` | put an issue window on a free slot, find it again, label the slot, and list where each issue's window is | `SpacesPlacer` (native macOS Desktops) |
 
-`storeFor(cfg, key)` picks an issue's adapter from its prefix: `FileStore` for a prefix `store.yml`
-lists, `Jira` for any other. `placerFrom(cfg)` returns the `WindowPlacer`, a `SpacesPlacer`.
+`storeFor(cfg, key)` (`lib/issuestore.py`) picks an issue's adapter from its prefix: `FileStore` for
+a prefix `store.yml` lists, `Jira` for a project the config's `jira` entry names. It refuses any
+other key before a command changes anything. `placerFrom(cfg)` returns the `WindowPlacer`, a
+`SpacesPlacer`.
+
+Reading an issue returns an `Issue` (`lib/issue.py`), in one fetch from either adapter: key,
+summary, status and its category, type, parent, description as plain text, comments (a ticket's
+`## Log` lines), open blockers, `page` (Jira's browse URL or the local server's `/issues/<KEY>`),
+`file` (a ticket's path) and `fields` (a ticket's front matter). A command reads the issue once and
+works from that `Issue`; no client reads Jira's JSON or a ticket's front matter, and none branches
+on which adapter answered. A comment is plain text at the port; `Jira` converts it to ADF.
 
 The clients:
 
@@ -180,7 +190,7 @@ Each outside system is reached only through its port's adapter. Policy code name
 
 - `lib/jira.py` makes every call to Jira: the JQL search, reading an issue, looking up a transition
   by its target status name and posting it with a read-back guard, reading issue links for blockers,
-  and posting ADF comments. It reads the token from `~/.netrc` on each call.
+  and posting comments as ADF. It reads the token from `~/.netrc` on each call.
 - `FileStore` is the only writer of ticket files that `plan` runs, and it checks every file before
   writing it.
 - The `GitRemote` and `PullRequests` adapters run `git` and `gh`: fetching, adding and removing
@@ -207,7 +217,7 @@ through its adapter.
 | Menu bar | SlotBar or SketchyBar, whichever has its LaunchAgent loaded. SlotBar is a menu-bar extra built from `macos/slotbar/` with `swiftc` alone and signed with a local self-signed certificate. It reads the slots file and Desktops through read-only SkyLight calls, takes pulses as the distributed notification `skuld.pulse` (a Desktop 1 to 16 and `orange`, `green` or `off`, anything else ignored) from `plan pulse` and the Claude status engine, and switches Desktops by posting ^N, which needs the Accessibility grant |
 | Claude status | `lib/agents.py`, run every few seconds by a LaunchAgent as `plan agents tick --watch`, and at once when a waiting marker changes: reads `claude agents --json`, the waiting markers in `~/.cache/plan/waiting` that the Claude Code hook `bin/claude-waiting` keeps, the slots file and git, once a minute each slotted issue's PR through `gh`, and pulses each issue's Desktop through `slotbar-pulse` only when its colour changes (§7.1) |
 | Browser | The issue window's integrated browser, reached by `showUrl()` (§7.6.1); never system `open`. Browser automation and browser tests run in Chrome, never in an issue window |
-| Pages | One local Flask server on `127.0.0.1`, run by a LaunchAgent from login and controlled by `plan serve start\|stop\|restart\|status`, rendering an issue's pages from Jinja templates (§7.6.1) |
+| Pages | One local Flask server on `127.0.0.1`, run by a LaunchAgent from login and controlled by `plan serve start\|stop\|restart\|status`, rendering an issue's pages from Jinja templates and tickets' Markdown with markdown-it-py (§7.6.1) |
 | Pull requests | `gh`; Jira linkage through Jira's development panel, not a custom field |
 | Jira writes | `/rest/api/3/*`, ADF for descriptions and comments |
 
@@ -265,20 +275,22 @@ writes a ticket into a development repo.
 
 ### 7.1 Start
 
-Start shows for an issue that hasn't started: a store `status: open`, or a Jira `statusCategory` of
-`new`. It lists the issue's open blockers (§4.2) and asks whether to go on; no stops with nothing
+Start shows for an issue in the port's `new` category. Every `Issue` carries one of three
+categories, `new`, `in-progress` and `done` (`lib/issue.py`), and each adapter maps its tracker's
+statuses onto them: a ticket's `open` is `new`, and Jira's `statusCategory.key` `new`,
+`indeterminate` and `done` map to `new`, `in-progress` and `done`. Start, Done and the server
+reason only from the category, never from a status name. Start lists the issue's open blockers (§4.2) and asks whether to go on; no stops with nothing
 changed. It then makes the branch `<type>/<KEY>-<slug>` and its worktree off the latest base, and
-moves the issue to "in progress".
+moves the issue to `in-progress` with `transition(key, IN_PROGRESS)`. Each adapter names the status
+that category means in its tracker.
 
-- **Jira.** The transition is looked up by target status name at call time, never by a hardcoded
-  id: `lib/jira.py` lists the issue's available transitions, picks the one whose `to.name` matches
-  the configured target (default `"In Progress"`), and posts it. Issue types in `CIAM` don't share
-  one status scheme, so Start's "already started" check reasons from `statusCategory.key`
-  (`new`/`indeterminate`/`done`), never from a status name.
+- **Jira.** `lib/jira.py` names `"In Progress"`. The transition is looked up by that target status
+  name at call time, never by a hardcoded id: it lists the issue's available transitions, picks the
+  one whose `to.name` matches, and posts it.
 - **Store.** `FileStore` sets `status: in-progress` in the front matter, leaving the rest of the
   file untouched.
 
-Either way, Start reads the issue back and refuses if its status isn't the target (§8). It then logs
+Either way, the adapter reads the issue back and refuses if its status isn't the target (§8). It then logs
 "Started" on the issue (an ADF comment in Jira, a `## Log` line in a ticket) and opens the issue
 window (§2). Start writes the workspace file `<KEY>.code-workspace`, listing the worktree and the
 ticket store, to `workspaceDir` (config, default `~/.cache/plan/code-workspaces`), outside every
@@ -368,11 +380,15 @@ through the placer, recreating any that is missing ([failure-modes.md,
 Start refuses a closed issue. A lock file per issue keeps two invocations from starting it at once
 ([failure-modes.md, *Start*](failure-modes.md)).
 
-**The issue beside Claude.** A Jira issue's browse URL opens through `showUrl()` (§7.6.1), with the
-issue's key passed explicitly, since Start runs in the invoking terminal and not in the issue
-window. A store issue opens instead in an editor tab of the issue window, on the ticket file in the
-store's folder, never on a copy in a worktree. The URL or file path is printed either way. Claude's
-prompt names the tracker: a Jira key, or the ticket file's path.
+**The issue beside Claude.** The issue's page opens through `showUrl()` (§7.6.1), with the issue's
+key passed explicitly, since Start runs in the invoking terminal and not in the issue window: Jira's
+browse URL, or the local server's `/issues/<KEY>` for a store ticket. A store ticket also opens in an
+editor tab of the issue window, on the ticket file in the store's folder, never on a copy in a
+worktree; the page is read-only, and the tab is where the ticket is edited. The page's URL and the file's
+path are the `page` and `file` of the `Issue` Start read (§6.1), and both are printed. When the
+local server doesn't answer `/health`, Start prints the page's URL and says to run
+`plan serve start`, then `plan browse <KEY>`, and goes on without opening it. Claude's prompt names
+the tracker: a Jira key, or the ticket file's path.
 
 Last, Start and Open switch to the issue's slot and focus the issue window with Claude's terminal in
 front, so the command finishes with the human at the issue's Claude, by running
@@ -420,9 +436,8 @@ inside a Claude session either. Done's last step prints the close note (`closeNo
 `Close CIAM-123 in Jira` with the browse URL; for a ticket, the file to set `status: done` in. Done
 never calls `showUrl()`; the printed line is what points the human at the issue.
 
-Done accepts an issue that is in progress or already closed, reasoning from Jira's
-`statusCategory` or the ticket's `status`, since Jira's Done-category status names vary by issue
-type.
+Done accepts an issue whose category is `in-progress` or `done` (§7.1), since a tracker's status
+names for those vary by issue type.
 
 It checks everything before it changes anything, and Done again finishes what a stopped one left
 ([failure-modes.md, *Done*](failure-modes.md)). Done also frees the issue's slot
@@ -456,11 +471,15 @@ order:
 2. Within a milestone, open issues that block others first, then by the issue's `ordinal`, then
    issues with no ordinal by number.
 
-For Jira it is the config's raw JQL (`jql` in the machine config), run against
-`/rest/api/3/search/jql`. The default is `project in (<the jira entry's projects>) AND assignee =
-currentUser() AND statusCategory != Done ORDER BY Rank`. With no Jira projects in the machine
-config there is no Jira list. The two lists are merged into one, in one row shape; a ticket
-with `after: <JIRA-KEY>` sorts directly after that Jira issue.
+For a Jira project it is the JQL in the project's entry under `jira` in the machine config, run
+against `/rest/api/3/search/jql`. The default is `project in (<PROJECT>) AND assignee =
+currentUser() AND statusCategory != Done ORDER BY Rank`.
+
+Next up walks the projects this Mac works, each Jira project the machine config's `jira` entry
+names, in its order, then the store's, and asks each project's `IssueStore` adapter for its set. The
+sets merge into one list, in one row shape, each set in its adapter's order. A row whose `after:`
+names a row of an earlier set sorts directly after it; every other row follows the sets before its
+own. With no Jira projects in the machine config the store's set is the whole list.
 
 <a id="open-url"></a>
 
@@ -474,7 +493,16 @@ A localhost or loopback link clicked in one of that window's terminals opens the
 agent's shell uses it for one (§10, rule 7).
 
 `plan browse` takes a key, which opens the issue's page: Jira's browse URL, or the local server's
-page for a store ticket. It also takes `pr#N`, which opens the pull request, or a URL. `[KEY]` names the
+page for a store ticket, `/issues/<KEY>`. That page shows the ticket's front matter fields, its body
+and its `## Log`, rendered from their Markdown: CommonMark, with tables, strikethrough and task-list
+checkboxes. Raw HTML in a ticket is escaped and `javascript:` links are not rendered, so a ticket
+adds no markup of its own. The page's Open in VS Code button posts to `/issues/<KEY>/open`, since
+a `vscode://` link clicked in the integrated browser never reaches VS Code. The server sends
+plan-window's `/open?file=<ticket file>` link with `code --open-url`. VS Code hands the link to the
+focused window, the one clicked in, and the extension opens the file in a tab there. `code <file>`
+would open it in whichever window's folders hold the store. The server takes the post only from its
+own pages, by their `Origin`.
+It also takes `pr#N`, which opens the pull request, or a URL. `[KEY]` names the
 issue whose window the page belongs in when neither the target nor the terminal names one.
 
 The issue window, in order: (1) an explicit key: the target's own, or `[KEY]`, and Start always
@@ -540,8 +568,8 @@ every write, so `plan` can't produce a file the watcher would refuse.
 `templates/issue.md`, writes the ticket, checks it and opens it in `$EDITOR`. `plan set <KEY>
 field=value…` changes front-matter fields, all or nothing, checked first. Nobody writes front matter
 by hand. A transition edits the one `status` line and reads the file back (§7.1); a log entry
-appends a dated line under `## Log`. `FileStore` answers in the same shapes `Jira` does, so Start,
-Ship and Done have no store-specific branch.
+appends a dated line under `## Log`. `FileStore` returns the same `Issue` `Jira` does (§6.1), so
+Start, Ship and Done have no store-specific branch.
 
 **The watcher.** `issue-watch` runs under launchd and watches `active/`, `archive/`, `milestones/`
 and `reviews/`. After a quiet period (`debounceSeconds` in `store.yml`), so a mass edit lands as one
@@ -584,6 +612,7 @@ they share:
 | The picker and `plan list` | Next up in plan order, both trackers merged, with each issue's project name (§7.6) |
 | `plan view <KEY>` | One issue: fields, open blockers, what it blocks, and its body or description |
 | A ticket in an editor tab | The ticket file itself, opened in the issue window by Start and Open (§7.1) |
+| A ticket's page | The local server's `/issues/<KEY>`: fields, body and log, with a button that opens the ticket file in the window it was clicked in, opened beside Claude by Start and Open (§7.1, §7.6.1) |
 | `git log` in the store | Every change to every ticket, milestone and review round |
 | Jira's issue list, board and issue page | Jira issues, their links, comments and development panel |
 

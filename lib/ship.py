@@ -10,16 +10,16 @@ from .start import git, run
 
 # A round's files for pr, in .tmp/<KEY>/: beside the commit message and PR body, the review replies
 # pr posts, one <comment id>.md each, and issue.md, the issue's description with the boxes pr
-# ticks. A reply's name is digits, as pr_threads.py reads it. The key is a Jira key, CIAM-123, not
-# Redmine's bare issue number: it names the whole folder, so .tmp/CIAM-123/ replaces .tmp/<n>/.
+# ticks. A reply's name is digits, as pr_threads.py reads it. The issue key, CIAM-123 or SK-0003,
+# names the whole folder.
 ROUND = r"(?:commit\.txt|pr-body\.md|issue\.md|replies/[0-9]+\.md)"
 REVIEW_FILE = re.compile(rf"^(.+)/\.tmp/([A-Z][A-Z0-9]*-[0-9]+)/{ROUND}$")
 ROUND_FILE = re.compile(rf"^{ROUND}$")
 
 
 # The issue and its checkout from a round file's path, <root>/.tmp/<KEY>/<round file>; None for any
-# other file. Field is named key, not id: a Jira key is a string (CIAM-123), never a number, and
-# calling it id invites someone to int() it the way the Redmine version did.
+# other file. Field is named key, not id: a key is a string (CIAM-123), never a number, and
+# calling it id invites someone to int() it.
 def reviewFile(file):
     m = REVIEW_FILE.match(file)
     return {"root": m.group(1), "key": m.group(2)} if m else None
@@ -173,7 +173,5 @@ def prLink(pr):
     return f'[{path_parts[2]}#{pr["number"]}]({pr["url"]})'
 
 
-# Decision #4 drops Redmine's "Pull requests" custom field: Jira has no field for this, because its
-# development panel already shows every PR whose branch name or commit carries the issue's key.
-# There is nothing for Ship to write back to Jira once a PR exists, so linkPullRequest has no
-# replacement here; Done finds the PR straight from the branch (lib/done.js's prFromBranch).
+# Decision #4: Ship writes nothing back to the issue once a PR exists; Done finds the PR straight
+# from the branch (lib/done.py's prFromBranch).

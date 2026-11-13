@@ -12,6 +12,14 @@ from unittest import mock
 
 from lib import agents, cli
 
+
+# cli.main reads the LaunchAgent's plist for the port the server runs on; these tests run as if no
+# agent were installed, whatever this machine's plist says.
+def setUpModule():
+    patcher = mock.patch.object(cli.serve_mod.LaunchAgent, "port", return_value=None)
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
 SLOTS = [("3", "SK-0041"), ("4", "CIAM-12")]
 
 

@@ -20,7 +20,9 @@ from unittest import mock
 
 from lib import done as done_mod
 from lib import term
-from lib.done import DISPOSABLE, branchForKey, doneNote, finish
+from lib.issue import IN_PROGRESS, NEW, Comment, Issue
+from lib.done import DISPOSABLE, alreadyNoted, branchForKey, doneNote, finish
+from lib.jira import adfToText
 from lib.start import worktreeDir
 
 KEY = "CIAM-81"
@@ -75,35 +77,33 @@ class PrFromBranchTests(unittest.TestCase):
         self.assertEqual(pr["number"], 4)
 
 
-# A fake Jira matching the surface finish() uses: issue(), textComment(), addComment(). transition()
-# is present only so a wrongful call can be caught and fail the test loudly, never because finish()
-# is expected to call it.
-class FakeJira:
+# A fake IssueStore adapter with the surface finish() uses: issue(), addComment(), closeNote().
+# transition() is present only so a wrongful call can be caught and fail the test loudly, never
+# because finish() is expected to call it.
+class FakeStore:
     def __init__(self, issue):
-        self.settings = {"baseUrl": "https://cryoport.atlassian.net"}
         self._issue = issue
         self.comments = []
         self.transitioned = []
+        self.reads = 0
 
     def issue(self, key=None):
+        self.reads += 1
         return self._issue
 
-    def textComment(self, text):
-        return {"type": "doc", "text": text}
-
-    def addComment(self, key, body):
-        self.comments.append([key, body])
+    def addComment(self, key, text):
+        self.comments.append([key, text])
 
     def transition(self, key, target):
         self.transitioned.append([key, target])
-        raise RuntimeError("finish() must never call jira.transition -- decision #5")
+        raise RuntimeError("finish() must never call store.transition -- decision #5")
 
     def closeNote(self, key):
-        return f'Close {key} in Jira: {self.settings["baseUrl"]}/browse/{key}'
+        return f"Close {key} in Jira: https://cryoport.atlassian.net/browse/{key}"
 
 
-def inProgressIssue(key=KEY):
-    return {"key": key, "fields": {"status": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}}, "comment": {"comments": []}}}
+def inProgressIssue(key=KEY, comments=()):
+    return Issue(key=key, summary="x", status="In Progress", category=IN_PROGRESS, issueType="Story", comments=comments)
 
 
 # Real git: a bare "origin", a clone simulating GitHub's side where the PR gets squash-merged, and
@@ -198,6 +198,27 @@ class DoneNoteTests(unittest.TestCase):
         )
 
 
+class AlreadyNotedTests(unittest.TestCase):
+    def test_a_note_that_links_the_commit_only_through_a_label_is_found(self):
+        pr = {"url": "https://github.com/acme/widgets/pull/1", "number": 1, "mergeCommit": {"oid": "abcdef1234567890"}}
+        href = "https://github.com/acme/widgets/commit/abcdef1234567890"
+        body = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "merged as "},
+                        {"type": "text", "text": "abcdef1", "marks": [{"type": "link", "attrs": {"href": href}}]},
+                    ],
+                }
+            ],
+        }
+        issue = inProgressIssue(comments=(Comment("plan", adfToText(body)),))
+        self.assertTrue(alreadyNoted(issue, pr))
+
+
 class FinishTests(unittest.TestCase):
     def setUp(self):
         self._dirs = []
@@ -214,15 +235,15 @@ class FinishTests(unittest.TestCase):
     def test_removes_worktree_pulls_main_never_transitions(self):
         s = self.sandbox()
         issue = inProgressIssue()
-        jira = FakeJira(issue)
+        jira = FakeStore(issue)
         result = finish(jira, s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
         self.assertFalse(os.path.exists(s["dir"]))
         self.assertEqual(git(s["checkout"], "rev-parse", "main").strip(), s["pr"]["mergeCommit"]["oid"])
         # The invariant: Jira's status is untouched, and nothing in finish() called transition().
-        self.assertEqual(issue["fields"]["status"]["name"], "In Progress")
+        self.assertEqual(jira.reads, 1)
         self.assertEqual(jira.transitioned, [])
         self.assertEqual(len(jira.comments), 1)
-        self.assertRegex(jira.comments[0][1]["text"], r"Done: \[origin#1\]")
+        self.assertRegex(jira.comments[0][1], r"Done: \[origin#1\]")
         self.assertTrue(any(f"Close {KEY} in Jira" in n for n in result["notes"]))
         self.assertTrue(any(f"Close {KEY} in Jira: https://cryoport.atlassian.net/browse/{KEY}" in n for n in result["notes"]))
 
@@ -233,7 +254,7 @@ class FinishTests(unittest.TestCase):
         legacy = term.legacyWorkspaceFilePath(s["dir"], KEY)
         term.writeWorkspaceFile(current, {})
         open(legacy, "w").close()
-        finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"], workspaceDir=workspaceDir)
+        finish(FakeStore(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"], workspaceDir=workspaceDir)
         self.assertFalse(os.path.exists(current) or os.path.exists(legacy))
 
     def test_deletes_the_legacy_file_beside_a_worktree_moved_from_its_usual_place(self):
@@ -243,7 +264,7 @@ class FinishTests(unittest.TestCase):
         git(s["checkout"], "worktree", "move", s["dir"], moved)
         legacy = term.legacyWorkspaceFilePath(moved, KEY)
         open(legacy, "w").close()
-        finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"], workspaceDir=os.path.join(s["root"], "ws"))
+        finish(FakeStore(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"], workspaceDir=os.path.join(s["root"], "ws"))
         self.assertFalse(os.path.exists(moved))
         self.assertFalse(os.path.exists(legacy))
 
@@ -251,21 +272,16 @@ class FinishTests(unittest.TestCase):
         s = self.sandbox()
         workspaceDir = os.path.join(s["root"], "ws")
         os.makedirs(os.path.join(workspaceDir, f"{KEY}.code-workspace"))  # a folder: os.remove refuses it
-        result = finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"], workspaceDir=workspaceDir)
+        result = finish(FakeStore(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"], workspaceDir=workspaceDir)
         self.assertFalse(os.path.exists(s["dir"]))
         self.assertTrue(any(n.startswith("Warning: couldn't delete") for n in result["notes"]))
 
     def test_is_idempotent_second_run_changes_nothing_and_posts_no_second_comment(self):
         s = self.sandbox()
-        issue = inProgressIssue()
-        jira = FakeJira(issue)
+        jira = FakeStore(inProgressIssue())
         finish(jira, s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
         # The comment is now on the issue, as a real Jira GET would show on a rerun.
-        repoUrl = re.sub(r"/pull/\d+$", "", s["pr"]["url"])
-        oid = s["pr"]["mergeCommit"]["oid"]
-        issue["fields"]["comment"]["comments"].append(
-            {"body": json.dumps({"text": f"...{oid[:7]}...{repoUrl}/commit/{oid}"})}
-        )
+        jira._issue = inProgressIssue(comments=(Comment("plan", jira.comments[0][1]),))
         result = finish(jira, s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
         self.assertEqual(len(jira.comments), 1)
         self.assertEqual(jira.transitioned, [])
@@ -273,7 +289,7 @@ class FinishTests(unittest.TestCase):
 
     def test_refuses_pr_that_hasnt_merged_changing_nothing(self):
         s = self.sandbox(merged=False)
-        jira = FakeJira(inProgressIssue())
+        jira = FakeStore(inProgressIssue())
         with self.assertRaisesRegex(RuntimeError, "still open; nothing changed"):
             finish(jira, s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
         self.assertTrue(os.path.exists(s["dir"]))
@@ -286,7 +302,7 @@ class FinishTests(unittest.TestCase):
             f.write("extra\n")
         git(s["dir"], "add", "-A")
         git(s["dir"], "commit", "-q", "-m", "unpushed")
-        jira = FakeJira(inProgressIssue())
+        jira = FakeStore(inProgressIssue())
         with self.assertRaisesRegex(RuntimeError, r"with commits .* lacks"):
             finish(jira, s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
         self.assertTrue(os.path.exists(s["dir"]))
@@ -296,15 +312,24 @@ class FinishTests(unittest.TestCase):
         s = self.sandbox()
         with open(os.path.join(s["dir"], "b.txt"), "w") as f:
             f.write("dirty\n")
-        jira = FakeJira(inProgressIssue())
+        jira = FakeStore(inProgressIssue())
         with self.assertRaisesRegex(RuntimeError, "has changes the merged PR lacks"):
             finish(jira, s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
         self.assertTrue(os.path.exists(s["dir"]))
 
+    def test_reads_the_issue_only_once_the_keys_lock_is_held(self):
+        s = self.sandbox()
+        lockFile = os.path.join(s["checkout"], ".git", f"plan-busy-{KEY}")
+        jira = FakeStore(inProgressIssue())
+        locked = []
+        read = jira.issue
+        jira.issue = lambda key=None: locked.append(os.path.exists(lockFile)) or read(key)
+        finish(jira, s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        self.assertEqual(locked, [True])
+
     def test_refuses_issue_thats_still_to_do(self):
         s = self.sandbox()
-        issue = {"key": KEY, "fields": {"status": {"name": "To Do", "statusCategory": {"key": "new"}}, "comment": {"comments": []}}}
-        jira = FakeJira(issue)
+        jira = FakeStore(Issue(key=KEY, summary="x", status="To Do", category=NEW, issueType="Story"))
         with self.assertRaisesRegex(RuntimeError, f"{KEY} is To Do; refresh Next up"):
             finish(jira, s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
 
@@ -313,7 +338,7 @@ class FinishTests(unittest.TestCase):
         os.makedirs(os.path.join(s["dir"], ".tmp", KEY, "replies"), exist_ok=True)
         with open(os.path.join(s["dir"], ".tmp", KEY, "replies", "9.md"), "w") as f:
             f.write("reply\n")
-        jira = FakeJira(inProgressIssue())
+        jira = FakeStore(inProgressIssue())
         with self.assertRaisesRegex(RuntimeError, "has replies or checklist ticks pr hasn't sent"):
             finish(jira, s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
         self.assertTrue(os.path.exists(s["dir"]))
@@ -322,7 +347,7 @@ class FinishTests(unittest.TestCase):
         s = self.sandbox()
         # Simulate an earlier Done that removed the worktree but stopped before the branch delete.
         git(s["checkout"], "worktree", "remove", "--force", s["dir"])
-        jira = FakeJira(inProgressIssue())
+        jira = FakeStore(inProgressIssue())
         result = finish(jira, s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
         self.assertIsNone(result["dir"])
         with self.assertRaises(subprocess.CalledProcessError):
@@ -332,7 +357,7 @@ class FinishTests(unittest.TestCase):
     def test_refuses_pr_whose_repo_isnt_this_checkouts_origin(self):
         s = self.sandbox()
         pr = {**s["pr"], "url": "https://github.com/other/unrelated/pull/9"}
-        jira = FakeJira(inProgressIssue())
+        jira = FakeStore(inProgressIssue())
         with self.assertRaisesRegex(RuntimeError, "isn't in .* origin"):
             finish(jira, s["checkouts"], KEY, view=lambda cwd, branch: pr, cwd=s["checkout"])
 

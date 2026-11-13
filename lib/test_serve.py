@@ -39,6 +39,9 @@ class FakeAgent:
         self.calls.append("restart")
         self.server.up = True
 
+    def port(self):
+        return serve.portIn(self.plist["ProgramArguments"]) if self.plist else None
+
 
 class FakeServer:
     def __init__(self, up=False):
@@ -58,9 +61,11 @@ class ServeTests(unittest.TestCase):
     def tearDown(self):
         self.dir.cleanup()
 
-    def serve(self, loaded=False, up=False, holder=None, root=None):
+    def serve(self, loaded=False, up=False, holder=None, root=None, port=None, agentPort=None):
         self.server = FakeServer(up)
         self.agent = FakeAgent(loaded, self.server)
+        if agentPort:
+            self.agent.plist = serve.agentPlist(self.root, agentPort)
         return serve.Serve(
             {"serverPort": 8765},
             agent=self.agent,
@@ -68,12 +73,47 @@ class ServeTests(unittest.TestCase):
             portHolder=lambda port: holder,
             waitSeconds=0,
             root=root or self.root,
+            port=port,
         )
 
     def test_start_installs_and_loads_the_agent_and_prints_the_url_up(self):
         out = self.serve().start()
         self.assertEqual(self.agent.calls, ["install", "load"])
         self.assertEqual(out, "http://127.0.0.1:8765/  up  pid 4242")
+
+    def test_start_with_a_port_runs_the_server_on_it(self):
+        out = self.serve(port=8799).start()
+        self.assertEqual(self.agent.port(), 8799)
+        self.assertEqual(out, "http://127.0.0.1:8799/  up  pid 4242")
+
+    def test_start_without_a_port_moves_a_server_on_another_port_back_to_serverPort(self):
+        out = self.serve(loaded=True, up=True, agentPort=8799).start()
+        self.assertEqual(self.agent.calls, ["install", "unload", "load"])
+        self.assertEqual(out, "http://127.0.0.1:8765/  up  pid 4242")
+
+    def test_stop_and_status_act_on_the_port_the_agent_runs_the_server_on(self):
+        self.assertEqual(self.serve(loaded=True, up=True, agentPort=8799).status(), "http://127.0.0.1:8799/  up  pid 4242")
+        self.assertEqual(self.serve(loaded=True, up=True, agentPort=8799).stop(), "http://127.0.0.1:8799/  down")
+
+    def test_restart_keeps_the_port_the_agent_runs_the_server_on(self):
+        out = self.serve(loaded=True, up=True, agentPort=8799).restart()
+        self.assertEqual(self.agent.calls, ["restart"])
+        self.assertEqual(out, "http://127.0.0.1:8799/  up  pid 4242")
+
+    def test_restart_with_another_port_moves_the_server_there(self):
+        out = self.serve(loaded=True, up=True, agentPort=8799, port=8800).restart()
+        self.assertEqual(self.agent.calls, ["install", "unload", "load"])
+        self.assertEqual(out, "http://127.0.0.1:8800/  up  pid 4242")
+
+    def test_restart_with_the_port_a_legacy_plist_runs_on_kicks_the_agent(self):
+        out = self.serve(loaded=True, up=True, port=8765).restart()
+        self.assertEqual(self.agent.calls, ["restart"])
+        self.assertEqual(out, "http://127.0.0.1:8765/  up  pid 4242")
+
+    def test_restart_with_another_port_moves_a_legacy_plists_server(self):
+        out = self.serve(loaded=True, up=True, port=8800).restart()
+        self.assertEqual(self.agent.calls, ["install", "unload", "load"])
+        self.assertEqual(out, "http://127.0.0.1:8800/  up  pid 4242")
 
     def test_start_on_a_running_server_changes_nothing(self):
         out = self.serve(loaded=True, up=True).start()
@@ -114,6 +154,11 @@ class ServeTests(unittest.TestCase):
         self.serve().restart()
         self.assertEqual(self.agent.calls, ["install", "load"])
 
+    def test_restart_of_an_unloaded_agent_keeps_the_port_its_plist_names(self):
+        out = self.serve(agentPort=8799).restart()
+        self.assertEqual(self.agent.port(), 8799)
+        self.assertEqual(out, "http://127.0.0.1:8799/  up  pid 4242")
+
     def test_status_says_whether_it_answers(self):
         self.assertEqual(self.serve(loaded=True, up=True).status(), "http://127.0.0.1:8765/  up  pid 4242")
         self.assertEqual(self.serve().status(), "http://127.0.0.1:8765/  down")
@@ -126,6 +171,11 @@ class ServeTests(unittest.TestCase):
     def test_control_refuses_an_unknown_action_with_usage(self):
         with self.assertRaisesRegex(RuntimeError, r"usage: plan serve start\|stop\|restart\|status"):
             serve.control({"serverPort": 8765}, "reload")
+
+    def test_control_refuses_a_port_for_stop_and_status(self):
+        for action in ("stop", "status"):
+            with self.assertRaisesRegex(RuntimeError, f"plan serve {action} takes no --port"):
+                serve.control({"serverPort": 8765}, action, 8799)
 
 
 class VenvTests(unittest.TestCase):
@@ -152,6 +202,11 @@ class AgentPlistTests(unittest.TestCase):
         plist = serve.agentPlist("/opt/skuld")
         self.assertEqual(plist["ProgramArguments"], ["/opt/skuld/.venv/bin/python", "-m", "lib.server"])
         self.assertEqual(plist["WorkingDirectory"], "/opt/skuld")
+
+    def test_passes_the_port_to_the_server(self):
+        plist = serve.agentPlist("/opt/skuld", 8799)
+        self.assertEqual(plist["ProgramArguments"][-2:], ["--port", "8799"])
+        self.assertEqual(serve.portIn(plist["ProgramArguments"]), 8799)
 
     def test_starts_at_login_and_restarts_after_it_stops(self):
         plist = serve.agentPlist("/opt/skuld")
@@ -204,13 +259,31 @@ class PortTests(unittest.TestCase):
             self.assertIsNone(serve.portHolder(8765))
 
 
+class ServedPortTests(unittest.TestCase):
+    def agentOn(self, port):
+        agent = FakeAgent()
+        agent.plist = serve.agentPlist("/opt/skuld", port) if port else None
+        return agent
+
+    def test_links_follow_the_port_the_agent_runs_the_server_on(self):
+        self.assertEqual(serve.withServedPort({"serverPort": 8765}, self.agentOn(8799)), {"serverPort": 8799})
+
+    def test_without_an_agent_port_the_config_is_unchanged(self):
+        self.assertEqual(serve.withServedPort({"serverPort": 8765}, self.agentOn(None)), {"serverPort": 8765})
+
+    def test_launch_agent_port_is_none_without_a_plist(self):
+        agent = serve.LaunchAgent()
+        agent.plistFile = "/nonexistent/dev.skuld.serve.plist"
+        self.assertIsNone(agent.port())
+
+
 class CliTests(unittest.TestCase):
     def test_plan_serve_prints_the_actions_result(self):
         with mock.patch.object(cli.config_mod, "load", return_value={"serverPort": 8765}), \
                 mock.patch.object(serve, "control", return_value="http://127.0.0.1:8765/  up  pid 4242") as control, \
                 mock.patch("builtins.print") as printed:
             cli.main(["serve", "status"])
-        control.assert_called_once_with({"serverPort": 8765}, "status")
+        control.assert_called_once_with({"serverPort": 8765}, "status", None)
         printed.assert_called_once_with("http://127.0.0.1:8765/  up  pid 4242")
 
 

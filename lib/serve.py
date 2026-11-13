@@ -1,4 +1,4 @@
-# `plan serve start|stop|restart|status`: controls the local page server's LaunchAgent through
+# `plan serve start|stop|restart|status [--port N]`: controls the local page server's LaunchAgent through
 # launchctl (architecture §6.3, GUIDE §7). It renders nothing itself; every page is the server's
 # (lib/server.py). Stdlib only: Flask lives in skuld's uv venv, which only the server runs from.
 import json
@@ -23,6 +23,10 @@ THROTTLE_SECONDS = 10
 # What /health answers, so status can tell this server from anything else on the port.
 HEALTH = {"app": "skuld", "status": "ok"}
 ACTIONS = ("start", "stop", "restart", "status")
+# The actions that take --port: the others act on the server where it runs.
+PORT_ACTIONS = ("start", "restart")
+PORT_FLAG = "--port"
+USAGE = f"plan serve {'|'.join(ACTIONS)} [{PORT_FLAG} N]"
 # The job's own pid line in `launchctl print`, one tab in; deeper lines belong to nested sections.
 PID_LINE_RE = re.compile(r"^\tpid = (\d+)$", re.MULTILINE)
 
@@ -33,20 +37,48 @@ def serverUrl(port):
 
 def portFrom(cfg):
     port = cfg.get("serverPort")
-    if not isinstance(port, int) or isinstance(port, bool) or not 0 < port < 65536:
+    if not isPort(port):
         raise RuntimeError(f'serverPort must be a port number, not {port!r}: fix it in {config_mod.CONFIG_FILE}')
     return port
+
+
+def isPort(value):
+    return isinstance(value, int) and not isinstance(value, bool) and 0 < value < 65536
+
+
+# The port a --port argument names.
+def portArg(text):
+    port = int(text) if text and text.isdigit() else None
+    if not isPort(port):
+        raise RuntimeError(f"{PORT_FLAG} must be a port number, not {text!r}")
+    return port
+
+
+# The --port value in a list of arguments, or None when they name none.
+def portIn(args):
+    if PORT_FLAG not in args:
+        return None
+    at = args.index(PORT_FLAG)
+    return portArg(args[at + 1] if at + 1 < len(args) else None)
+
+
+# cfg with serverPort set to the port the agent runs the server on, when it names one: Start's and
+# plan browse's links go where the server is, after `plan serve start --port N`.
+def withServedPort(cfg, agent=None):
+    port = (agent or LaunchAgent()).port()
+    return {**cfg, "serverPort": port} if port else cfg
 
 
 def venvPython(root=ROOT):
     return os.path.join(root, ".venv", "bin", "python")
 
 
-# The agent runs the venv's python directly, not `uv run`, so it is one process.
-def agentPlist(root=ROOT):
+# The agent runs the venv's python directly, not `uv run`, so it is one process. The port it runs the
+# server on is in its arguments, which is where stop, status and the page links find it.
+def agentPlist(root=ROOT, port=None):
     return {
         "Label": LABEL,
-        "ProgramArguments": [venvPython(root), "-m", "lib.server"],
+        "ProgramArguments": [venvPython(root), "-m", "lib.server", *portArgs(port)],
         "WorkingDirectory": root,
         "EnvironmentVariables": {"PYTHONUNBUFFERED": "1"},
         "RunAtLoad": True,
@@ -68,8 +100,15 @@ def refuseMissingVenv(root=ROOT, which=None):
     raise RuntimeError(f"the server's venv is missing: run `uv sync` in {root}")
 
 
+def portArgs(port):
+    return [PORT_FLAG, str(port)] if port else []
+
+
 def portInUseMessage(port, holder):
-    return f"port {port} is in use by {holder or 'another process'}; stop it, or set serverPort in {config_mod.CONFIG_FILE}"
+    return (
+        f"port {port} is in use by {holder or 'another process'}; stop it, pass {PORT_FLAG} N, "
+        f"or set serverPort in {config_mod.CONFIG_FILE}"
+    )
 
 
 # "<command> (pid <n>)" for whatever listens on port, or None when nothing does or lsof can't say.
@@ -114,6 +153,18 @@ class LaunchAgent:
     def _print(self):
         return self._launchctl("print", f"{self.domain}/{self.label}", check=False)
 
+    # The port the installed plist runs the server on, or None when there is no plist or it names none.
+    def port(self):
+        try:
+            with open(self.plistFile, "rb") as f:
+                plist = plistlib.load(f)
+        except (OSError, plistlib.InvalidFileException):
+            return None
+        try:
+            return portIn(plist.get("ProgramArguments", []))
+        except RuntimeError:
+            return None
+
     def install(self, plist):
         os.makedirs(os.path.dirname(self.plistFile), exist_ok=True)
         os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
@@ -140,20 +191,26 @@ class LaunchAgent:
 class Serve:
     """plan serve's four actions over the LaunchAgent; the probes are injectable for tests."""
 
-    def __init__(self, cfg, agent=None, answers=answers, portHolder=portHolder, waitSeconds=5.0, root=ROOT):
-        self.port = portFrom(cfg)
+    # start runs the server on port, else serverPort; the other actions act on it where the agent
+    # runs it, and a restart given a port moves it there.
+    def __init__(self, cfg, agent=None, answers=answers, portHolder=portHolder, waitSeconds=5.0, root=ROOT, port=None):
         self.agent = agent or LaunchAgent()
+        self.requestedPort = port
+        self.configPort = portFrom(cfg)
+        self.startPort = port or self.configPort
+        self.port = port or self.agent.port() or self.startPort
         self.answers = answers
         self.portHolder = portHolder
         self.waitSeconds = waitSeconds
         self.root = root
 
     def start(self):
+        self.port = self.startPort
         refuseMissingVenv(self.root)
-        if self.agent.loaded() and self.answers(self.port):
+        if self.agent.loaded() and self.runningPort() == self.port and self.answers(self.port):
             return self.status()
         self.refusePortInUse()
-        self.agent.install(agentPlist(self.root))
+        self.agent.install(agentPlist(self.root, self.port))
         if self.agent.loaded():
             self.agent.unload()  # launchd keeps the loaded plist; reload it to run this checkout
         self.agent.load()
@@ -166,10 +223,20 @@ class Serve:
 
     def restart(self):
         if not self.agent.loaded():
+            self.startPort = self.port  # an unloaded agent's plist still names the port to keep
+            return self.start()
+        if self.movesPort():
             return self.start()
         refuseMissingVenv(self.root)
         self.agent.restart()
         return self.statusAfterWaitingFor(up=True)
+
+    # A plist without --port (one written before the flag) runs the server on serverPort.
+    def runningPort(self):
+        return self.agent.port() or self.configPort
+
+    def movesPort(self):
+        return self.requestedPort is not None and self.requestedPort != self.runningPort()
 
     # The URL, up or down, and the agent's pid while launchd runs it, even one that doesn't answer.
     def status(self):
@@ -191,8 +258,10 @@ class Serve:
         return self.status()
 
 
-def control(cfg, action, serve=None):
+def control(cfg, action, port=None, serve=None):
     if action not in ACTIONS:
-        raise RuntimeError(f"usage: plan serve {'|'.join(ACTIONS)}")
-    serve = serve or Serve(cfg)
+        raise RuntimeError(f"usage: {USAGE}")
+    if port is not None and action not in PORT_ACTIONS:
+        raise RuntimeError(f"plan serve {action} takes no {PORT_FLAG}: it acts on the server where it runs")
+    serve = serve or Serve(cfg, port=port)
     return getattr(serve, action)()

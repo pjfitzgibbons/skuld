@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}{% if ticket %}{{ ticket.key }}: {{ ticket.title }}{% else %}Skuld: ticket{% endif %}{% endblock %}
+{% block heading %}{% if ticket %}<span class="key">{{ ticket.key }}</span> {{ ticket.title }}{% else %}Ticket{% endif %}{% endblock %}
+{% block content %}
+{% if problem %}
+  <p>The ticket can't be read: {{ problem }}</p>
+{% else %}
+  <div class="issue">
+    <article>
+      <section class="body">
+        {{ ticket.body }}
+      </section>
+      <section>
+        <h2>Log</h2>
+        {% if ticket.log %}
+          <ol class="log">
+          {% for entry in ticket.log %}
+            <li><time class="muted">{{ entry.date }}</time> {{ entry.text }}</li>
+          {% endfor %}
+          </ol>
+        {% else %}
+          <p class="muted">Nothing logged yet.</p>
+        {% endif %}
+      </section>
+    </article>
+    <aside>
+      <table class="fields">
+        <tbody>
+        {% for name, value in ticket.fields.items() %}
+          <tr><th>{{ name }}</th><td>{{ value or "—" }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <form method="post" action="/issues/{{ ticket.key }}/open"><button class="link">Open in VS Code</button></form>
+      <p class="muted path">{{ ticket.path }}</p>
+      <p><a href="/">Next up</a></p>
+    </aside>
+  </div>
+{% endif %}
+{% endblock %}

@@ -17,7 +17,7 @@ test("a window with no plan.key is not an issue window", () => {
   assert.equal(windowPlan.readPlan(settingsOf({})), null);
 });
 
-test("an issue window's settings are read, with no ticket for a Jira issue", () => {
+test("an issue window's settings are read, with no ticket for an issue that has no file", () => {
   const read = windowPlan.readPlan(settingsOf({ key: "CIAM-1", worktree: "/w", prompt: "p" }));
   assert.deepEqual(read, { key: "CIAM-1", worktree: "/w", ticket: null, prompt: "p" });
 });
@@ -52,7 +52,7 @@ test("an existing Claude terminal is found by name, so a second is never made", 
   assert.equal(windowPlan.findClaudeTerminal(plan, [{ name: "Claude SK-10" }]), undefined);
 });
 
-test("the ticket opens only when no tab has it, and never for a Jira issue", () => {
+test("the ticket opens only when no tab has it, and never for an issue that has no file", () => {
   assert.equal(windowPlan.ticketNeedsOpening(plan, []), true);
   assert.equal(windowPlan.ticketNeedsOpening(plan, [plan.ticket]), false);
   assert.equal(windowPlan.ticketNeedsOpening({ ...plan, ticket: null }, []), false);
@@ -98,4 +98,14 @@ test("a browse link with no url, or one that isn't http(s), is refused", () => {
   assert.match(windowPlan.browseRequest("key=SK-9", "SK-9").refusal, /needs \?url=/);
   assert.match(windowPlan.browseRequest("url=file%3A%2F%2F%2Fetc%2Fpasswd", "SK-9").refusal, /only http\(s\)/);
   assert.match(windowPlan.browseRequest("url=javascript%3Aalert(1)", "SK-9").refusal, /only http\(s\)/);
+});
+
+test("an open link opens its file", () => {
+  const query = new URLSearchParams({ file: "/store/SK-0005-a b.md" }).toString();
+  assert.deepEqual(windowPlan.openRequest(query), { file: "/store/SK-0005-a b.md" });
+});
+
+test("an open link with no file, or a relative one, is refused", () => {
+  assert.match(windowPlan.openRequest("").refusal, /needs \?file=/);
+  assert.match(windowPlan.openRequest("file=s.md").refusal, /absolute path/);
 });

@@ -102,7 +102,9 @@ macOS only. In order:
    }
    ```
 
-   Jira is on only when `jira` names a project, and then `baseUrl` names its site. A Mac with no
+   Jira is on only when `jira` names a project, and then `baseUrl` names its site. A project's
+   entry may set `jql`, its set in Next up; the default is `project in (<PROJECT>) AND assignee =
+   currentUser() AND statusCategory != Done ORDER BY Rank`. A Mac with no
    `jira` entry never reads `~/.netrc` or calls Jira: Next up is the store's tickets alone, and a
    Jira key is refused, naming the missing entry.
 
@@ -112,8 +114,7 @@ macOS only. In order:
 
    | Key | Default | What it sets |
    | --- | --- | --- |
-   | `jql` | `project in (<the jira entry's projects>) AND assignee = currentUser() AND statusCategory != Done ORDER BY Rank` | The Jira half of Next up |
-   | `typeMap` | Story and Task `feat`, Bug `fix` | Issue type to branch prefix, merged over the default |
+   | `typeMap` | story and task `feat`, bug `fix` | Issue type name to branch prefix, matched without regard to case, merged over the default |
    | `pr` | `~/.local/bin/pr` | The `pr` that Ship runs, by path |
    | `disposable` | `done.py`'s list | Ignored files Done may delete with a worktree |
    | `slotsFile` | `~/.cache/plan/workspaces` | The `<slot>=<KEY>` lines that place issues on Desktops |
@@ -123,6 +124,7 @@ macOS only. In order:
    | `reservedDesktops` | `[1]` | Desktops `plan` never takes for an issue |
    | `netrcFile` | `~/.netrc` | Where the Jira token is, under `machine <baseUrl's host>` |
    | `claudeCommand` | `~/.local/bin/claude` | The `claude` that `plan agents` asks for its sessions, by path |
+   | `codeCommand` | `/usr/local/bin/code` | The `code` the local server runs to open a ticket's file, by path |
    | `serverPort` | `8765` | The local server's port on `127.0.0.1` (§7) |
 
 6. **The skill.** Link `skills/jira-issues/` to `~/.claude/skills/jira-issues/`, so every repo
@@ -133,6 +135,7 @@ macOS only. In order:
    ```sh
    ln -s "$(pwd)/bin/plan" ~/.local/bin/plan
    ln -s "$(pwd)/bin/jira-get" ~/.local/bin/jira-get
+   ln -s "$(pwd)/bin/reindex" ~/.local/bin/reindex
    ln -s ~/.claude/skills/jira-issues/scripts/pr.sh ~/.local/bin/pr
    ln -s ~/.claude/skills/jira-issues/scripts/new_issue.py ~/.local/bin/new_issue
    ```
@@ -166,7 +169,7 @@ macOS only. In order:
     the server, from skuld's main checkout:
 
     ```sh
-    uv sync              # makes .venv with Flask, from pyproject.toml and uv.lock
+    uv sync              # makes .venv with Flask and markdown-it-py, from pyproject.toml and uv.lock
     plan serve start     # installs and loads ~/Library/LaunchAgents/dev.skuld.serve.plist
     plan serve status    # http://127.0.0.1:8765/  up  pid 4242
     ```
@@ -249,7 +252,7 @@ pane: fields, open blockers, what it blocks, and its body or description.
 | `ctrl-r` | Reload the list |
 
 The same work runs as subcommands. A command that takes a key works from any folder; the key
-decides the repo (§4).
+decides the repo (§4). A command refuses arguments and flags it doesn't take, naming them.
 
 | Command | Does |
 | --- | --- |
@@ -262,7 +265,7 @@ decides the repo (§4).
 | `plan ship [KEY]` | Ship (§5); the key defaults to the current worktree's branch |
 | `plan done [KEY]` | Done (§6) |
 | `plan browse <KEY \| pr#N \| url> [KEY]` | Open a page in the issue window's browser (§7) |
-| `plan serve start\|stop\|restart\|status` | Control the local server's LaunchAgent (§7); `status` prints the server's URL, whether it answers, and its pid |
+| `plan serve start\|stop\|restart\|status [--port N]` | Control the local server's LaunchAgent (§7); `status` prints the server's URL, whether it answers, and its pid |
 | `plan pulse <KEY> orange\|green\|off` | Pulse the issue's Desktop in SlotBar, or clear its tint (§2, step 13); exits non-zero when SlotBar isn't running |
 | `plan agents [list]` | Every Claude session, most urgent first: its state, Desktop (`-` when it can't be placed), key, issue title and name |
 | `plan agents status` | The same sessions on one line, as symbols on each Desktop: `⏳` waiting, `◆` done, `●` busy, `■` blocked, `○` idle |
@@ -278,8 +281,8 @@ decides the repo (§4).
 
 ## 4. Start and Open
 
-`plan start` is **Start** on an issue that hasn't started (a store `status: open`, a Jira
-`statusCategory` of `new`) and **Open** on one in progress. Both run the same code, and each step
+`plan start` is **Start** on an issue in the `new` category (a store `status: open`, a Jira
+status in the To Do category) and **Open** on one in progress. Both run the same code, and each step
 runs only when it has something to do:
 
 1. **Re-read the issue** and refuse any other status, since the picker's list may be stale.
@@ -299,10 +302,9 @@ runs only when it has something to do:
    title's first five words. `git worktree add` puts it in `<repo>.worktrees/<KEY>`. A setting-up
    marker, `<git-common-dir>/plan-setting-up-<KEY>`, is written first and removed only when setup
    has finished.
-6. **Move the issue to "in progress", and read it back.** Jira: `lib/jira.py` finds the
-   transition whose target status matches the configured name (default `"In Progress"`), posts it,
-   and refuses if the read-back `statusCategory` isn't `indeterminate`. Store: `FileStore` sets
-   `status: in-progress` and reads the file back. Then "Started" is logged: an ADF comment in
+6. **Move the issue to in progress, and read it back.** Jira: `lib/jira.py` finds the
+   transition whose target status is `"In Progress"`, posts it, and refuses if the issue read back
+   has another status. Store: `FileStore` sets `status: in-progress` and reads the file back. Then "Started" is logged: an ADF comment in
    Jira, a `## Log` line in the ticket.
 7. **Place the issue on a slot.** `SpacesPlacer` does this, and
    `term.writeSlot()` records `<slot>=<KEY>` through a temp file and a rename. SketchyBar is told
@@ -327,10 +329,12 @@ runs only when it has something to do:
    naming the issue, and a shell waits in another; both carry the issue's key in their
    environment. When the window is already open, Open reuses it, rewrites the slot when the
    window sits on another Desktop, and never moves it.
-9. **Put the issue beside Claude.** A Jira issue's browse URL is printed, then opens in the
-   issue window's integrated browser, as `plan browse` opens it (§7). Each step after the print
-   is best-effort. A store ticket opens in an editor tab, on the ticket file in the window's store
-   folder. The URL or file path is printed either way.
+9. **Put the issue beside Claude.** The issue's page is printed, then opens in the issue
+   window's integrated browser, as `plan browse` opens it (§7): Jira's browse URL, or the local
+   server's `/issues/<KEY>` for a store ticket. Each step after the print is best-effort. A store
+   ticket also opens in an editor tab, on the ticket file in the window's store folder, and its
+   path is printed. With the local server down, Start prints the page's URL, says to run
+   `plan serve start` and then `plan browse <KEY>`, and goes on.
 10. **Focus the issue.** Switch to the slot and focus the issue window with Claude's terminal
     in front, so the command ends with the human at the issue's Claude: `code <workspace file>`
     switches to the window's Desktop.
@@ -474,8 +478,11 @@ one process by the venv's python from skuld's uv venv (§2, step 11). It sits id
 asked for. It answers only a Host of `127.0.0.1` or `localhost`, so a page on another site can't
 reach it through DNS rebinding.
 
-`plan serve start|stop|restart|status` controls the LaunchAgent, `dev.skuld.serve`, through
-`launchctl`; the command renders nothing itself.
+`plan serve start|stop|restart|status [--port N]` controls the LaunchAgent, `dev.skuld.serve`,
+through `launchctl`; the command renders nothing itself. `start` runs the server on `--port N`, else
+on `serverPort`, and writes the port into the plist's arguments. `stop`, `status` and `restart` act
+on the port the plist names, and `restart --port N` moves the server to N. Start's and
+`plan browse`'s page links use the plist's port too.
 
 | Command | Does |
 | --- | --- |
@@ -486,7 +493,7 @@ reach it through DNS rebinding.
 
 Without the venv, `start` refuses, naming `uv` when uv isn't installed and `uv sync` when it is. A
 port another process holds is refused, naming the port and the process, by `start` and by the
-server itself. launchd starts a server that stops again after 10 seconds, its throttle interval.
+server itself; pass `--port N` to run on another. launchd starts a server that stops again after 10 seconds, its throttle interval.
 The server logs each request and each error to `~/Library/Logs/skuld-serve.log`; a `start` whose
 server never answers says to look there.
 
@@ -495,8 +502,9 @@ The server's routes only read:
 | Route | Serves |
 | --- | --- |
 | `/health` | `{"app": "skuld", "status": "ok"}`, which `plan serve status` asks for |
-| `/` | Every issue in progress, with links to its pages |
-| `/issues/<KEY>` | A store ticket, rendered from its Markdown |
+| `/` | Next up: the store's `INDEX.md`, rendered, each ticket linking to its page |
+| `/issues/<KEY>` | A store ticket: its front matter fields, and its body and log rendered from Markdown |
+| `POST /issues/<KEY>/open` | The page's Open in VS Code button: sends `vscode://skuld.plan-window/open?file=<ticket file>` with `code --open-url`, which opens the file in a tab of the focused window, the one clicked in, and returns to the page. Refused (403) without an `Origin` naming this server |
 | `/issues/<KEY>/report`, `/issues/<KEY>/review` | A redirect to the latest round's page |
 | `/issues/<KEY>/rounds/<n>/report` | Round `n`'s report, from the round data and `git diff` |
 | `/issues/<KEY>/rounds/<n>/review` | Round `n`'s findings and dispositions |
@@ -651,11 +659,12 @@ and the exit code out. The server's routes run through Flask's test client, with
 
 ```text
 GUIDE.md                   this file
-pyproject.toml, uv.lock    the local server's one dependency, Flask, for uv sync
+pyproject.toml, uv.lock    the local server's dependencies, Flask and markdown-it-py, for uv sync
 store.yml                  the store's projects (key, name, repo remotes), archive delay, debounce
 bin/
   plan                     plan's entry point
   jira-get                 one read-only Jira GET with ~/.netrc auth
+  reindex                  rewrites the ticket store's INDEX.md (its scripts/index.py), from any folder
   gh-aliases.yml           gh pc and gh pb
   build-spaces             builds macos/build/skuld-spaces with swiftc
   build-slotbar            builds and signs macos/build/SlotBar.app, slotbar-pulse inside it
@@ -688,6 +697,7 @@ lib/
   claude_hooks.py          adds and removes bin/claude-waiting in ~/.claude/settings.json
   serve.py                 plan serve: the server's LaunchAgent through launchctl, and its status
   server.py                the local server: Flask on 127.0.0.1, the one module that imports Flask
+                           and markdown-it-py
   test_*.py                the unit tests
   (the FileStore adapter, the checker and issue-watch also live in lib/)
 templates/issue.md         what plan new fills in

@@ -1,13 +1,16 @@
-# lib/fileissues.py: SK-<nnnn> issues stored as files (issues/README.md's format), implementing the
-# same surface lib/jira.py's Jira class does. Covers parsing, status mapping, the transition +
+# lib/filestore.py: SK-<nnnn> issues stored as files (issues/README.md's format), the IssueStore
+# port's file adapter (lib/issuestore.py), returning lib/issue.py's Issue as lib/jira.py's Jira does. Covers parsing, status mapping, the transition +
 # read-back guard, the ## Log comment append, list() filtering, and the per-key dispatch
-# (isFileBacked()) plus the merged list lib/cli.py's issueRows() builds from Jira + FileIssues.
+# (isFileBacked()) plus the merged list lib/cli.py's issueRows() builds from Jira + FileStore.
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
-from lib.fileissues import FileIssues, canonicalKey, isFileBacked
+import dataclasses
+
+from lib.filestore import FileStore, canonicalKey, isFileBacked
+from lib.issue import DONE, IN_PROGRESS, NEW, Comment, IssueNotFound
 
 
 def writeIssue(dir, name, text):
@@ -59,64 +62,71 @@ Resolved by commit abc123.
 """
 
 
-class FileIssuesTests(unittest.TestCase):
+class FileStoreTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="jira-plan-jp-")
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
-        self.fi = FileIssues({"dir": self.dir})
+        self.fi = FileStore({"dir": self.dir})
 
     # --- parsing + status/type mapping -----------------------------------------------------
 
     def test_issue_parses_frontmatter_title_and_body(self):
         writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
         issue = self.fi.issue("SK-0001")
-        self.assertEqual(issue["key"], "SK-0001")
-        f = issue["fields"]
-        self.assertEqual(f["summary"], "Something is wrong")
-        self.assertEqual(f["status"], {"name": "To Do", "statusCategory": {"key": "new"}})
-        self.assertEqual(f["issuetype"], {"name": "Bug"})
-        self.assertIsNone(f["parent"])
-        self.assertEqual(f["issuelinks"], [])
-        self.assertIn("wrong thing", f["description"]["content"][0]["content"][0]["text"])
-        self.assertEqual(f["comment"]["comments"], [])
+        self.assertEqual(issue.key, "SK-0001")
+        self.assertEqual(issue.summary, "Something is wrong")
+        self.assertEqual((issue.status, issue.category), ("open", NEW))
+        self.assertEqual(issue.issueType, "bug")
+        self.assertIsNone(issue.parent)
+        self.assertEqual(issue.blockers, ())
+        self.assertEqual(issue.description, "The thing does the wrong thing, in `lib/thing.py:12`.")
+        self.assertEqual(issue.comments, ())
 
     def test_issue_maps_in_progress_task_and_reads_its_log(self):
         writeIssue(self.dir, "SK-0002-a-task-already-underway.md", IN_PROGRESS_TASK)
         issue = self.fi.issue("SK-0002")
-        f = issue["fields"]
-        self.assertEqual(f["status"], {"name": "In Progress", "statusCategory": {"key": "indeterminate"}})
-        self.assertEqual(f["issuetype"], {"name": "Task"})
-        comments = f["comment"]["comments"]
-        self.assertEqual(len(comments), 1)
-        self.assertEqual(comments[0]["author"]["displayName"], "plan")
-        text = comments[0]["body"]["content"][0]["content"][0]["text"]
-        self.assertIn("Started on `feat/SK-0002-a-task-already`", text)
+        self.assertEqual((issue.status, issue.category), ("in-progress", IN_PROGRESS))
+        self.assertEqual(issue.issueType, "task")
+        self.assertEqual(
+            issue.comments,
+            (Comment("plan", "Started on `feat/SK-0002-a-task-already`, in /repo.worktrees/SK-0002.", "2026-11-02"),),
+        )
 
     def test_issue_maps_done_and_wontfix_to_done_category(self):
         writeIssue(self.dir, "SK-0003-already-finished.md", DONE_QUESTION)
         issue = self.fi.issue("SK-0003")
-        self.assertEqual(issue["fields"]["status"], {"name": "Done", "statusCategory": {"key": "done"}})
-        self.assertEqual(issue["fields"]["issuetype"], {"name": "Task"})  # question -> Task
+        self.assertEqual((issue.status, issue.category), ("done", DONE))
+        self.assertEqual(issue.issueType, "question")
 
     def test_issue_finds_the_padded_file_for_an_unpadded_key(self):
         writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
-        self.assertEqual(self.fi.issue("SK-1")["key"], "SK-0001")
+        self.assertEqual(self.fi.issue("SK-1").key, "SK-0001")
 
     def test_issue_refuses_an_unknown_key(self):
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(IssueNotFound):
             self.fi.issue("SK-0099")
 
-    def test_blockers_is_always_empty(self):
+    def test_issue_has_its_file_and_its_fields_in_file_order(self):
+        path = writeIssue(self.dir, "SK-0002-a-task.md", IN_PROGRESS_TASK)
+        issue = self.fi.issue("SK-2")
+        self.assertEqual(issue.file, str(path.resolve()))
+        self.assertEqual(list(issue.fields), ["status", "type", "guide", "opened", "closed"])
+
+    def test_issue_page_is_on_the_local_server(self):
         writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
-        issue = self.fi.issue("SK-0001")
-        self.assertEqual(self.fi.blockers(issue), [])
+        store = FileStore({"dir": self.dir, "pages": "http://127.0.0.1:8765/"})
+        self.assertEqual(store.issue("SK-1").page, "http://127.0.0.1:8765/issues/SK-0001")
+
+    def test_issue_has_no_page_without_the_servers_url(self):
+        writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
+        self.assertIsNone(self.fi.issue("SK-0001").page)
 
     # --- transition + read-back -------------------------------------------------------------
 
     def test_transition_to_in_progress_sets_status_and_reads_it_back(self):
         path = writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
-        issue = self.fi.transition("SK-0001", "In Progress")
-        self.assertEqual(issue["fields"]["status"]["name"], "In Progress")
+        issue = self.fi.transition("SK-0001", IN_PROGRESS)
+        self.assertEqual((issue.status, issue.category), ("in-progress", IN_PROGRESS))
         self.assertIn("status: in-progress", path.read_text(encoding="utf8"))
         # Nothing else in the file changed shape.
         self.assertIn("type: bug", path.read_text(encoding="utf8"))
@@ -124,35 +134,32 @@ class FileIssuesTests(unittest.TestCase):
     def test_statusTransitionId_refuses_a_target_other_than_in_progress(self):
         writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
         with self.assertRaises(RuntimeError):
-            self.fi.statusTransitionId("SK-0001", "Done")
+            self.fi.statusTransitionId("SK-0001", DONE)
 
     def test_statusTransitionId_refuses_from_a_non_open_status(self):
         writeIssue(self.dir, "SK-0002-a-task-already-underway.md", IN_PROGRESS_TASK)
         with self.assertRaises(RuntimeError):
-            self.fi.statusTransitionId("SK-0002", "In Progress")
+            self.fi.statusTransitionId("SK-0002", IN_PROGRESS)
 
     def test_transition_refuses_when_the_read_back_does_not_match(self):
-        # The same guard Jira.transition() applies after its POST (lib/jira.py): read the issue
-        # back and refuse if it didn't actually move. Simulated here by a subclass whose issue()
-        # keeps reporting "To Do" regardless of what the file says, standing in for whatever
+        # Read the issue back and refuse if it didn't actually move. Simulated here by a subclass
+        # whose issue() keeps reporting "open" regardless of what the file says, standing in for whatever
         # would make a real write not take.
         writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
 
-        class StubbornFileIssues(FileIssues):
+        class StubbornFileStore(FileStore):
             def issue(self, key):
-                result = super().issue(key)
-                result["fields"]["status"] = {"name": "To Do", "statusCategory": {"key": "new"}}
-                return result
+                return dataclasses.replace(super().issue(key), status="open", category=NEW)
 
-        fi = StubbornFileIssues({"dir": self.dir})
+        fi = StubbornFileStore({"dir": self.dir})
         with self.assertRaises(RuntimeError):
-            fi.transition("SK-0001", "In Progress")
+            fi.transition("SK-0001", IN_PROGRESS)
 
     # --- comments: the ## Log heading ---------------------------------------------------------
 
     def test_addComment_creates_the_log_heading_once(self):
         path = writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
-        self.fi.addComment("SK-0001", self.fi.textComment("Started on `feat/SK-0001-x`, in /tmp/SK-0001."))
+        self.fi.addComment("SK-0001", "Started on `feat/SK-0001-x`, in /tmp/SK-0001.")
         text = path.read_text(encoding="utf8")
         self.assertEqual(text.count("## Log"), 1)
         self.assertIn("Started on `feat/SK-0001-x`, in /tmp/SK-0001.", text)
@@ -160,18 +167,12 @@ class FileIssuesTests(unittest.TestCase):
 
     def test_addComment_appends_a_second_line_under_the_existing_heading(self):
         path = writeIssue(self.dir, "SK-0002-a-task-already-underway.md", IN_PROGRESS_TASK)
-        self.fi.addComment("SK-0002", self.fi.textComment("Done: merged."))
+        self.fi.addComment("SK-0002", "Done: merged.")
         text = path.read_text(encoding="utf8")
         self.assertEqual(text.count("## Log"), 1)
         self.assertIn("Started on `feat/SK-0002-a-task-already`", text)  # the original line stays
         self.assertIn("Done: merged.", text)
-        logEntries = self.fi.issue("SK-0002")["fields"]["comment"]["comments"]
-        self.assertEqual(len(logEntries), 2)
-
-    def test_addComment_accepts_a_plain_string_too(self):
-        path = writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
-        self.fi.addComment("SK-0001", "a plain note")
-        self.assertIn("a plain note", path.read_text(encoding="utf8"))
+        self.assertEqual(len(self.fi.issue("SK-0002").comments), 2)
 
     # --- list(): open/in-progress only, done/wontfix excluded --------------------------------
 
@@ -183,8 +184,9 @@ class FileIssuesTests(unittest.TestCase):
         ids = sorted(r["id"] for r in rows)
         self.assertEqual(ids, ["SK-0001", "SK-0002"])
         row1 = next(r for r in rows if r["id"] == "SK-0001")
-        self.assertEqual(row1["status"], "To Do")
-        self.assertEqual(row1["statusCategory"], "new")
+        self.assertEqual(row1["status"], "open")
+        self.assertEqual(row1["category"], NEW)
+        self.assertEqual(row1["issueType"], "bug")
         self.assertEqual(row1["project"], "SK")
         self.assertEqual(row1["subject"], "Something is wrong")
         self.assertIsNone(row1["after"])  # OPEN_BUG has no `after:` field
@@ -198,11 +200,7 @@ class FileIssuesTests(unittest.TestCase):
         row = self.fi.list()[0]
         self.assertEqual(row["after"], "CIAM-163")
 
-    # --- browseUrl / closeNote -----------------------------------------------------------------
-
-    def test_browseUrl_is_the_absolute_file_path(self):
-        path = writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
-        self.assertEqual(self.fi.browseUrl("SK-0001"), str(path.resolve()))
+    # --- closeNote ------------------------------------------------------------------------------
 
     def test_closeNote_names_the_file_not_a_jira_url(self):
         writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
@@ -277,42 +275,16 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(canonicalKey("SK-x"), "SK-x")
 
 
-class MergedListTests(unittest.TestCase):
-    # Decision #3: `plan list`/the picker merge Jira's JQL results with every open/in-progress
-    # SK file. lib/cli.py's mergeRows() does the actual interleaving (lib/test_cli.py's
-    # MergeRowsTests covers that in full); this exercises the same shape directly against
-    # FileIssues, without needing a live Jira.
-    def test_file_rows_and_jira_rows_concatenate_by_shape(self):
+class RowShapeTests(unittest.TestCase):
+    # Decision #3: Next up merges every project's set, so a ticket row carries the keys every
+    # adapter's list() returns, plus its `after:` anchor (lib/cli.py's mergeSets()).
+    def test_a_ticket_row_carries_every_adapters_row_keys_and_its_anchor(self):
         dir = tempfile.mkdtemp(prefix="jira-plan-jp-merge-")
         self.addCleanup(shutil.rmtree, dir, ignore_errors=True)
         writeIssue(dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
-        fi = FileIssues({"dir": dir})
-
-        jiraRows = [
-            {
-                "id": "CIAM-9",
-                "subject": "A Jira issue",
-                "status": "In Progress",
-                "statusCategory": "indeterminate",
-                "issueType": "Story",
-                "project": "CIAM",
-                "parent": None,
-            }
-        ]
-        merged = jiraRows + fi.list()
-        ids = sorted(r["id"] for r in merged)
-        self.assertEqual(ids, ["CIAM-9", "SK-0001"])
-        # Every row shares the core keys Jira's own rows carry, whichever backend it came from.
-        # A SK row also carries `after:` (the interleaving anchor, issues/README.md, 2026-11-06) --
-        # Jira rows don't need one, since lib/cli.py's mergeRows() reads it with a plain .get(),
-        # defaulting to None, rather than requiring every row to share one identical key set.
-        coreKeys = {"id", "subject", "status", "statusCategory", "issueType", "project", "parent"}
-        for row in merged:
-            self.assertTrue(coreKeys <= row.keys())
-        skRow = next(r for r in merged if r["id"] == "SK-0001")
-        self.assertIn("after", skRow)
-        self.assertIsNone(skRow["after"])
-        self.assertNotIn("after", jiraRows[0])
+        [row] = FileStore({"dir": dir}).list()
+        self.assertTrue({"id", "subject", "status", "category", "issueType", "project", "parent"} <= row.keys())
+        self.assertIsNone(row["after"])
 
 
 if __name__ == "__main__":

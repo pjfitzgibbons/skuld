@@ -26,7 +26,7 @@
         "plan.ticket": {
           "type": "string",
           "scope": "window",
-          "description": "The ticket file to keep open in a tab. Unset for a Jira issue."
+          "description": "The ticket file to keep open in a tab. Unset for an issue kept in a tracker with no file."
         },
         "plan.prompt": {
           "type": "string",

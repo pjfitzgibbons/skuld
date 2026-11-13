@@ -1,19 +1,12 @@
 {% extends "base.html" %}
-{% block title %}Skuld: in progress{% endblock %}
-{% block heading %}In progress{% endblock %}
+{% block title %}Skuld: next up{% endblock %}
+{% block heading %}Next up{% endblock %}
 {% block content %}
 {% if problem %}
-  <p>The ticket store can't be read: {{ problem }}</p>
-{% elif not issues %}
-  <p class="muted">No store ticket is in progress.</p>
+  <p>The ticket store's index can't be read: {{ problem }}</p>
 {% else %}
-  <table>
-    <thead><tr><th>Issue</th><th>Title</th></tr></thead>
-    <tbody>
-    {% for issue in issues %}
-      <tr><td class="key">{{ issue.id }}</td><td>{{ issue.subject }}</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
+  <article class="body">
+    {{ nextUp }}
+  </article>
 {% endif %}
 {% endblock %}

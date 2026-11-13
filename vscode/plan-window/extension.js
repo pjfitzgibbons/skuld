@@ -4,7 +4,8 @@
 //
 // Every window also handles vscode://skuld.plan-window/browse?url=<url>[&key=<KEY>], which `plan
 // browse` sends: it opens the page in the window's integrated browser, unless the key names
-// another window.
+// another window. And /open?file=<path>, which the local server sends for a ticket page's Open in
+// VS Code: it opens the file in a tab of this window.
 const vscode = require("vscode");
 const windowPlan = require("./plan");
 
@@ -17,13 +18,19 @@ async function activate(context) {
   }
 }
 
+const LINK_HANDLERS = { "/browse": browse, "/open": openFile };
+
 async function handleUri(uri) {
-  if (uri.path !== "/browse") {
+  const handler = LINK_HANDLERS[uri.path];
+  if (!handler) {
     vscode.window.showErrorMessage(`plan window: unknown link ${uri.path}`);
     return;
   }
-  const windowKey = vscode.workspace.getConfiguration("plan").get("key") || null;
-  const request = windowPlan.browseRequest(uri.query, windowKey);
+  await handler(uri.query, vscode.workspace.getConfiguration("plan").get("key") || null);
+}
+
+async function browse(query, windowKey) {
+  const request = windowPlan.browseRequest(query, windowKey);
   if (request.refusal) {
     vscode.window.showErrorMessage(`plan window: ${request.refusal}`);
     return;
@@ -31,6 +38,16 @@ async function handleUri(uri) {
   // The integrated browser's own command, which takes any http(s) URL; the localhost link opener
   // takes only localhost and loopback hosts.
   await vscode.commands.executeCommand("workbench.action.browser.open", request.url);
+}
+
+async function openFile(query) {
+  const request = windowPlan.openRequest(query);
+  if (request.refusal) {
+    vscode.window.showErrorMessage(`plan window: ${request.refusal}`);
+    return;
+  }
+  const document = await vscode.workspace.openTextDocument(vscode.Uri.file(request.file));
+  await vscode.window.showTextDocument(document, { preview: false });
 }
 
 async function setUpIssueWindow() {

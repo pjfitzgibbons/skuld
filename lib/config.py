@@ -6,7 +6,6 @@ import json
 import os
 import sys
 
-from .jira import nextUpJql
 from .start import DEFAULT_TYPE_MAP
 from .done import DISPOSABLE
 
@@ -15,48 +14,51 @@ CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".config", "skuld", "config.
 # This repo's own root (lib/'s parent) -- checkouts.SK's default, so Start/Open/Ship/Done find it
 # regardless of where `plan` runs from. See checkouts below.
 
-# The key the issue store's path used to have. A config that still sets it is refused, naming
-# issueStore, so a stale config fails loudly instead of silently losing the store.
-RETIRED_STORE_KEY = "issuesDir"
+# Keys a config may no longer set, and where their setting went. A config that still sets one is
+# refused, so a stale config fails loudly instead of silently losing the setting.
+RETIRED_KEYS = {
+    "issuesDir": "which is now issueStore; rename the key",
+    "jql": 'which is now per project: move it into its project\'s entry under "jira"',
+}
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Every key plan reads, and its default. Keys not listed here are never read by any module;
 # add the key here first if a module needs a new one.
 #
-#   jira           { <Jira project key>: { "repos": [<remote>, ...] } }, e.g.
+#   jira           { <Jira project key>: { "repos": [<remote>, ...], "jql": <JQL> } }, e.g.
 #                  { "CIAM": { "repos": ["git@github.com:cryoport/cryo-gitops-github.git"] } }.
+#                  "jql" is the project's set in Next up; without it, lib/jira.py's nextUpJql()
+#                  for the project ("project in (CIAM) AND assignee = currentUser() AND
+#                  statusCategory != Done ORDER BY Rank").
 #                  Jira is on only when this names a project: with none, no command reads the
 #                  netrc file or calls Jira, Next up is the store's tickets alone, and a Jira key
 #                  is refused (jiraProjects()). Default: None.
-#   jql            JQL plan's picker and `plan list` run. Default: None, which runs jira.py's
-#                  nextUpJql() over the `jira` entry's projects ("project in (CIAM) AND assignee
-#                  = currentUser() AND statusCategory != Done ORDER BY Rank").
-#   checkouts      { <Jira project key>: <repo path, or a LIST of them> }, e.g.
+#   checkouts      { <project key>: <repo path, or a LIST of them> }, e.g.
 #                  { "CIAM": ["~/programming/cryo-gitops-github",
 #                  "~/programming/CryoportSystems/Cryoport-Authentication-Service"] } -- several
-#                  repos can serve one Jira project. A bare string is still accepted, as a
+#                  repos can serve one project. A bare string is still accepted, as a
 #                  one-item list. These are the only repos Start/Open/Ship/Done use for the
 #                  project (start.py's mainCheckout(), docs/architecture.md §7.0): existing work
 #                  for the key in one of them wins; for new work the repo `plan` runs from is
 #                  used only when it is listed here, otherwise one listed repo is used outright,
 #                  several ask (fzf) for a pick, and none listed is a refusal naming the project
 #                  and checkouts. Default: {} for every project but SK, which defaults to this
-#                  repo's own root (SK issues are this repo's own backlog, lib/fileissues.py) -- a
+#                  repo's own root (SK issues are this repo's own backlog, lib/filestore.py) -- a
 #                  config that sets its OWN `checkouts` dict without a "SK" entry loses this
 #                  default (the merge below is shallow, same caveat as typeMap's); add one back by
 #                  hand if that happens:
 #                  "SK": "~/programming/jira-plan".
-#   projectMarkers { <Jira project key>: <short marker string shown in the picker/list>, e.g.
+#   projectMarkers { <project key>: <short marker string shown in the picker/list>, e.g.
 #                  { "CIAM": "C" } }. Cosmetic only; falls back to the project key itself.
 #                  Default: {}.
 #   disposable     Branch name patterns (globs, as done.py's DISPOSABLE already defines them)
 #                  that Done may delete after a merge without asking. Default: done.py's
 #                  DISPOSABLE list.
 #   pr             Path to the `pr` script Ship invokes. Default: "~/.local/bin/pr".
-#   typeMap        { <Jira issue type name>: <branch prefix> }, e.g. { "Story": "feat",
-#                  "Bug": "fix" }. An issue type absent from the map gets "chore"
-#                  (start.py's prefixFor). Default: start.py's DEFAULT_TYPE_MAP. load() merges
+#   typeMap        { <issue type name>: <branch prefix> }, e.g. { "story": "feat",
+#                  "bug": "fix" }, matched without regard to case. An issue type absent from the
+#                  map gets "chore" (start.py's prefixFor). Default: start.py's DEFAULT_TYPE_MAP. load() merges
 #                  this key SHALLOWLY (a config typeMap entirely replaces the default, not just
 #                  the issue types it names) -- a config overriding one issue type only recognizes
 #                  branches made since, under that narrower map. issueBranch() (N9) compensates by
@@ -78,19 +80,22 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #                  it's missing or older than its source.
 #   reservedDesktops Desktop numbers Start never takes for an issue. Default: [1].
 #   issueStore     The issue store's checkout: the folder of SK-<nnnn> ticket files
-#                  (lib/fileissues.py's FileIssues), its own git repo, e.g.
+#                  (lib/filestore.py's FileStore), its own git repo, e.g.
 #                  "~/programming/skuld-project/issues". `~` is expanded. Default: None -- the
 #                  store lives outside skuld, so a machine that works tickets sets it; a command
 #                  that needs the store without it refuses, naming this key (issueStoreFrom()).
 #   claudeCommand  The `claude` CLI `plan agents` asks for its sessions (`claude agents --json`),
 #                  as a path, since the LaunchAgent's PATH doesn't hold it.
 #                  Default: "~/.local/bin/claude".
-#   serverPort     The local page server's port on 127.0.0.1 (lib/server.py, `plan serve`).
+#   codeCommand    The `code` CLI the local server runs to open a ticket's file in VS Code, as a
+#                  path, since the LaunchAgent's PATH doesn't hold it.
+#                  Default: "/usr/local/bin/code".
+#   serverPort     The local page server's port on 127.0.0.1 (lib/server.py, `plan serve`), unless
+#                  `plan serve start --port N` names another.
 #                  Default: 8765.
 def defaults():
     return {
         "jira": None,
-        "jql": None,
         "checkouts": {"SK": [_REPO_ROOT]},
         "projectMarkers": {},
         "disposable": DISPOSABLE,
@@ -105,6 +110,7 @@ def defaults():
         "reservedDesktops": [1],
         "issueStore": None,
         "claudeCommand": "~/.local/bin/claude",
+        "codeCommand": "/usr/local/bin/code",
         "serverPort": 8765,
     }
 
@@ -132,8 +138,9 @@ def load(file=None):
 
 
 def refuseRetiredKeys(parsed, file):
-    if RETIRED_STORE_KEY in parsed:
-        raise RuntimeError(f"{file} sets {RETIRED_STORE_KEY}, which is now issueStore; rename the key")
+    for key, where in RETIRED_KEYS.items():
+        if key in parsed:
+            raise RuntimeError(f"{file} sets {key}, {where}")
 
 
 # Keys a config may still set from an earlier front end; they're read by nothing now, so a config
@@ -173,6 +180,11 @@ def jiraSettingsFrom(cfg):
         raise RuntimeError(f'the "jira" entry needs a site: add "baseUrl": "https://<site>.atlassian.net" to {CONFIG_FILE}')
     return {
         "baseUrl": cfg["baseUrl"],
-        "jql": cfg.get("jql") or nextUpJql(jiraProjects(cfg)),
+        "jql": {project: projectJql(cfg, project) for project in jiraProjects(cfg)},
         "netrcFile": cfg.get("netrcFile"),
     }
+
+
+# A Jira project's own Next up query, its entry's "jql"; None when it sets none.
+def projectJql(cfg, project):
+    return (cfg["jira"][project] or {}).get("jql")

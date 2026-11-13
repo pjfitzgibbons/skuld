@@ -188,6 +188,14 @@ def handlerQuery(link):
     return urllib.parse.unquote(urllib.parse.urlsplit(link).query)
 
 
+class OpenFileLinkTests(unittest.TestCase):
+    # The handler's side is plan.test.js's "an open link opens its file".
+    def test_the_link_names_plan_windows_open_handler_and_carries_the_path(self):
+        link = term.openFileLink("/store/SK-0005-a b.md")
+        self.assertTrue(link.startswith("vscode://skuld.plan-window/open?"))
+        self.assertEqual(handlerQuery(link), "file=%2Fstore%2FSK-0005-a%20b.md")
+
+
 class BrowseTests(unittest.TestCase):
     def test_the_link_names_plan_windows_browse_handler_and_the_key(self):
         self.assertEqual(

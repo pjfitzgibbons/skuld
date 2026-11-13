@@ -38,6 +38,7 @@ class ConfigTest(unittest.TestCase):
         self.assertIn("browserApp, which is no longer read", stderr.getvalue())
         self.assertIn("browserBundleId, which is no longer read", stderr.getvalue())
         self.assertNotIn("browserApp", config.defaults())
+        self.assertEqual(cfg["issueStore"], None)
 
     def test_a_malformed_file_fails_loudly(self):
         path = writeConfig({})
@@ -66,7 +67,7 @@ class ConfigTest(unittest.TestCase):
         defaults = config.defaults()
         self.assertEqual(config.jiraProjects(defaults), [])
         self.assertIsNone(defaults["baseUrl"])
-        self.assertIsNone(defaults["jql"])
+        self.assertNotIn("jql", defaults)
         self.assertNotIn("project", defaults)
 
     def test_jiraProjects_are_the_jira_entrys_keys_in_order(self):
@@ -77,20 +78,24 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'the "jira" entry needs a site: add "baseUrl"'):
             config.jiraSettingsFrom({**config.defaults(), "jira": {"CIAM": {}}})
 
-    def test_jiraSettingsFrom_runs_next_up_over_the_configured_projects(self):
+    def test_jiraSettingsFrom_names_the_configured_projects(self):
         cfg = {**config.defaults(), "jira": {"CIAM": {}, "OPS": {}}, "baseUrl": "https://jira.example"}
         self.assertEqual(
             config.jiraSettingsFrom(cfg),
             {
                 "baseUrl": "https://jira.example",
-                "jql": "project in (CIAM, OPS) AND assignee = currentUser() AND statusCategory != Done ORDER BY Rank",
+                "jql": {"CIAM": None, "OPS": None},
                 "netrcFile": None,
             },
         )
 
-    def test_a_configured_jql_wins_over_next_up(self):
-        cfg = {**config.defaults(), "jira": {"CIAM": {}}, "baseUrl": "https://jira.example", "jql": "key = CIAM-1"}
-        self.assertEqual(config.jiraSettingsFrom(cfg)["jql"], "key = CIAM-1")
+    def test_jiraSettingsFrom_carries_each_projects_own_jql(self):
+        cfg = {**config.defaults(), "jira": {"CIAM": {"jql": "key = CIAM-1"}, "OPS": None}, "baseUrl": "https://jira.example"}
+        self.assertEqual(config.jiraSettingsFrom(cfg)["jql"], {"CIAM": "key = CIAM-1", "OPS": None})
+
+    def test_a_config_with_a_top_level_jql_is_refused_naming_where_it_went(self):
+        with self.assertRaisesRegex(RuntimeError, 'sets jql, which is now per project: move it into its project\'s entry under "jira"'):
+            config.load(writeConfig({"jql": "key = CIAM-1"}))
 
     def test_a_config_with_the_retired_project_key_loads_with_a_warning(self):
         with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:

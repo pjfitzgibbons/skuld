@@ -13,7 +13,7 @@ set -eu
 
 kind=${1:?usage: ghbody.sh pr-create|pr-edit [KEY]}
 root=$(git rev-parse --show-toplevel)
-# L2: the prefix segment is optional, matching issueBranch() (lib/start.py) and jira.py's KEY_RE,
+# L2: the prefix segment is optional, matching issueBranch() (lib/start.py) and lib/issue.py's KEY_RE,
 # so a bare KEY-slug branch (no prefix) still resolves its key.
 key=${2:-$(git branch --show-current | sed -nE 's,^([^/]+/)?([A-Z][A-Z0-9]+-[0-9]+)-.*,\2,p')}
 [ -n "$key" ] || { echo "ghbody: no Jira key given and none in the branch name" >&2; exit 2; }

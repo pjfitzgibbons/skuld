@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "Plan and ship work from the terminal: plan, pr and the local page server"
 requires-python = ">=3.10"
 # Only lib/server.py imports these; everything else in skuld is stdlib-only.
-dependencies = ["flask>=3.1"]
+dependencies = [
+    "flask>=3.1",
+    "markdown-it-py>=3",
+    "mdit-py-plugins>=0.4",
+]
 
 [tool.uv]
 package = false

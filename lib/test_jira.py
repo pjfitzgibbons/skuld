@@ -10,9 +10,11 @@ import shutil
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from lib.jira import Jira, KEY_RE, projectOf, readNetrc
+from lib.issue import DONE, IN_PROGRESS, NEW, Blocker, Comment
+from lib.jira import Jira, adfToText, readNetrc, textComment
 
 
 class _FakeJiraServer:
@@ -84,13 +86,13 @@ class JiraTests(unittest.TestCase):
             if path == "/rest/api/3/issue/CIAM-80/transitions" and method == "POST":
                 return 204, None
             if path.startswith("/rest/api/3/issue/CIAM-80?") and method == "GET":
-                return 200, {"fields": {"status": {"name": "In Progress"}}}
+                return 200, rawIssue("CIAM-80", "In Progress")
             raise AssertionError(f"unexpected {method} {path}")
 
         jira, requests, cleanup = fakeJira(handler)
         try:
-            issue = jira.transition("CIAM-80", "In Progress")
-            self.assertEqual(issue["fields"]["status"]["name"], "In Progress")
+            issue = jira.transition("CIAM-80", IN_PROGRESS)
+            self.assertEqual(issue.status, "In Progress")
             self.assertEqual(
                 requests,
                 [
@@ -109,13 +111,13 @@ class JiraTests(unittest.TestCase):
             if path == "/rest/api/3/issue/CIAM-80/transitions" and method == "POST":
                 return 204, None  # accepted, but a workflow condition silently blocks it
             if path.startswith("/rest/api/3/issue/CIAM-80?") and method == "GET":
-                return 200, {"fields": {"status": {"name": "Blocked"}}}
+                return 200, rawIssue("CIAM-80", "Blocked")
             raise AssertionError(f"unexpected {method} {path}")
 
         jira, _requests, cleanup = fakeJira(handler)
         try:
             with self.assertRaisesRegex(RuntimeError, "kept CIAM-80 Blocked, not In Progress"):
-                jira.transition("CIAM-80", "In Progress")
+                jira.transition("CIAM-80", IN_PROGRESS)
         finally:
             cleanup()
 
@@ -124,7 +126,7 @@ class JiraTests(unittest.TestCase):
             self.assertEqual(path, "/rest/api/3/issue/CIAM-80/transitions")
             return 200, {
                 "transitions": [
-                    {"id": "1", "name": "Start", "to": {"name": "In Progress"}},
+                    {"id": "1", "name": "Start", "to": {"name": "Doing"}},
                     {"id": "2", "name": "Block", "to": {"name": "Blocked"}},
                 ]
             }
@@ -132,23 +134,30 @@ class JiraTests(unittest.TestCase):
         jira, _requests, cleanup = fakeJira(handler)
         try:
             with self.assertRaises(RuntimeError) as ctx:
-                jira.statusTransitionId("CIAM-80", "Done")
+                jira.statusTransitionId("CIAM-80", IN_PROGRESS)
             message = str(ctx.exception)
-            self.assertRegex(message, 'no transition to "Done"')
-            self.assertRegex(message, '"Start" → In Progress')
+            self.assertRegex(message, 'no transition to "In Progress"')
+            self.assertRegex(message, '"Start" → Doing')
             self.assertRegex(message, '"Block" → Blocked')
         finally:
             cleanup()
+
+    def test_a_move_to_a_category_plan_never_makes_is_refused_before_any_call(self):
+        jira = Jira({"baseUrl": "https://jira.example"})
+        with mock.patch.object(jira, "get") as get, self.assertRaisesRegex(RuntimeError, f"can't be moved to {DONE}"):
+            jira.statusTransitionId("CIAM-80", DONE)
+        get.assert_not_called()
 
     def test_write_that_sets_no_status_reads_nothing_back(self):
         def handler(method, path, body):
             self.assertEqual(path, "/rest/api/3/issue/CIAM-80/comment")
             self.assertEqual(method, "POST")
+            self.assertEqual(body, {"body": textComment("hi")})
             return 201, {}
 
         jira, requests, cleanup = fakeJira(handler)
         try:
-            jira.addComment("CIAM-80", jira.textComment("hi"))
+            jira.addComment("CIAM-80", "hi")
             self.assertEqual(requests, ["POST /rest/api/3/issue/CIAM-80/comment"])
         finally:
             cleanup()
@@ -175,7 +184,7 @@ class JiraTests(unittest.TestCase):
         finally:
             cleanup()
 
-    def test_list_follows_nextPageToken_until_last_page(self):
+    def test_search_follows_nextPageToken_until_last_page(self):
         page = {"n": 0}
 
         def handler(method, path, body):
@@ -211,26 +220,116 @@ class JiraTests(unittest.TestCase):
 
         jira, _requests, cleanup = fakeJira(handler)
         try:
-            rows = jira.list("project = CIAM")
+            rows = jira.search("project = CIAM")
             self.assertEqual([r["id"] for r in rows], ["CIAM-1", "CIAM-2"])
-            self.assertEqual(rows[0]["statusCategory"], "new")
+            self.assertEqual(rows[0]["category"], NEW)
             self.assertEqual(rows[0]["project"], "CIAM")
         finally:
             cleanup()
 
-    def test_blockers_keeps_only_unresolved_blocks_links_naming_inward_issue(self):
-        jira = Jira({"baseUrl": "https://jira.example"})
-        issue = {
-            "fields": {
-                "issuelinks": [
-                    {"type": {"name": "Blocks"}, "inwardIssue": {"key": "CIAM-1", "fields": {"summary": "x", "status": {"statusCategory": {"key": "new"}}}}},
-                    {"type": {"name": "Blocks"}, "inwardIssue": {"key": "CIAM-2", "fields": {"summary": "y", "status": {"statusCategory": {"key": "done"}}}}},
-                    {"type": {"name": "Blocks"}, "outwardIssue": {"key": "CIAM-3", "fields": {}}},
-                    {"type": {"name": "Relates"}, "inwardIssue": {"key": "CIAM-4", "fields": {"summary": "z", "status": {"statusCategory": {"key": "new"}}}}},
-                ]
+    def test_list_runs_the_projects_own_jql(self):
+        jira = Jira({"baseUrl": "https://jira.example", "jql": {"CIAM": "project in (CIAM)", "OPS": "key = OPS-1"}})
+        with mock.patch.object(jira, "search", return_value=[]) as search:
+            jira.list("OPS")
+        search.assert_called_once_with("key = OPS-1")
+
+    def test_list_runs_next_up_for_a_project_with_no_jql(self):
+        jira = Jira({"baseUrl": "https://jira.example", "jql": {"CIAM": None}})
+        with mock.patch.object(jira, "search", return_value=[]) as search:
+            jira.list("CIAM")
+        search.assert_called_once_with(
+            "project in (CIAM) AND assignee = currentUser() AND statusCategory != Done ORDER BY Rank"
+        )
+
+    def test_issue_reads_one_get_into_an_Issue(self):
+        raw = rawIssue("CIAM-80", "In Progress", "indeterminate")
+        raw["fields"].update(
+            {
+                "parent": {"key": "CIAM-1"},
+                "description": textComment("First line\nSecond line"),
+                "comment": {
+                    "comments": [
+                        {"author": {"displayName": "Ann"}, "body": textComment("Looks good"), "created": "2026-11-02T10:00:00.000+0000"}
+                    ]
+                },
             }
+        )
+
+        jira, requests, cleanup = fakeJira(lambda method, path, body: (200, raw))
+        try:
+            issue = jira.issue("CIAM-80")
+            self.assertEqual(len(requests), 1)
+        finally:
+            cleanup()
+        self.assertEqual((issue.key, issue.summary, issue.issueType), ("CIAM-80", "A Jira issue", "Story"))
+        self.assertEqual((issue.status, issue.category), ("In Progress", IN_PROGRESS))
+        self.assertEqual(issue.parent, "CIAM-1")
+        self.assertEqual(issue.description, "First line\nSecond line")
+        self.assertEqual(issue.comments, (Comment("Ann", "Looks good", "2026-11-02"),))
+        self.assertEqual(issue.page, f"{jira.settings['baseUrl']}/browse/CIAM-80")
+        self.assertIsNone(issue.file)
+
+    def test_issue_blockers_are_only_unresolved_blocks_links_naming_inward_issue(self):
+        jira = Jira({"baseUrl": "https://jira.example"})
+        raw = rawIssue("CIAM-80", "To Do")
+        raw["fields"]["issuelinks"] = [
+            {"type": {"name": "Blocks"}, "inwardIssue": {"key": "CIAM-1", "fields": {"summary": "x", "status": {"name": "To Do", "statusCategory": {"key": "new"}}}}},
+            {"type": {"name": "Blocks"}, "inwardIssue": {"key": "CIAM-2", "fields": {"summary": "y", "status": {"name": "Done", "statusCategory": {"key": "done"}}}}},
+            {"type": {"name": "Blocks"}, "outwardIssue": {"key": "CIAM-3", "fields": {}}},
+            {"type": {"name": "Relates"}, "inwardIssue": {"key": "CIAM-4", "fields": {"summary": "z", "status": {"name": "To Do", "statusCategory": {"key": "new"}}}}},
+        ]
+        self.assertEqual(jira.issueFrom(raw).blockers, (Blocker("CIAM-1", "x", "To Do"),))
+
+
+# Jira's issue JSON, with just the fields Jira.issue() reads.
+def rawIssue(key, status, category="new"):
+    return {
+        "key": key,
+        "fields": {
+            "summary": "A Jira issue",
+            "status": {"name": status, "statusCategory": {"key": category}},
+            "issuetype": {"name": "Story"},
+        },
+    }
+
+
+def adfDoc(*content):
+    return {"type": "doc", "version": 1, "content": list(content)}
+
+
+def linkedText(text, href):
+    return {"type": "text", "text": text, "marks": [{"type": "link", "attrs": {"href": href}}]}
+
+
+class AdfToTextTests(unittest.TestCase):
+    def test_headings_keep_their_level_as_markdown(self):
+        doc = adfDoc(
+            {"type": "heading", "attrs": {"level": 2}, "content": [{"type": "text", "text": "Outline"}]},
+            {"type": "heading", "attrs": {"level": 3}, "content": [{"type": "text", "text": "Sub"}]},
+        )
+        self.assertEqual(adfToText(doc), "## Outline\n### Sub")
+
+    def test_task_items_are_separate_lines_with_their_state(self):
+        item = lambda state, text: {
+            "type": "taskItem",
+            "attrs": {"state": state},
+            "content": [{"type": "text", "text": text}],
         }
-        self.assertEqual([b["key"] for b in jira.blockers(issue)], ["CIAM-1"])
+        doc = adfDoc({"type": "taskList", "content": [item("DONE", "one"), item("TODO", "two")]})
+        self.assertEqual(adfToText(doc), "- [x] one\n- [ ] two")
+
+    def test_a_link_keeps_its_destination(self):
+        doc = adfDoc({"type": "paragraph", "content": [linkedText("abcdef1", "https://github.com/a/b/commit/abcdef1")]})
+        self.assertEqual(adfToText(doc), "[abcdef1](https://github.com/a/b/commit/abcdef1)")
+
+    def test_a_link_whose_text_is_its_destination_shows_it_once(self):
+        doc = adfDoc({"type": "paragraph", "content": [linkedText("https://x.test/", "https://x.test/")]})
+        self.assertEqual(adfToText(doc), "https://x.test/")
+
+    def test_block_and_embed_cards_show_their_url(self):
+        for cardType in ("blockCard", "embedCard"):
+            doc = adfDoc({"type": cardType, "attrs": {"url": "https://github.com/a/b/commit/abcdef1"}})
+            self.assertEqual(adfToText(doc), "https://github.com/a/b/commit/abcdef1")
 
 
 class ReadNetrcTests(unittest.TestCase):
@@ -286,20 +385,6 @@ class ReadNetrcTests(unittest.TestCase):
         entry = readNetrc("cryoport.atlassian.net", file)
         self.assertEqual(entry["login"], "a@b.com")
         self.assertEqual(entry["password"], "tok")
-
-
-class KeyRETests(unittest.TestCase):
-    def test_key_re_and_project_of(self):
-        self.assertTrue(KEY_RE.match("CIAM-123"))
-        self.assertFalse(KEY_RE.match("123"))
-        self.assertFalse(KEY_RE.match("release-2026-10"))
-        self.assertEqual(projectOf("CIAM-123"), "CIAM")
-
-    def test_key_re_requires_two_or_more_char_project_code(self):
-        # A single letter before the dash is the shape of a stray token, not a real Jira project
-        # code; the unified pattern (jira.py, pr.sh, ghbody.sh) rejects it everywhere the same way.
-        self.assertFalse(KEY_RE.match("C-1"))
-        self.assertTrue(KEY_RE.match("C1-1"))
 
 
 if __name__ == "__main__":

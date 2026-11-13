@@ -11,7 +11,7 @@ An issue is a Jira issue, `<KEY>` (e.g. `CIAM-123`), its description in the issu
 
 ## Rules
 
-1. **Read the issue before you write about it.** `jira-get /rest/api/3/issue/<KEY>` (or `?expand=renderedFields` for a plain-text rendering of the ADF description), or `?expand=changelog` for its history. Never write an issue's description from memory.
+1. **Read the issue before you write about it.** `plan view <KEY>` reads it from whichever tracker keeps it: its status, description, blockers and last comments, and a ticket's file. For a Jira issue's history, `jira-get /rest/api/3/issue/<KEY>?expand=changelog`. Never write an issue's description from memory.
 2. **Claude stages the process; the human verifies and executes it.** Claude writes the files in `.tmp/<KEY>/` (the commit message, the PR body, review replies, the ticked description) for Peter to review; Ship sends them with `pr`. Never `git commit`, `git push`, `gh pr create` or a Jira write on Claude's own. **Never transition a Jira issue to a terminal status (Done/Closed/Cancelled/Resolved/...) from a script or command — that happens only in the Jira UI, by Peter's hand.** `.claude/hooks/no_terminal_jira_transition.py` enforces this.
 3. **Branches are `<type>/<KEY>-<slug>`**, `feat/`, `fix/` or `chore/`, off the default branch. Start makes the branch and its worktree. Everything reaches the default branch by PR.
 4. **The commit subject is the PR's title**, and ends `(<KEY>)` — e.g. `Add X (CIAM-123)`. `gh pc` titles the PR with the branch's first commit subject, the squash merge keeps it, and Jira's dev panel links the PR to the issue automatically because the branch name and PR title both contain the key — no Jira field write is needed or made. The PR body always opens with the same line, `<KEY>.`, naming the issue it's for.
@@ -38,7 +38,7 @@ Jira reads for picking an issue or checking its state go through the `jira` CLI'
 
 Person presses **Start** on the issue's row in `plan`'s Next up list. It makes the branch and its worktree, transitions the issue to "In Progress" (by looking up the transition by its target status name, never a hardcoded id, and reading the issue back to confirm the move took), and opens the worktree in the issue's own VS Code window, with the issue in one tab and Claude Code in a terminal beside it. Then, before any code:
 
-1. **Read the issue**, with `jira-get /rest/api/3/issue/<KEY>`.
+1. **Read the issue**, with `plan view <KEY>`.
 2. **Check its description** against the issue outline, Task, Guardrails, Lenses and Done, plus whatever the repo's `docs/agents/technical-writer.md` adds. Save a plain-text/Markdown rendering of the description to a file and run, from inside the repo so it finds that file:
    ```
    python3 ~/.claude/skills/jira-issues/scripts/outline.py <file>

@@ -111,13 +111,13 @@ echo "pr: checking $branch"
 base=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
 [ "$branch" != "$base" ] || { echo "pr: on $base; switch to the issue's branch" >&2; exit 2; }
 # L2: the prefix segment (feat/, fix/, chore/, ...) is optional, matching issueBranch() (lib/
-# start.py) and jira.py's KEY_RE, so a bare KEY-slug branch (no prefix) still resolves its key.
+# start.py) and lib/issue.py's KEY_RE, so a bare KEY-slug branch (no prefix) still resolves its key.
 n=${1:-$(printf '%s' "$branch" | sed -nE 's,^([^/]+/)?([A-Z][A-Z0-9]+-[0-9]+)-.*,\2,p')}
 [ -n "$n" ] || { echo "pr: no Jira key in branch $branch; give it: pr KEY" >&2; exit 2; }
 # N10: n (whether from $1 or sed'd off the branch) is used to build .tmp/$n paths below, well
 # before ghbody.sh/checklist.py would ever validate it -- an unanchored or path-shaped value
 # (../x, a/../../b, an absolute path) would read or write outside .tmp/ via those paths. Anchor-
-# validated against the same key shape as lib/jira.py's KEY_RE/L2 before it's used anywhere.
+# validated against the same key shape as lib/issue.py's KEY_RE/L2 before it's used anywhere.
 printf '%s' "$n" | grep -qE '^[A-Z][A-Z0-9]+-[0-9]+$' ||
   { echo "pr: \"$n\" isn't a Jira key (expected KEY-123)" >&2; exit 2; }
 
