@@ -69,7 +69,7 @@ GitHub's, and they are the one GitHub integration; GitHub Issues is not used.
 Each run touches up to three places, and each holds one kind of thing:
 
 - **Skuld** holds code and definitions: `lib/`, `bin/`, the helper scripts, the issue file spec
-  (`docs/issue-format.md`), the issue template (`templates/issue.md`), and `store.yml`, which names
+  (`docs/issue-format.md`), the round file spec (`docs/round-format.md`), the issue template (`templates/issue.md`), and `store.yml`, which names
   the store's projects and their repo remotes.
 - **The ticket store** holds data: `active/` and `archive/` for ticket files, `milestones/`, and
   `reviews/<KEY>/` for review rounds. It sits at the path the machine config's `issueStore` names,
@@ -152,7 +152,7 @@ a module interface with one class per adapter:
 | Port | Does | Adapters |
 | --- | --- | --- |
 | `IssueStore` | list Next up, read an issue, create, set fields, transition, append a log line, close note | `FileStore`, `Jira` |
-| `ReviewStore` | record a round, its findings and outcomes, and read them back | files under `<store>/reviews/<KEY>/` |
+| `ReviewStore` | check a round against the round spec, record it, and read it back | files under `<store>/reviews/<KEY>/` |
 | `PullRequests` | open or update a PR, read its state and threads, post replies | `gh` |
 | `GitRemote` | fetch, push, rebase onto the base, add and remove worktrees | `git` |
 | `WindowPlacer` | put an issue window on a free slot, find it again, label the slot, and list where each issue's window is | `SpacesPlacer` (native macOS Desktops) |
@@ -394,8 +394,8 @@ still succeeds and says nothing.
 
 An issue's work is a series of rounds, numbered from 0, each in its own folder,
 `<store>/reviews/<KEY>/rounds/<n>/`. The highest `n` is the latest round. Every round ends the same
-way: Claude writes the round's files, opens its report in the issue window with
-`plan browse <KEY>/report`, and stops. The human reads the report and runs `pr <KEY>` in the issue
+way: Claude writes the round's files, the review agent checks and records them, Claude opens the
+report in the issue window with `plan browse <KEY>/report`, and stops. The human reads the report and runs `pr <KEY>` in the issue
 window's terminal.
 
 Round 0 is the author's change. Claude implements the issue, runs `/code-review medium` on the
@@ -411,6 +411,17 @@ A round holds:
 - `replies/<comment id>.md`, one reply per review thread.
 - For a Jira issue, `issue.md`: the issue's description with Done boxes ticked. A store issue's Done
   boxes are ticked in the ticket's own `## Done` section.
+
+**Recording a round.** The review agent checks a round's `report.md` and `review.json` against the
+round spec, `docs/round-format.md`, before it records them. Both files exist; `review.json` is an
+object whose `findings` each have `file`, `line`, `summary` and `disposition`, and whose
+`dispositions` each have `path`, `blob`, `passes` and `verdict`; each disposition's `blob` is the
+file's blob at the head the round reviewed; and the round's number is one more than the latest
+round's, or 0. A round that passes is written through `ReviewStore` to
+`<store>/reviews/<KEY>/rounds/<n>/`, and the watcher commits and pushes it (§7.7), so every agent
+that reads the store sees the same rounds. A round that fails is not recorded: the agent names the
+file and the rule, and the round stays with the agent until it is fixed. Nothing else writes a
+round's report or review into the store.
 
 Every report lists the commands to run. Under "This round" is `pr <KEY>`, which the server writes
 from the key. Under "After the merge" are the steps in the ticket's `## After merge` section, shown
@@ -568,7 +579,9 @@ against the file name and `store.yml`; no duplicate keys; `parent` and `blocked_
 that exist, with no `blocked_by` cycle; `closed` set exactly when the ticket is closed; milestones
 that exist and aren't closed under an open ticket; the body's outline and log lines. Every writer,
 `plan`, a person or an agent, produces files it accepts. `FileStore` runs the same checks before
-every write, so `plan` can't produce a file the watcher would refuse.
+every write, so `plan` can't produce a file the watcher would refuse. The checker also checks each
+round under `reviews/` against the round spec (§7.2), and `ReviewStore` runs that check before
+every write.
 
 **Writing tickets.** `plan new <PREFIX> "<title>"` takes the next number, fills skuld's
 `templates/issue.md`, writes the ticket, checks it and opens it in `$EDITOR`. `plan set <KEY>
