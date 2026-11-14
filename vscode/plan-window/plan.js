@@ -86,6 +86,20 @@ function findClaudeTerminal(plan, terminals) {
   return terminals.find((terminal) => terminal.name === claudeTerminalName(plan));
 }
 
+// The first of the window's tab groups (as vscode.window.tabGroups.all lists them) that has a tab
+// matching isTab, or undefined.
+function groupHoldingTab(groups, isTab) {
+  return groups.find((group) => group.tabs.some(isTab));
+}
+
+const FOCUS_GROUP_COMMANDS = { 1: "workbench.action.focusFirstEditorGroup", 2: "workbench.action.focusSecondEditorGroup" };
+
+// The command that focuses the editor group in viewColumn (1-based). Open uses the first group
+// (ticket) and the second (Claude); any other column is undefined.
+function focusGroupCommand(viewColumn) {
+  return FOCUS_GROUP_COMMANDS[viewColumn];
+}
+
 function shellTerminalName(plan) {
   return `Shell ${plan.key}`;
 }
@@ -303,6 +317,8 @@ module.exports = {
   claudeTerminalName,
   claudeTerminalOptions,
   findClaudeTerminal,
+  groupHoldingTab,
+  focusGroupCommand,
   shellTerminalOptions,
   findShellTerminal,
   ticketPage,

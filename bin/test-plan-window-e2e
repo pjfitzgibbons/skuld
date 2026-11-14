@@ -4,7 +4,9 @@
 # vscode/plan-window/e2e/.wdio-vscode-service.
 #   bin/test-plan-window-e2e            run every spec
 #   bin/test-plan-window-e2e --watch    pause after each step and print it, to follow the window
-#   bin/test-plan-window-e2e --spec e2e/specs/open-issue.e2e.js   other arguments go to wdio
+#   bin/test-plan-window-e2e --spec specs/open-issue.e2e.js   one spec, in the one session that owns it
+#                                    (specs/other-window/*.e2e.js is the other-window session)
+#                                    other arguments go to wdio
 set -euo pipefail
 root=$(cd "$(dirname "$(realpath "$0")")/.." && pwd)
 cd "$root/vscode/plan-window/e2e"

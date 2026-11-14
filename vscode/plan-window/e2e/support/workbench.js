@@ -169,6 +169,27 @@ export function windowSize() {
   return browser.execute(() => ({ width: window.outerWidth, height: window.outerHeight }));
 }
 
+// Each editor group as the page shows it: whether it is locked (VS Code gives a locked group's
+// container the class "locked") and the text of its tabs. This is the probe for a group's lock, which
+// the extension API does not report; log it to see what the page holds.
+export function editorGroups() {
+  return browser.execute(() =>
+    [...document.querySelectorAll(".editor-group-container")].map((group) => ({
+      locked: group.classList.contains("locked"),
+      tabs: [...group.querySelectorAll(".tabs-container .tab")].map(
+        (tab) => `${tab.getAttribute("aria-label") || ""} ${tab.textContent}`,
+      ),
+    })),
+  );
+}
+
+// Whether the group with a tab whose text contains tabText is locked; undefined when no group has one.
+export async function isGroupLockedWithTab(tabText) {
+  const groups = await editorGroups();
+  const group = groups.find(({ tabs }) => tabs.some((tab) => tab.includes(tabText)));
+  return group && group.locked;
+}
+
 // The window's size: the left half of the screen's available area, full height, so a person can
 // watch it beside a terminal on a small screen.
 export async function halfScreenSize() {

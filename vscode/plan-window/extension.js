@@ -72,10 +72,10 @@ async function openOpenLink(query) {
 async function openIssue(key) {
   try {
     const plan = readIssueRecord(key);
-    await bestEffort(key, () => showTicket(plan));
-    await bestEffort(key, () => openTicketPage(plan));
+    await bestEffort(key, "show the ticket", () => showTicket(plan));
+    await bestEffort(key, "show the ticket", () => openTicketPage(plan));
     showShellTerminal(plan);
-    showClaudeTerminal(plan);
+    await showClaudeTerminal(plan);
     if (windowPlan.hasPulse(readPulses(), key)) clearPulse(key);
   } catch (error) {
     vscode.window.showErrorMessage(`plan window: ${error.message}`);
@@ -83,11 +83,11 @@ async function openIssue(key) {
   refreshIssues();
 }
 
-async function bestEffort(key, ticketStep) {
+async function bestEffort(key, whatFailed, step) {
   try {
-    await ticketStep();
+    await step();
   } catch (error) {
-    vscode.window.showWarningMessage(`plan window: could not show the ticket for ${key}: ${error.message}`);
+    vscode.window.showWarningMessage(`plan window: could not ${whatFailed} for ${key}: ${error.message}`);
   }
 }
 
@@ -128,9 +128,48 @@ async function openTicketPage(plan) {
   if (options) await openInBrowser(options);
 }
 
-function showClaudeTerminal(plan) {
+async function showClaudeTerminal(plan) {
   const terminal = windowPlan.findClaudeTerminal(plan, vscode.window.terminals) || createClaudeTerminal(plan);
   terminal.show(false);
+  await bestEffort(plan.key, "set the editor group locks", () => lockClaudeGroupOnly(plan, terminal));
+}
+
+// The ticket opens in the first editor group and Claude in the second. The Claude terminal's group is
+// locked, so other editors open beside it, and the ticket's group is left unlocked. Lock and unlock
+// act on the active group, so each group is focused by its column first. Lock and unlock set the
+// state and never toggle it, so a second Open leaves the same locks. Focus ends on Claude.
+async function lockClaudeGroupOnly(plan, terminal) {
+  const claudeGroup = await waitForTabGroup((tab) => isClaudeTab(plan, tab));
+  if (!claudeGroup) return;
+  const ticketGroup = windowPlan.groupHoldingTab(vscode.window.tabGroups.all, (tab) => isTicketTab(plan, tab));
+  if (ticketGroup && ticketGroup !== claudeGroup) await setGroupLock(ticketGroup, "unlock");
+  await setGroupLock(claudeGroup, "lock");
+  terminal.show(false);
+}
+
+async function setGroupLock(group, lockOrUnlock) {
+  const focus = windowPlan.focusGroupCommand(group.viewColumn);
+  if (!focus) return;
+  await vscode.commands.executeCommand(focus);
+  await vscode.commands.executeCommand(`workbench.action.${lockOrUnlock}EditorGroup`);
+}
+
+function isClaudeTab(plan, tab) {
+  return tab.input instanceof vscode.TabInputTerminal && tab.label === windowPlan.claudeTerminalName(plan);
+}
+
+function isTicketTab(plan, tab) {
+  return plan.ticket !== null && tab.input instanceof vscode.TabInputText && tab.input.uri.fsPath === plan.ticket;
+}
+
+// A terminal's editor tab appears a moment after show(), so the group is looked for until it does.
+async function waitForTabGroup(isTab, attempts = 40) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const group = windowPlan.groupHoldingTab(vscode.window.tabGroups.all, isTab);
+    if (group) return group;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return undefined;
 }
 
 function showShellTerminal(plan) {

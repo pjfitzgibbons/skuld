@@ -28,6 +28,18 @@ from lib.test_start import sandbox as start_sandbox
 JIRA_ON = {"jira": {"CIAM": {"repos": []}}, "baseUrl": "https://jira.example"}
 
 
+# An extensions folder with the plan-window link pointing into the checkout the tests run from, and
+# PLAN_EXTENSIONS_DIR aimed at it for the test, so no test reads the real ~/.vscode/extensions.
+def useLinkedExtensions(test, linkName=term_mod.EXTENSION_LINK_NAME):
+    folder = tempfile.mkdtemp(prefix="skuld-extensions-")
+    test.addCleanup(shutil.rmtree, folder)
+    os.symlink(term_mod.extensionSource(term_mod.runningCheckout()), os.path.join(folder, linkName))
+    patch = mock.patch.dict(os.environ, {term_mod.EXTENSIONS_DIR_ENV: folder})
+    patch.start()
+    test.addCleanup(patch.stop)
+    return folder
+
+
 # `start` and `open` are the same command (main() routes both to cmdStart -- a second Open on an
 # issue that already has a worktree is just Start finding "nothing to do" and reusing it), so these
 # run cmdStart through main(["open", ...]) with start.start() stubbed and term's `run` faked, then
@@ -42,6 +54,7 @@ class CmdOpenTests(unittest.TestCase):
             "issuesFile": os.path.join(self.tmp, "issues"),
         }
         self.planWorkspace = os.path.join(self.tmp, "ws", "plan.code-workspace")
+        self.extensions = useLinkedExtensions(self)
 
     def worktree(self, key):
         path = os.path.join(self.tmp, "repo.worktrees", key)
@@ -50,7 +63,7 @@ class CmdOpenTests(unittest.TestCase):
 
     # Runs `plan open key`; run fails for any command whose name is in failing. Returns the
     # (command, args) pairs run and what was printed; failingLink fails `code --open-url`.
-    def runOpen(self, key, ticket=None, failing=(), failingLink=False):
+    def runOpen(self, key, ticket=None, failing=(), failingLink=False, command="open"):
         class FakeJira:
             def browseUrl(self, key):
                 return ticket or f"https://cryoport.atlassian.net/browse/{key}"
@@ -71,7 +84,7 @@ class CmdOpenTests(unittest.TestCase):
         ), mock.patch.object(startLib, "start", return_value={"dir": self.worktree(key), "notes": []}), mock.patch.object(
             term_mod, "run", side_effect=run
         ), mock.patch("sys.stdout", out):
-            main(["open", key])
+            main([command, key])
         return ran, out.getvalue()
 
     def issueSettings(self, key):
@@ -89,6 +102,67 @@ class CmdOpenTests(unittest.TestCase):
             [("code", [self.planWorkspace]), ("code", ["--open-url", "vscode://skuld.plan-window/open?key%3DSK-0001"])],
         )
         self.assertEqual(out, "SK-0001 ready.\n/issues/SK-0001-slug.md\n")
+
+    # The extension link. A stop leaves nothing started: no run, no issues-file line, no workspace.
+    def replaceLink(self, target=None):
+        link = os.path.join(self.extensions, term_mod.EXTENSION_LINK_NAME)
+        os.remove(link)
+        if target:
+            os.symlink(target, link)
+        return link
+
+    def assertNothingStarted(self, ran):
+        self.assertEqual(ran, [])
+        self.assertEqual(term_mod.issueKeys(self.cfg["issuesFile"]), [])
+        self.assertFalse(os.path.exists(self.planWorkspace))
+
+    def stoppedBy(self, command):
+        ran = []
+        with mock.patch.object(startLib, "start") as start, mock.patch.object(
+            term_mod, "run", side_effect=lambda c, a, cwd: ran.append((c, a))
+        ), mock.patch.object(cli.config_mod, "load", return_value=self.cfg):
+            with self.assertRaises(RuntimeError) as stop:
+                main([command, "SK-0001"])
+        start.assert_not_called()
+        self.assertNothingStarted(ran)
+        return str(stop.exception)
+
+    def test_a_link_into_another_worktree_stops_open_with_the_whole_fix(self):
+        elsewhere = os.path.join(self.tmp, "other.worktrees", "SK-0063", "vscode", "plan-window")
+        link = self.replaceLink(elsewhere)
+        checkout = term_mod.runningCheckout()
+        fixed = os.path.join(self.extensions, term_mod.EXTENSION_LINK_NAME)
+        self.assertEqual(
+            self.stoppedBy("open"),
+            f"plan-window extension link is wrong: {link} -> {elsewhere}\n"
+            f"plan runs from {checkout}. To fix:\n"
+            f"  1. ln -sfn {checkout}/vscode/plan-window {fixed}\n"
+            "  2. Restart VS Code (quit and reopen).\n"
+            "  3. Re-run: plan open SK-0001",
+        )
+
+    def test_a_missing_link_stops_start_naming_the_folder_and_re_running_start(self):
+        self.replaceLink()
+        message = self.stoppedBy("start")
+        self.assertIn(f"no skuld.plan-window-* link in {self.extensions}", message)
+        self.assertIn("  3. Re-run: plan start SK-0001", message)
+
+    def test_a_leftover_link_of_another_version_is_removed_in_the_fix(self):
+        self.replaceLink()
+        leftover = os.path.join(self.extensions, "skuld.plan-window-0.0.0")
+        os.symlink(os.path.join(self.tmp, "old"), leftover)
+        message = self.stoppedBy("open")
+        self.assertIn(f"  1. rm {leftover}\n  2. ln -sfn ", message)
+        self.assertIn("  4. Re-run: plan open SK-0001", message)
+
+    def test_a_link_into_this_checkout_with_another_version_suffix_opens(self):
+        self.replaceLink()
+        os.symlink(
+            term_mod.extensionSource(term_mod.runningCheckout()), os.path.join(self.extensions, "skuld.plan-window-0.2.0")
+        )
+        ran, out = self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
+        self.assertEqual(out, "SK-0001 ready.\n/issues/SK-0001-slug.md\n")
+        self.assertEqual(ran[0], ("code", [self.planWorkspace]))
 
     def test_open_writes_the_issues_own_workspace_file_without_opening_it(self):
         self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
@@ -232,6 +306,7 @@ class StartWithDesktopKeysTests(unittest.TestCase):
         }
         with open(self.configFile, "w", encoding="utf8") as f:
             json.dump(settings, f)
+        useLinkedExtensions(self)
 
     def test_the_desktop_keys_load_with_a_warning_and_an_issue_still_starts(self):
         class FakeJira:
@@ -674,6 +749,7 @@ class JiraOffTests(unittest.TestCase):
         store = writeStore()
         self.addCleanup(shutil.rmtree, store)
         self.cfg = {**cli.config_mod.defaults(), "issueStore": store}
+        useLinkedExtensions(self)
         for patch in (
             mock.patch.object(cli.config_mod, "load", return_value=self.cfg),
             mock.patch.object(cli, "Jira", side_effect=AssertionError("Jira was constructed")),

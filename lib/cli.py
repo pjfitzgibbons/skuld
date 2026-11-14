@@ -229,9 +229,11 @@ def cmdView(cfg, key):
 # workspace, open or raise the plan window with `code <plan workspace>` (term.openPlanWindow; VS
 # Code places it, ADR 0004), and ask plan-window to bring the issue forward. Open is the same call
 # as Start (start.py's ACTION/startIn already handle "already has a worktree" by reusing it); the
-# terminal tool doesn't need two code paths.
-def cmdStart(cfg, key):
+# terminal tool doesn't need two code paths. A wrong extension link stops it first
+# (term.checkExtensionLink), before anything changes.
+def cmdStart(cfg, key, command="start"):
     startLib.checkId(key, "Start")
+    term_mod.checkExtensionLink(command, key)
     store = config_mod.issueStoreFrom(cfg)  # no store stops Start before anything changes
     jira = jiraFrom(cfg, key)
     result = startLib.start(jira, cfg.get("checkouts"), key, confirmBlockers, typeMap=cfg.get("typeMap"))
@@ -538,7 +540,7 @@ def main(argv=None):
     if cmd == "view":
         return cmdView(cfg, rest[0] if rest else None)
     if cmd in ("start", "open"):
-        return cmdStart(cfg, rest[0] if rest else None)
+        return cmdStart(cfg, rest[0] if rest else None, cmd)
     if cmd == "browse":
         return cmdBrowse(cfg, rest[0] if rest else None, rest[1] if len(rest) > 1 else None)
     if cmd == "ship":

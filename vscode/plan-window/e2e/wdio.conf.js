@@ -2,7 +2,8 @@
 // .wdio-vscode-service, started with this extension loaded and no other, a user data dir and
 // extensions dir under the run's fixture directory, and the plan.* settings pointing at it. Two
 // sessions run one after the other: the plan window (on the fixture's plan.code-workspace, running
-// specs/*.e2e.js) and a window on another workspace (specs/other-window/).
+// specs/*.e2e.js) and a window on another workspace (specs/other-window/). With --spec, only the
+// session that owns the given specs starts (see sessionsFor).
 // support/fixture.js says what the fixture holds and how it isolates the run.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,11 +24,39 @@ function refuseWatchingWithoutTerminal() {
 
 const e2eDir = path.dirname(fileURLToPath(import.meta.url));
 
+// wdio's --spec replaces every session's own specs with the given ones (@wdio/config's getSpecs
+// ignores a capability's specs once `spec` is passed), so each session would run them, and a spec for
+// the plan window would run in the other window too. The sessions to start are chosen here, from
+// the --spec arguments the launcher got, and handed to the workers in the environment: a worker loads
+// this file again with arguments of its own.
+const SESSIONS_VARIABLE = "PLAN_E2E_SESSIONS";
+const OTHER_WINDOW_SPECS = path.join(e2eDir, "specs", "other-window") + path.sep;
+
+function specArguments(argv) {
+  return argv.flatMap((arg, at) => (arg === "--spec" ? [argv[at + 1]] : arg.startsWith("--spec=") ? [arg.slice(7)] : []));
+}
+
+function belongsToOtherWindow(spec) {
+  return path.resolve(spec).startsWith(OTHER_WINDOW_SPECS);
+}
+
+// "plan", "other" or "both": the sessions the given specs call for, and both with none given.
+function sessionsFor(specs) {
+  if (specs.length === 0) return "both";
+  const other = specs.filter(belongsToOtherWindow).length;
+  if (other === 0) return "plan";
+  if (other === specs.length) return "other";
+  console.error("--spec names specs of both sessions (specs/ and specs/other-window/); run one session at a time.");
+  process.exit(1);
+}
+
 // The launcher makes the fixture; the workers load this file again and inherit its environment.
 if (!process.env[ROOT_VARIABLE]) {
   refuseWatchingWithoutTerminal();
   createRunFixture();
+  process.env[SESSIONS_VARIABLE] = sessionsFor(specArguments(process.argv));
 }
+const sessions = process.env[SESSIONS_VARIABLE] || "both";
 const fixture = openFixture();
 
 const userSettings = {
@@ -71,8 +100,8 @@ export const config = {
   runner: "local",
   maxInstances: 1,
   capabilities: [
-    sessionOn(fixture.paths.planWorkspaceFile, ["./specs/*.e2e.js"]),
-    sessionOn(fixture.paths.otherWorkspaceFile, ["./specs/other-window/*.e2e.js"]),
+    ...(sessions === "other" ? [] : [sessionOn(fixture.paths.planWorkspaceFile, ["./specs/*.e2e.js"])]),
+    ...(sessions === "plan" ? [] : [sessionOn(fixture.paths.otherWorkspaceFile, ["./specs/other-window/*.e2e.js"])]),
   ],
   services: [["vscode", { cachePath: path.join(e2eDir, ".wdio-vscode-service") }]],
   framework: "mocha",

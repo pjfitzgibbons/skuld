@@ -151,8 +151,15 @@ macOS only. In order:
     then restart VS Code:
 
     ```sh
-    ln -s "$(pwd)/vscode/plan-window" ~/.vscode/extensions/skuld.plan-window-0.0.1
+    ln -sfn "$(pwd)/vscode/plan-window" ~/.vscode/extensions/skuld.plan-window-0.0.1
     ```
+
+    `-f` and `-n` replace a link that already exists, so running it again repairs a link that
+    points at another checkout. `plan start` and `plan open` check the link before they change
+    anything: when no `skuld.plan-window-*` entry resolves into the checkout `plan` runs from, they
+    stop and print where the link points, the numbered fix (remove a leftover link of another
+    version, `ln -sfn` with the running checkout's path, "Restart VS Code (quit and reopen).",
+    re-run the command), and never run `ln` themselves.
 
     It adds an **Issues** view to the plan window's Explorer sidebar: one item per issue in the
     issues file (§4, step 7), in the file's order, labelled with its key. An item is tinted orange
@@ -304,7 +311,9 @@ runs only when it has something to do:
    to run by hand.
 9. **Print the ticket.** A Jira issue's browse URL, or a store ticket's file path, is printed.
    The ticket opens beside Claude when the issue is opened (step 10): a store ticket in an editor
-   tab, a Jira issue's page in the plan window's integrated browser.
+   tab, a Jira issue's page in the plan window's integrated browser. The ticket is in the first
+   editor group and Claude in the second; plan-window locks Claude's group, so other editors open
+   beside it, and leaves the ticket's group unlocked.
 10. **Open the issue.** Send `vscode://skuld.plan-window/open?key=<KEY>` with `code --open-url`, which opens the issue in
     the plan window as a click on its item does (§2, step 10), so the command ends with the human
     at the issue's Claude. Its terminals carry the issue's key in their environment. This step is

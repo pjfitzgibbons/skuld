@@ -270,6 +270,21 @@ test("a key is capital letters, a dash and ASCII digits", () => {
   );
 });
 
+test("the tab group holding a matching tab is found, and none when no tab matches", () => {
+  const ticket = { label: "SK-9.md" };
+  const claude = { label: "Claude SK-9" };
+  const groups = [{ tabs: [ticket] }, { tabs: [{ label: "Welcome" }, claude] }];
+  assert.equal(windowPlan.groupHoldingTab(groups, (tab) => tab === claude), groups[1]);
+  assert.equal(windowPlan.groupHoldingTab(groups, (tab) => tab === ticket), groups[0]);
+  assert.equal(windowPlan.groupHoldingTab(groups, (tab) => tab.label === "none"), undefined);
+});
+
+test("an editor group is focused by its column, for the ticket's and Claude's only", () => {
+  assert.equal(windowPlan.focusGroupCommand(1), "workbench.action.focusFirstEditorGroup");
+  assert.equal(windowPlan.focusGroupCommand(2), "workbench.action.focusSecondEditorGroup");
+  assert.equal(windowPlan.focusGroupCommand(3), undefined);
+});
+
 test("a terminal name uses the same key rule", () => {
   const terminals = [{ name: "Claude AB2-1" }, { name: "Claude SK-9" }];
   assert.deepEqual(windowPlan.keysWithClaude(terminals), ["SK-9"]);
