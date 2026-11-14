@@ -160,7 +160,14 @@ def fetchHead(cwd, pr):
 
 # The ignored paths a worktree's removal may take without asking, as plan.disposable defaults them:
 # what tools make again. "name/" is a folder of that name at any depth, "name" a file or folder.
-DISPOSABLE = [".tmp/", "node_modules/", ".venv/", "__pycache__/", ".pytest_cache/", ".coverage", ".ruby-lsp/", "htmlcov/", "dist/", "build/"]
+# .wdio-vscode-service/ is the e2e suite's downloaded VS Code; the next run downloads it again.
+DISPOSABLE = [
+    ".tmp/", "node_modules/", ".venv/", "__pycache__/", ".pytest_cache/", ".coverage", ".ruby-lsp/", "htmlcov/", "dist/", "build/",
+    ".wdio-vscode-service/",
+]
+
+# The refusal names this many ignored entries, then counts the rest.
+MAX_LISTED = 10
 
 
 # Is an ignored path, as git lists it ("dir/" for a whole folder), under a disposable name?
@@ -177,19 +184,27 @@ def disposed(entry, disposable):
     return False
 
 
-# The paths under an ignored entry that aren't disposable. git lists a folder whose files are all
-# ignored as one entry, so a folder of anything else is walked, and its disposable names dropped.
-def undisposable(dir, entry, disposable):
+# Does an ignored entry hold anything outside disposable? git lists a folder whose files are all
+# ignored as one entry, so a folder of anything else is walked, and its disposable names skipped.
+def blocksRemoval(dir, entry, disposable):
     if disposed(entry, disposable):
-        return []
+        return False
     if not entry.endswith("/"):
-        return [entry]
-    result = []
+        return True
     for name in os.listdir(os.path.join(dir, entry)):
         full = os.path.join(dir, entry, name)
         child_entry = f"{entry}{name}{'/' if os.path.isdir(full) else ''}"
-        result.extend(undisposable(dir, child_entry, disposable))
-    return result
+        if blocksRemoval(dir, child_entry, disposable):
+            return True
+    return False
+
+
+# The blocking entries as git lists them, a folder once, capped, with the rest counted.
+def listed(blocking):
+    shown = blocking[:MAX_LISTED]
+    if len(blocking) > MAX_LISTED:
+        shown.append(f"and {len(blocking) - MAX_LISTED} more")
+    return "\n".join(shown)
 
 
 # A tree Done may remove or switch away from: clean, and at or behind the PR's merged head. Throws
@@ -203,13 +218,11 @@ def checkMerged(dir, pr, removing, disposable):
     if removing:
         out = git(dir, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory")
         ignored = [e for e in out.split("\0") if e]
-        kept = []
-        for entry in ignored:
-            kept.extend(undisposable(dir, entry, disposable))
-        if kept:
+        blocking = [entry for entry in ignored if blocksRemoval(dir, entry, disposable)]
+        if blocking:
             raise RuntimeError(
                 f"{dir} has ignored files its removal would delete; move them out, or add them to plan.disposable, "
-                f"then Done again:\n" + "\n".join(kept)
+                f"then Done again:\n" + listed(blocking)
             )
     head = git(dir, "rev-parse", "HEAD").strip()
     if not inPullRequest(dir, head, pr):

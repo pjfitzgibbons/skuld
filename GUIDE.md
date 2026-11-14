@@ -424,7 +424,7 @@ Done shows once a PR for the issue's branch is found (`gh pr view <branch>` or
 changes anything.
 
 The checks, in order: the PR is merged; it belongs to this checkout's `origin`; the worktree is
-clean, holds no ignored files outside `disposable`, and its HEAD is the PR's merged head or behind
+clean, holds no ignored files outside `disposable` (a refusal names each ignored folder once), and its HEAD is the PR's merged head or behind
 it; no round files are left unsent; the worktree isn't locked; the main checkout's base can
 fast-forward to `origin/<base>`.
 
