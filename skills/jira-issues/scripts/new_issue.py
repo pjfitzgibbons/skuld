@@ -79,7 +79,7 @@ def keys(key: str, value: str) -> list[str]:
     out = []
     for part in value.split(","):
         part = part.strip().upper()
-        if not re.match(r"^\d+$", part) and not re.match(r"^[A-Z][A-Z0-9]+-\d+$", part):
+        if not re.match(r"^\d+$", part) and not re.match(r"^[A-Z]+-[0-9]+$", part):
             raise Refused(f"{key}: {part!r} isn't a Jira key")
         out.append(part)
     return out
@@ -164,7 +164,7 @@ def create_ciam(fields: dict[str, str], body: str) -> str:
     if result.returncode != 0:
         raise Refused(f"create-ciam-issue.sh failed: {result.stderr.strip()}")
     key = result.stdout.split()[0]
-    if not re.match(r"^[A-Z][A-Z0-9]+-\d+$", key):
+    if not re.match(r"^[A-Z]+-[0-9]+$", key):
         raise Refused(f"create-ciam-issue.sh gave an unexpected result: {result.stdout.strip()}")
     return key
 

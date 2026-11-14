@@ -1,6 +1,6 @@
-# lib/agents.py: the placing and colouring rules on made-up sessions, with no call to claude or
-# SlotBar. reportIsFresh runs against a real temp git repo; a tick runs through patched
-# readSessions and pulse.
+# lib/agents.py: the placing and colouring rules on made-up sessions, with no call to claude.
+# reportIsFresh runs against a real temp git repo; a tick runs through a patched readSessions and
+# real temp issues and pulses files.
 import io
 import json
 import os
@@ -10,9 +10,9 @@ import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
-from lib import agents, cli
+from lib import agents, cli, pulses
 
-SLOTS = [("3", "SK-0041"), ("4", "CIAM-12")]
+LISTED = ["SK-0041", "CIAM-12"]
 
 
 def session(cwd, status="idle", **more):
@@ -27,30 +27,33 @@ def always(worktree, key):
     return True
 
 
-def place(*sessions, reportIsFresh=never, slots=SLOTS):
-    return agents.placeSessions(list(sessions), slots, reportIsFresh)
+def place(*sessions, reportIsFresh=never, listed=LISTED):
+    return agents.placeSessions(list(sessions), listed, reportIsFresh)
 
 
 class PlacingTests(unittest.TestCase):
-    def test_a_worktree_gives_the_key_and_the_slots_file_its_desktop(self):
+    def test_a_worktree_of_a_listed_issue_places_the_session_on_it(self):
         [agent] = place(session("/p/skuld.worktrees/SK-0041"))
-        self.assertEqual((agent.key, agent.desktop, agent.worktree), ("SK-0041", "3", "/p/skuld.worktrees/SK-0041"))
+        self.assertEqual((agent.key, agent.issue, agent.worktree), ("SK-0041", "SK-0041", "/p/skuld.worktrees/SK-0041"))
 
-    def test_a_cwd_below_the_worktree_is_placed_on_the_same_desktop(self):
+    def test_a_cwd_below_the_worktree_is_placed_on_the_same_issue(self):
         [agent] = place(session("/p/repo.worktrees/CIAM-12/lib/sub"))
-        self.assertEqual((agent.key, agent.desktop, agent.worktree), ("CIAM-12", "4", "/p/repo.worktrees/CIAM-12"))
+        self.assertEqual((agent.key, agent.issue, agent.worktree), ("CIAM-12", "CIAM-12", "/p/repo.worktrees/CIAM-12"))
 
-    def test_a_key_with_no_slot_shows_on_dash(self):
+    def test_a_key_the_issues_file_doesnt_list_shows_on_dash(self):
         [agent] = place(session("/p/repo.worktrees/SK-0099"))
-        self.assertEqual((agent.key, agent.desktop), ("SK-0099", "-"))
+        self.assertEqual((agent.key, agent.issue), ("SK-0099", "-"))
 
-    def test_a_cwd_outside_every_worktree_has_no_key_and_no_desktop(self):
+    def test_a_cwd_outside_every_worktree_has_no_key_and_no_issue(self):
         [agent] = place(session("/p/skuld"))
-        self.assertEqual((agent.key, agent.desktop), ("", "-"))
+        self.assertEqual((agent.key, agent.issue), ("", "-"))
 
-    def test_a_missing_slots_file_still_lists_every_session(self):
-        found = place(session("/p/a.worktrees/SK-0041"), session("/p/b"), slots=[])
-        self.assertEqual([a.desktop for a in found], ["-", "-"])
+    def test_a_missing_issues_file_still_lists_every_session_on_dash(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            agents, "readSessions", return_value=[session("/p/a.worktrees/SK-0041"), session("/p/b")]
+        ):
+            found = agents.currentAgents(os.path.join(directory, "issues"), waitingDir=directory)
+        self.assertEqual([a.issue for a in found], ["-", "-"])
 
     def test_a_background_session_reports_its_state(self):
         [agent] = place({"cwd": "/p/a.worktrees/SK-0041", "kind": "background", "state": "blocked"})
@@ -63,15 +66,15 @@ class PlacingTests(unittest.TestCase):
 
 class MarkedWaitingTests(unittest.TestCase):
     def test_a_session_its_hook_marked_is_waiting_whatever_claude_says(self):
-        [agent] = agents.placeSessions([session("/p/a.worktrees/SK-0041", "busy", sessionId="s1")], SLOTS, never, {"s1"})
+        [agent] = agents.placeSessions([session("/p/a.worktrees/SK-0041", "busy", sessionId="s1")], LISTED, never, {"s1"})
         self.assertEqual(agent.state, "waiting")
 
     def test_an_unmarked_session_keeps_claudes_state(self):
-        [agent] = agents.placeSessions([session("/p/a.worktrees/SK-0041", "busy", sessionId="s1")], SLOTS, never, {"s2"})
+        [agent] = agents.placeSessions([session("/p/a.worktrees/SK-0041", "busy", sessionId="s1")], LISTED, never, {"s2"})
         self.assertEqual(agent.state, "busy")
 
     def test_a_fresh_report_stays_done_though_the_idle_prompt_marked_it(self):
-        [agent] = agents.placeSessions([session("/p/a.worktrees/SK-0041", "idle", sessionId="s1")], SLOTS, always, {"s1"})
+        [agent] = agents.placeSessions([session("/p/a.worktrees/SK-0041", "idle", sessionId="s1")], LISTED, always, {"s1"})
         self.assertEqual(agent.state, "done")
 
     def test_the_watch_loop_wakes_when_a_marker_changes(self):
@@ -146,43 +149,47 @@ class ReportIsFreshTests(unittest.TestCase):
 
 
 class ColouringTests(unittest.TestCase):
-    def test_waiting_is_orange_done_is_green_and_an_empty_desktop_is_off(self):
+    def test_waiting_is_orange_done_is_green_and_an_issue_with_no_claude_is_off(self):
         found = place(session("/p/a.worktrees/SK-0041", "waiting"))
-        self.assertEqual(agents.wantedPulses(found, SLOTS), {"3": "orange", "4": "off"})
+        self.assertEqual(agents.wantedPulses(found, LISTED), {"SK-0041": "orange", "CIAM-12": "off"})
         found = place(session("/p/a.worktrees/CIAM-12"), reportIsFresh=always)
-        self.assertEqual(agents.wantedPulses(found, SLOTS), {"3": "off", "4": "green"})
+        self.assertEqual(agents.wantedPulses(found, LISTED), {"SK-0041": "off", "CIAM-12": "green"})
 
     def test_a_busy_or_idle_claude_is_off(self):
         found = place(session("/p/a.worktrees/SK-0041", "busy"), session("/p/a.worktrees/CIAM-12"))
-        self.assertEqual(agents.wantedPulses(found, SLOTS), {"3": "off", "4": "off"})
+        self.assertEqual(agents.wantedPulses(found, LISTED), {"SK-0041": "off", "CIAM-12": "off"})
 
-    def test_the_most_urgent_claude_on_a_desktop_wins(self):
+    def test_the_most_urgent_claude_on_an_issue_wins(self):
         found = place(
             session("/p/a.worktrees/SK-0041", "busy"),
             session("/p/a.worktrees/SK-0041", "waiting"),
             session("/p/a.worktrees/SK-0041", "idle"),
             reportIsFresh=always,
         )
-        self.assertEqual(agents.wantedPulses(found, SLOTS)["3"], "orange")
+        self.assertEqual(agents.wantedPulses(found, LISTED)["SK-0041"], "orange")
 
     def test_an_unplaced_claude_pulses_nothing(self):
         found = place(session("/p/a.worktrees/SK-0099", "waiting"))
-        self.assertEqual(agents.wantedPulses(found, SLOTS), {"3": "off", "4": "off"})
+        self.assertEqual(agents.wantedPulses(found, LISTED), {"SK-0041": "off", "CIAM-12": "off"})
+
+    def test_no_listed_issue_wants_no_pulse(self):
+        found = place(session("/p/a.worktrees/SK-0041", "waiting"), listed=[])
+        self.assertEqual(agents.wantedPulses(found, []), {})
 
 
 class ReviewColouringTests(unittest.TestCase):
-    def test_a_waiting_review_turns_its_desktop_orange_over_done(self):
+    def test_a_waiting_review_turns_its_issue_orange_over_done(self):
         found = place(session("/p/a.worktrees/CIAM-12"), reportIsFresh=always)
-        self.assertEqual(agents.wantedPulses(found, SLOTS, frozenset({"CIAM-12"})), {"3": "off", "4": "orange"})
+        self.assertEqual(agents.wantedPulses(found, LISTED, frozenset({"CIAM-12"})), {"SK-0041": "off", "CIAM-12": "orange"})
 
-    def test_a_review_for_a_key_without_a_slot_pulses_nothing(self):
-        self.assertEqual(agents.wantedPulses([], SLOTS, frozenset({"SK-0099"})), {"3": "off", "4": "off"})
+    def test_a_review_for_an_unlisted_key_pulses_nothing(self):
+        self.assertEqual(agents.wantedPulses([], LISTED, frozenset({"SK-0099"})), {"SK-0041": "off", "CIAM-12": "off"})
 
-    def test_only_slotted_issues_with_a_claude_have_their_prs_checked(self):
+    def test_only_listed_issues_with_a_claude_have_their_prs_checked(self):
         found = place(session("/p/a.worktrees/SK-0041/lib"), session("/p/a.worktrees/SK-0099"), session("/p/x"))
-        self.assertEqual(agents.slottedWorktrees(found), {"SK-0041": "/p/a.worktrees/SK-0041"})
+        self.assertEqual(agents.listedWorktrees(found), {"SK-0041": "/p/a.worktrees/SK-0041"})
 
-    def test_reviews_are_read_from_each_slotted_worktree(self):
+    def test_reviews_are_read_from_each_listed_worktree(self):
         reviewed = {"/p/a.worktrees/SK-0041": {"state": "OPEN", "headRefOid": "b",
                     "reviews": [{"author": {"login": "copilot-pull-request-reviewer"}, "commit": {"oid": "b"}}]}}
         sessions = [session("/p/a.worktrees/SK-0041"), session("/p/a.worktrees/CIAM-12")]
@@ -206,83 +213,181 @@ class ReviewColouringTests(unittest.TestCase):
 
 
 class PulseOnChangeTests(unittest.TestCase):
-    def test_only_a_changed_desktop_is_sent(self):
-        sent = {"3": "orange", "4": "off"}
-        self.assertEqual(agents.pulsesToSend(sent, {"3": "orange", "4": "off"}), {})
-        self.assertEqual(agents.pulsesToSend(sent, {"3": "off", "4": "off"}), {"3": "off"})
+    def test_only_a_changed_issue_is_sent(self):
+        sent = {"SK-0041": "orange", "CIAM-12": "off"}
+        self.assertEqual(agents.pulsesToSend(sent, {"SK-0041": "orange", "CIAM-12": "off"}), {})
+        self.assertEqual(agents.pulsesToSend(sent, {"SK-0041": "off", "CIAM-12": "off"}), {"SK-0041": "off"})
 
-    def test_nothing_sent_yet_sends_every_desktop(self):
-        self.assertEqual(agents.pulsesToSend({}, {"3": "orange", "4": "off"}), {"3": "orange", "4": "off"})
+    def test_nothing_sent_yet_sends_every_coloured_issue_and_no_off(self):
+        self.assertEqual(agents.pulsesToSend({}, {"SK-0041": "orange", "CIAM-12": "off"}), {"SK-0041": "orange"})
+        self.assertEqual(agents.pulsesToSend({}, {"CIAM-12": "off"}), {})
 
-    def test_a_desktop_that_left_the_slots_file_is_cleared_once(self):
-        self.assertEqual(agents.pulsesToSend({"3": "green", "4": "off"}, {"4": "off"}), {"3": "off"})
-        self.assertEqual(agents.pulsesToSend({"3": "off", "4": "off"}, {"4": "off"}), {})
+    def test_an_issue_that_left_the_issues_file_is_cleared_once(self):
+        self.assertEqual(agents.pulsesToSend({"SK-0041": "green", "CIAM-12": "off"}, {"CIAM-12": "off"}), {"SK-0041": "off"})
+        self.assertEqual(agents.pulsesToSend({"SK-0041": "off", "CIAM-12": "off"}, {"CIAM-12": "off"}), {})
 
     def test_a_sent_pulse_is_recorded(self):
         calls = []
-        record, failures = agents.sendPulses({"4": "off"}, {"3": "orange"}, lambda d, c: calls.append((d, c)))
-        self.assertEqual((record, failures, calls), ({"4": "off", "3": "orange"}, [], [("3", "orange")]))
+        record, failures = agents.sendPulses({"CIAM-12": "off"}, {"SK-0041": "orange"}, lambda k, c: calls.append((k, c)))
+        self.assertEqual((record, failures, calls), ({"CIAM-12": "off", "SK-0041": "orange"}, [], [("SK-0041", "orange")]))
 
-    def test_a_failed_pulse_empties_the_record_so_every_desktop_is_sent_again(self):
-        def slotbarQuit(desktop, color):
-            raise RuntimeError("slotbar-pulse: SlotBar isn't running")
+    def test_a_failed_write_marks_only_that_key_unsent(self):
+        def unwritable(key, color):
+            raise PermissionError("[Errno 13] Permission denied: '/c/pulses.tmp'")
 
-        record, failures = agents.sendPulses({"4": "green"}, {"3": "orange"}, slotbarQuit)
-        self.assertEqual(record, {})
-        self.assertEqual(failures, ["slotbar-pulse: SlotBar isn't running"])
+        record, failures = agents.sendPulses({"CIAM-12": "green"}, {"SK-0041": "orange"}, unwritable)
+        self.assertEqual(record, {"CIAM-12": "green", "SK-0041": agents.UNSENT})
+        self.assertEqual(failures, ["[Errno 13] Permission denied: '/c/pulses.tmp'"])
+
+    def test_an_unsent_key_is_sent_again_whether_wanted_or_gone(self):
+        self.assertEqual(agents.pulsesToSend({"SK-0041": agents.UNSENT}, {"SK-0041": "orange"}), {"SK-0041": "orange"})
+        self.assertEqual(agents.pulsesToSend({"SK-0041": agents.UNSENT}, {}), {"SK-0041": "off"})
+
+    def test_the_log_leaves_out_an_unsent_key(self):
+        self.assertEqual(agents.pulsesSent({}, {"SK-0041": agents.UNSENT, "CIAM-12": "green"}), {"CIAM-12": "green"})
 
     def test_the_log_names_only_the_pulses_a_tick_sent(self):
-        sent = agents.pulsesSent({"3": "off", "4": "off"}, {"3": "orange", "4": "off"})
-        self.assertEqual(agents.pulseLine(sent), "pulsed D3 orange")
-        self.assertEqual(agents.pulsesSent({"3": "orange"}, {"3": "orange"}), {})
-
-
-class SlotBarRestartTests(unittest.TestCase):
-    def test_a_restarted_slotbar_gets_every_desktop_again(self):
-        self.assertEqual(agents.recordFor({"3": "orange"}, "100", "200"), {})
-        self.assertEqual(agents.recordFor({"3": "orange"}, "100", ""), {})
-
-    def test_the_same_slotbar_keeps_the_record_so_a_seen_desktop_stays_clear(self):
-        self.assertEqual(agents.recordFor({"3": "orange"}, "100", "100"), {"3": "orange"})
+        sent = agents.pulsesSent({"SK-0041": "off", "CIAM-12": "off"}, {"SK-0041": "orange", "CIAM-12": "off"})
+        self.assertEqual(agents.pulseLine(sent), "pulsed SK-0041 orange")
+        self.assertEqual(agents.pulsesSent({"SK-0041": "orange"}, {"SK-0041": "orange"}), {})
 
 
 class TickTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
-        self.slotsFile = os.path.join(self.dir.name, "workspaces")
-        with open(self.slotsFile, "w") as f:
-            f.write("3=SK-0041\n4=CIAM-12\n")
+        self.addCleanup(self.dir.cleanup)
+        self.issuesFile = os.path.join(self.dir.name, "issues")
+        self.pulsesFile = os.path.join(self.dir.name, "pulses")
+        self.waitingDir = os.path.join(self.dir.name, "waiting")
+        self.writeIssues("SK-0041\nCIAM-12\n")
         self.sessions = [session("/p/a.worktrees/SK-0041", "waiting")]
-        self.calls = []
 
-    def tearDown(self):
-        self.dir.cleanup()
+    def writeIssues(self, text):
+        with open(self.issuesFile, "w") as f:
+            f.write(text)
 
-    def tick(self, sent, fail=None):
-        def fakePulse(desktop, color, pulseCommand=None):
-            self.calls.append((desktop, color))
-            if fail:
-                raise RuntimeError(fail)
+    def colours(self):
+        return pulses.readPulses(self.pulsesFile)
 
-        with mock.patch.object(agents, "readSessions", return_value=self.sessions), mock.patch.object(
-            agents.slotbar, "pulseDesktop", side_effect=fakePulse
-        ):
-            return agents.tick(sent, self.slotsFile)
+    def tick(self, sent):
+        with mock.patch.object(agents, "readSessions", return_value=self.sessions):
+            return agents.tick(sent, self.issuesFile, self.pulsesFile, waitingDir=self.waitingDir)
 
-    def test_a_tick_sends_a_pulse_only_when_a_desktop_changes(self):
+    def test_a_tick_writes_a_colour_only_when_an_issue_changes(self):
         sent, _ = self.tick({})
-        self.assertEqual(self.calls, [("3", "orange"), ("4", "off")])
-        self.calls.clear()
-        sent, _ = self.tick(sent)
-        self.assertEqual(self.calls, [])
+        self.assertEqual(self.colours(), {"SK-0041": "orange"})
+        self.assertEqual(sent, {"SK-0041": "orange"})
+        with mock.patch.object(agents.pulses, "setPulse") as setPulse:
+            sent, _ = self.tick(sent)
+        setPulse.assert_not_called()
         self.sessions = [session("/p/a.worktrees/SK-0041", "busy")]
         self.tick(sent)
-        self.assertEqual(self.calls, [("3", "off")])
+        self.assertEqual(self.colours(), {})
 
-    def test_slotbar_not_running_never_stops_a_tick(self):
-        sent, failures = self.tick({}, fail="SlotBar isn't running")
-        self.assertEqual(sent, {})
-        self.assertEqual(len(failures), 2)
+    def test_a_key_that_leaves_the_issues_file_loses_its_colour(self):
+        sent, _ = self.tick({})
+        self.writeIssues("CIAM-12\n")
+        self.tick(sent)
+        self.assertEqual(self.colours(), {})
+
+    def test_a_missing_issues_file_writes_no_colour(self):
+        os.remove(self.issuesFile)
+        sent, failures = self.tick({})
+        self.assertEqual((sent, failures), ({}, []))
+        self.assertFalse(os.path.exists(self.pulsesFile))
+
+    def test_a_half_written_issues_file_never_stops_a_tick(self):
+        self.writeIssues("SK-0041\nCIAM-1")
+        _, failures = self.tick({})
+        self.assertEqual(failures, [])
+        self.assertEqual(self.colours(), {"SK-0041": "orange"})
+
+    def test_an_unwritable_pulses_file_never_stops_a_tick(self):
+        with mock.patch.object(agents.pulses, "setPulse", side_effect=PermissionError("denied")):
+            sent, failures = self.tick({})
+        self.assertEqual(sent, {"SK-0041": agents.UNSENT})
+        self.assertEqual(failures, ["denied"])
+
+    # Review finding 2: a failed write used to empty the record, so the next tick rewrote every
+    # colour, bringing back one cleared in the Issues view.
+    def test_after_one_keys_write_fails_the_next_tick_rewrites_only_that_key(self):
+        self.writeIssues("SK-0041\nCIAM-12\n")
+        self.sessions = [session("/p/a.worktrees/SK-0041", "waiting"), session("/p/a.worktrees/CIAM-12", "waiting")]
+        sent, _ = self.tick({})
+        self.assertEqual(self.colours(), {"SK-0041": "orange", "CIAM-12": "orange"})
+        pulses.setPulse("SK-0041", "off", self.pulsesFile)  # cleared by a click in the Issues view
+        self.sessions = [session("/p/a.worktrees/SK-0041", "waiting"), session("/p/a.worktrees/CIAM-12", "busy")]
+
+        def failForCiam(key, color, pulsesFile):
+            if key == "CIAM-12":
+                raise PermissionError("denied")
+
+        with mock.patch.object(agents.pulses, "setPulse", side_effect=failForCiam):
+            sent, failures = self.tick(sent)
+        self.assertEqual(failures, ["denied"])
+        with mock.patch.object(agents.pulses, "setPulse") as setPulse:
+            self.tick(sent)
+        self.assertEqual([call.args[:2] for call in setPulse.call_args_list], [("CIAM-12", "off")])
+
+    def test_the_first_tick_takes_no_lock_and_writes_nothing_for_an_issue_that_is_off(self):
+        self.sessions = []
+        with mock.patch.object(agents.pulses, "setPulse") as setPulse:
+            sent, failures = self.tick({})
+        setPulse.assert_not_called()
+        self.assertEqual((sent, failures), ({}, []))
+        self.assertFalse(os.path.exists(f"{self.pulsesFile}.lock"))
+
+    def rememberingTick(self, sent):
+        with mock.patch.object(agents, "readSessions", return_value=self.sessions):
+            return agents.rememberingTick(sent, self.issuesFile, self.pulsesFile, waitingDir=self.waitingDir)
+
+    def test_a_restarted_engine_does_not_write_back_a_colour_cleared_by_a_click(self):
+        sent, _ = self.rememberingTick({})
+        self.assertEqual(self.colours(), {"SK-0041": "orange"})
+        pulses.setPulse("SK-0041", "off", self.pulsesFile)  # cleared by a click in the Issues view
+        restarted = agents.loadSent(self.pulsesFile)
+        with mock.patch.object(agents.pulses, "setPulse") as setPulse:
+            self.rememberingTick(restarted)
+        setPulse.assert_not_called()
+        self.assertEqual(self.colours(), {})
+
+    def test_the_one_shot_tick_keeps_the_record_between_runs(self):
+        cfg = {"issuesFile": self.issuesFile, "pulsesFile": self.pulsesFile, "claudeCommand": None}
+        with mock.patch.object(agents, "readSessions", return_value=self.sessions):
+            cli.agentsTick(cfg, False)
+            pulses.setPulse("SK-0041", "off", self.pulsesFile)  # cleared by a click
+            cli.agentsTick(cfg, False)
+        self.assertEqual(self.colours(), {})
+
+    def test_with_no_sent_file_the_record_starts_from_the_pulses_file(self):
+        pulses.setPulse("SK-0041", "green", self.pulsesFile)
+        self.assertEqual(agents.loadSent(self.pulsesFile), {"SK-0041": "green"})
+
+    def test_the_sent_file_holds_only_colours_and_a_damaged_one_is_ignored(self):
+        self.rememberingTick({})
+        agents.saveSent({"SK-0041": "orange", "CIAM-12": agents.UNSENT, "SK-0001": "off"}, self.pulsesFile)
+        with open(agents.sentFile(self.pulsesFile)) as f:
+            self.assertEqual(json.load(f), {"SK-0041": "orange"})
+        with open(agents.sentFile(self.pulsesFile), "w") as f:
+            f.write("{not json")
+        self.assertEqual(agents.loadSent(self.pulsesFile), {"SK-0041": "orange"})  # the pulses file's colours
+
+    def test_a_pulses_file_line_the_record_dropped_as_unsent_is_cleared_after_a_restart(self):
+        pulses.setPulse("SK-0041", "orange", self.pulsesFile)
+        agents.saveSent({"SK-0041": agents.UNSENT}, self.pulsesFile)
+        self.sessions = []
+        self.rememberingTick(agents.loadSent(self.pulsesFile))
+        self.assertEqual(self.colours(), {})
+
+    def test_a_sent_file_that_cant_be_saved_is_a_failure_not_a_crash(self):
+        with mock.patch.object(agents, "saveSent", side_effect=PermissionError(13, "Permission denied")):
+            _, failures = self.rememberingTick({})
+        self.assertEqual(failures, [f"couldn't save {agents.sentFile(self.pulsesFile)}: Permission denied"])
+
+    def test_a_tick_that_changes_nothing_stored_saves_nothing(self):
+        self.sessions = []
+        self.rememberingTick({})
+        self.assertFalse(os.path.exists(agents.sentFile(self.pulsesFile)))
 
     def test_empty_output_from_claude_is_a_failure_not_an_empty_list(self):
         with mock.patch.object(agents, "run", return_value=""):
@@ -291,8 +396,8 @@ class TickTests(unittest.TestCase):
 
     def test_a_failing_claude_keeps_what_was_sent(self):
         with mock.patch.object(agents, "readSessions", side_effect=RuntimeError("claude: not found")):
-            sent, failures = agents.tick({"3": "orange"}, self.slotsFile)
-        self.assertEqual((sent, failures), ({"3": "orange"}, ["claude: not found"]))
+            sent, failures = agents.tick({"SK-0041": "orange"}, self.issuesFile, self.pulsesFile)
+        self.assertEqual((sent, failures), ({"SK-0041": "orange"}, ["claude: not found"]))
 
 
 class ShowingTests(unittest.TestCase):
@@ -303,12 +408,20 @@ class ShowingTests(unittest.TestCase):
             session("/p/skuld"),
         )
 
-    def test_status_and_table_show_the_same_states_on_the_same_desktops(self):
-        self.assertEqual(agents.statusLine(self.found), "D3:⏳ D4:● -:○")
+    def test_status_and_table_show_the_same_states_on_the_same_issues(self):
+        self.assertEqual(agents.statusLine(self.found), "CIAM-12:● SK-0041:⏳ -:○")
         table = agents.tableLines(self.found)
-        self.assertTrue(table[0].startswith("waiting: input needed  D3   SK-0041"))
-        self.assertTrue(table[1].startswith("busy                   D4   CIAM-12"))
-        self.assertTrue(table[2].startswith("idle                   -    -          skuld"))
+        self.assertTrue(table[0].startswith("waiting: input needed  SK-0041"))
+        self.assertTrue(table[1].startswith("busy                   CIAM-12"))
+        self.assertTrue(table[2].startswith("idle                   -              skuld"))
+
+    def test_a_session_in_an_unlisted_issues_worktree_keeps_its_key_in_the_status_line(self):
+        found = place(session("/p/a.worktrees/CIAM-9", "busy"), session("/p/a.worktrees/SK-0041", "waiting"), session("/p/skuld"))
+        self.assertEqual(agents.statusLine(found), "SK-0041:⏳ -:○ -(CIAM-9):●")
+
+    def test_a_session_in_an_unlisted_issues_worktree_keeps_its_key_in_the_table(self):
+        found = agents.placeSessions([session("/p/a.worktrees/CIAM-9", "busy")], [], lambda w, k: False)
+        self.assertTrue(agents.tableLines(found)[0].startswith("busy                   - (CIAM-9)     CIAM-9"))
 
     def test_no_session_says_so(self):
         self.assertEqual(agents.statusLine([]), "no Claude")
@@ -317,10 +430,10 @@ class ShowingTests(unittest.TestCase):
         def titleOf(key):
             if key == "CIAM-12":
                 raise RuntimeError("CIAM-12 is unknown on this Mac")
-            return "SlotBar pulses"
+            return "Issues view colours"
 
         titled = agents.withTitles(self.found, titleOf)
-        self.assertEqual([a.title for a in titled], ["SlotBar pulses", "", ""])
+        self.assertEqual([a.title for a in titled], ["Issues view colours", "", ""])
 
 
 class PlanAgentsTests(unittest.TestCase):
@@ -333,23 +446,24 @@ class PlanAgentsTests(unittest.TestCase):
             cli.main(["agents", *args])
         return out.getvalue()
 
-    def test_json_lists_each_sessions_key_desktop_state_and_title(self):
+    def test_json_lists_each_sessions_key_state_and_title_and_no_desktop(self):
         rows = json.loads(self.run_plan("--json"))
-        picked = [{k: row[k] for k in ("key", "desktop", "state", "title")} for row in rows]
+        picked = [{k: row[k] for k in ("key", "issue", "state", "title")} for row in rows]
         self.assertEqual(
             picked,
             [
-                {"key": "SK-0041", "desktop": "3", "state": "waiting", "title": "title of SK-0041"},
-                {"key": "CIAM-12", "desktop": "4", "state": "idle", "title": "title of CIAM-12"},
+                {"key": "SK-0041", "issue": "SK-0041", "state": "waiting", "title": "title of SK-0041"},
+                {"key": "CIAM-12", "issue": "CIAM-12", "state": "idle", "title": "title of CIAM-12"},
             ],
         )
+        self.assertFalse(any("desktop" in row for row in rows))
 
     def test_list_is_the_default(self):
         self.assertEqual(self.run_plan(), self.run_plan("list"))
         self.assertIn("title of SK-0041", self.run_plan())
 
     def test_status_is_one_line(self):
-        self.assertEqual(self.run_plan("status"), "D3:⏳ D4:○\n")
+        self.assertEqual(self.run_plan("status"), "CIAM-12:○ SK-0041:⏳\n")
 
     def test_an_unknown_subcommand_shows_the_usage(self):
         with self.assertRaisesRegex(RuntimeError, "usage: plan agents"):

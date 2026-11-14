@@ -825,7 +825,7 @@ class PrDone(unittest.TestCase):
     def test_merged_pr_tells_to_run_plan_done_unprefixed_branch(self):
         # L2: pr.sh's key-from-branch sed required a <prefix>/ segment before KEY-slug; a bare
         # CIAM-9-x branch (no feat/, fix/, chore/, ...) must resolve its key the same way
-        # lib/start.py's issueBranch() and jira.py's KEY_RE already treat an unprefixed branch.
+        # lib/start.py's issueBranch() and lib/issuekeys.py's ISSUE_KEY_PATTERN already treat an unprefixed branch.
         with tempfile.TemporaryDirectory() as d:
             outer = Path(d)
             root = outer / "repo"

@@ -1,9 +1,9 @@
 # jira-plan — repo instructions
 
 **Jira Plan** plans work in Jira Cloud (project CIAM, https://cryoport.atlassian.net — see
-GUIDE.md), with a VS Code front end (`plan/`, opening one VS Code window per issue on its own macOS
-Desktop) that starts, ships and finishes each issue. It does not use GitHub Issues; pull requests
-are its one GitHub integration. Nothing is inherited from a parent directory's `CLAUDE.md` or
+GUIDE.md), with a VS Code front end (`plan/`, with one VS Code window for all issues) that starts,
+ships and finishes each issue. It does not use GitHub Issues; pull requests are its one GitHub
+integration. Nothing is inherited from a parent directory's `CLAUDE.md` or
 settings: what this repo needs is here or in `.claude/`.
 
 ## Read before
@@ -31,7 +31,7 @@ settings: what this repo needs is here or in `.claude/`.
 - **Review:** GitHub Copilot reviews each PR. `pr` asks it again whenever a push adds commits.
 - **Browser checks:** a test script in Chrome or Chromium, run with the suite. The
   `chrome-devtools` MCP server (Chrome, `--isolated`) is for investigating an issue, never for
-  checking a change, and never drives an issue window's integrated browser.
+  checking a change, and never drives the plan window's integrated browser.
 - **Python:** `python3` on PATH. `/usr/bin/python3` is 3.9 and can't run the skill scripts.
 - **An issue's work:** Start, Ship and Done, run from `plan`'s Next up list.
 - **An issue's body:** `jira-get /rest/api/3/issue/<KEY>`, or `?expand=changelog` for its history.

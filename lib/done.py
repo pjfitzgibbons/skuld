@@ -31,7 +31,7 @@ from .start import (
     worktrees,
 )
 from .ship import prLink, unsentIn
-from . import term
+from . import pulses, term
 
 # The status categories Done accepts: "indeterminate" (In Progress) and "done", either of which a
 # merge's comment or an earlier Done's cleanup may still have work left to do under. "new" (To Do)
@@ -229,7 +229,7 @@ def checkMerged(dir, pr, removing, disposable):
 # FIRST here, and the PR lookup (prFromBranch) moves after it, inside finishIn, once a branch name
 # is in hand. If no worktree and no branch for the key can be found at all, there is nothing to
 # resolve a PR from, and finish() must refuse rather than guess at a branch name.
-def finish(jira, checkouts, key, view=None, disposable=None, typeMap=None, slotsFile=None, cwd=None, pickRepo=None, workspaceDir=None):
+def finish(jira, checkouts, key, view=None, disposable=None, typeMap=None, issuesFile=None, cwd=None, pickRepo=None, workspaceDir=None, pulsesFile=None):
     if view is None:
         view = prFromBranch
     if disposable is None:
@@ -260,7 +260,7 @@ def finish(jira, checkouts, key, view=None, disposable=None, typeMap=None, slots
     release = lock(common, key, "Done")
     result = {"dir": None, "notes": []}
     try:
-        finishIn(jira, key, project, checkout, common, pr, found, porcelain, result, disposable, typeMap, slotsFile, workspaceDir)
+        finishIn(jira, key, project, checkout, common, pr, found, porcelain, result, disposable, typeMap, issuesFile, workspaceDir, pulsesFile)
         return result
     except Exception as error:
         error.result = result
@@ -288,6 +288,17 @@ def branchForKey(checkout, key, typeMap=None):
     return refs("refs/heads") or refs("refs/remotes/origin")
 
 
+# Runs one of Done's last writes. A write that fails is a warning naming what to do by hand, not a
+# failure: the branch and worktree are already gone, so the remaining steps still run. None when it worked.
+def unwritten(name, byHand, write):
+    try:
+        with term.step(name, byHand):
+            write()
+    except RuntimeError as error:
+        return f"Warning: {error}"
+    return None
+
+
 # The issue's worktree path: the one Done resolved, where Start and Open wrote the legacy workspace
 # file beside it, else the one Start would make.
 def issueWorktreePath(resolved, checkout, key):
@@ -296,7 +307,7 @@ def issueWorktreePath(resolved, checkout, key):
     return worktreeDir(checkout, key)
 
 
-def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result, disposable, typeMap=None, slotsFile=None, workspaceDir=None):
+def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result, disposable, typeMap=None, issuesFile=None, workspaceDir=None, pulsesFile=None):
     if typeMap is None:
         typeMap = DEFAULT_TYPE_MAP
     notes = result["notes"]
@@ -472,9 +483,20 @@ def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result,
         notes.append(f"Added the note to {key}.")
     notes.append(jira.closeNote(key))
 
-    # Rule 4: the issue is finished, so its workspace slot (if any) is freed, the same way
-    # Start/Open label it (term.writeSlot). Done opens no browser -- only
-    # the "Close KEY in Jira" note above, once, ever points Peter at the issue.
-    term.removeSlot(key, slotsFile)
-    # The issue window's workspace file is a throwaway: one that won't delete is a warning, not a failure.
-    notes.extend(term.removeWorkspaceFiles(key, issueWorktreePath(resolved, checkout, key), workspaceDir))
+    # Rule 4: the issue is finished, so it leaves the issues file that Start/Open added it to
+    # (term.addIssue), its colour leaves the pulses file, and its worktree's folder leaves the plan
+    # workspace (term.addFolders); the store's folder stays for the other issues. Done opens no
+    # browser -- only the "Close KEY in Jira" note above, once, ever points Peter at the issue.
+    worktree = issueWorktreePath(resolved, checkout, key)
+    settings = term.planSettings(issuesFile, pulsesFile, workspaceDir)
+    planWorkspace = term.planWorkspacePath(workspaceDir)
+    notes.extend(filter(None, [
+        unwritten(f"removing {key} from the issues file", f"Delete the {key} line from {term.resolveIssuesFile(issuesFile)}.",
+                  lambda: term.removeIssue(key, issuesFile)),
+        unwritten(f"clearing {key}'s colour", f"Run `plan pulse {key} off`.",
+                  lambda: pulses.clearPulse(key, pulsesFile)),
+        unwritten(f"removing {key}'s folder from the plan workspace", f"Remove {worktree} from the folders in {planWorkspace}.",
+                  lambda: term.removeFolder(worktree, planWorkspace, settings)),
+    ]))
+    # The issue's workspace file is a throwaway: one that won't delete is a warning, not a failure.
+    notes.extend(term.removeWorkspaceFiles(key, worktree, workspaceDir))

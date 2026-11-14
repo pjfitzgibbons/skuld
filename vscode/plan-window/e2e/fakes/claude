@@ -1,0 +1,34 @@
+#!/bin/bash
+# Stands in for Claude in the e2e suite. Shows in its terminal, one labelled line each, what it was
+# started with: the issue key, each argument (the prompt, or --continue), CLAUDE_CONFIG_DIR and any
+# other CLAUDE* variable. It appends the same as one tab-separated line to claude.log in the run's
+# fixture directory, which the specs read (fixture.claudeStarts). Then it stays open like a Claude
+# waiting for input.
+set -u
+others=$(env | sed -n 's/^\(CLAUDE[A-Za-z0-9_]*\)=.*/\1/p' | grep -vx CLAUDE_CONFIG_DIR | sort | paste -sd, -)
+args=""
+for arg in "$@"; do args="$args [$arg]"; done
+
+printf 'key=%s\targs=%s\tconfig_dir=%s\tother_claude_variables=%s\n' \
+  "${PLAN_KEY-}" "${args# }" "${CLAUDE_CONFIG_DIR-unset}" "${others:-none}" >>"$PLAN_E2E_ROOT/claude.log"
+
+echo "fake Claude started"
+echo "  issue key (PLAN_KEY):    ${PLAN_KEY-unset}"
+if [ $# -eq 0 ]; then
+  echo "  arguments:               none"
+fi
+for arg in "$@"; do
+  if [ "$arg" = "--continue" ]; then
+    echo "  argument:                --continue (resumes the worktree's conversation)"
+  else
+    echo "  argument (the prompt):   \"$arg\""
+  fi
+done
+echo "  CLAUDE_CONFIG_DIR:       ${CLAUDE_CONFIG_DIR-unset}"
+if [ -z "$others" ]; then
+  echo "  other CLAUDE* variables: none"
+else
+  echo "  other CLAUDE* variables:"
+  echo "$others" | tr , '\n' | sed 's/^/    /'
+fi
+exec sleep 600

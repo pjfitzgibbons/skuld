@@ -19,7 +19,7 @@ import unittest
 from unittest import mock
 
 from lib import done as done_mod
-from lib import term
+from lib import pulses, term
 from lib.done import DISPOSABLE, branchForKey, doneNote, finish
 from lib.start import worktreeDir
 
@@ -199,8 +199,20 @@ class DoneNoteTests(unittest.TestCase):
 
 
 class FinishTests(unittest.TestCase):
+    # Every file finish() keeps outside the repo defaults to a temp folder, so no test reads or
+    # writes the real ~/.cache/plan.
     def setUp(self):
         self._dirs = []
+        self.cache = tempfile.mkdtemp(prefix="skuld-done-cache-")
+        self._dirs.append(self.cache)
+        for name, value in (
+            ("DEFAULT_ISSUES_FILE", os.path.join(self.cache, "issues")),
+            ("DEFAULT_WORKSPACE_DIR", os.path.join(self.cache, "code-workspaces")),
+            ("DEFAULT_PULSES_FILE", os.path.join(self.cache, "pulses")),
+        ):
+            patch = mock.patch.object(term, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
 
     def tearDown(self):
         for d in self._dirs:
@@ -225,6 +237,64 @@ class FinishTests(unittest.TestCase):
         self.assertRegex(jira.comments[0][1]["text"], r"Done: \[origin#1\]")
         self.assertTrue(any(f"Close {KEY} in Jira" in n for n in result["notes"]))
         self.assertTrue(any(f"Close {KEY} in Jira: https://cryoport.atlassian.net/browse/{KEY}" in n for n in result["notes"]))
+
+    def test_takes_the_issue_out_of_the_issues_pulses_and_plan_workspace_files(self):
+        s = self.sandbox()
+        planWorkspace = term.planWorkspacePath()
+        term.addIssue("SK-0041")
+        term.addIssue(KEY)
+        pulses.setPulse(KEY, "green")
+        pulses.setPulse("SK-0041", "orange")
+        term.addFolders(["/w/SK-0041"], planWorkspace, {})
+        term.addFolders([s["dir"]], planWorkspace, {})
+        finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        self.assertEqual(term.issueKeys(), ["SK-0041"])
+        self.assertEqual(pulses.readPulses(), {"SK-0041": "orange"})
+        self.assertEqual(term.readPlanWorkspace(planWorkspace)["folders"], [{"path": "/w/SK-0041"}])
+
+    def test_the_store_folder_stays(self):
+        s = self.sandbox()
+        planWorkspace = term.planWorkspacePath()
+        term.addFolders([s["dir"], "/issues"], planWorkspace, {})
+        finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        self.assertEqual(term.readPlanWorkspace(planWorkspace)["folders"], [{"path": "/issues"}])
+
+    def test_an_issue_the_files_dont_list_leaves_them_unwritten(self):
+        s = self.sandbox()
+        term.addIssue("SK-0041")
+        before = os.stat(term.resolveIssuesFile()).st_mtime_ns
+        finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        self.assertEqual(os.stat(term.resolveIssuesFile()).st_mtime_ns, before)
+        self.assertFalse(os.path.exists(term.resolvePulsesFile()))
+        self.assertFalse(os.path.exists(term.planWorkspacePath()))
+
+    def test_the_plan_workspace_in_a_configured_workspace_folder_loses_the_folder(self):
+        s = self.sandbox()
+        workspaceDir = os.path.join(s["root"], "ws")
+        planWorkspace = term.planWorkspacePath(workspaceDir)
+        term.addFolders([s["dir"]], planWorkspace, {})
+        finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"], workspaceDir=workspaceDir)
+        self.assertEqual(term.readPlanWorkspace(planWorkspace)["folders"], [])
+
+    def test_a_failing_last_write_warns_what_to_do_by_hand_and_done_still_finishes(self):
+        s = self.sandbox()
+        planWorkspace = term.planWorkspacePath()
+        term.addIssue(KEY)
+        pulses.setPulse(KEY, "green")
+        term.addFolders([s["dir"]], planWorkspace, {})
+        with open(planWorkspace, "w") as f:
+            f.write('{\n  // mine\n  "folders": [],\n}\n')  # JSONC: the plan workspace can't be read
+        with mock.patch.object(term, "removeIssue", side_effect=OSError("disk full")):
+            result = finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        warnings = [n for n in result["notes"] if n.startswith("Warning:")]
+        self.assertEqual(len(warnings), 2)
+        self.assertIn(f"removing {KEY} from the issues file failed: disk full", warnings[0])
+        self.assertIn("Delete the", warnings[0])
+        self.assertIn("could not be read", warnings[1])
+        self.assertIn(f"Remove {os.path.realpath(s['dir'])} from the folders in", warnings[1])
+        self.assertEqual(pulses.readPulses(), {})  # the step between the two failures still ran
+        self.assertFalse(os.path.exists(s["dir"]))
+        self.assertTrue(any(f"Close {KEY} in Jira" in n for n in result["notes"]))
 
     def test_deletes_the_issue_windows_workspace_files(self):
         s = self.sandbox()

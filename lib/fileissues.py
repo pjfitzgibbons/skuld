@@ -19,7 +19,8 @@ import re
 from datetime import date
 from pathlib import Path
 
-from .jira import KEY_RE, projectOf, textComment as _adfTextComment
+from .issuekeys import KEY_RE, projectOf
+from .jira import textComment as _adfTextComment
 
 # The one project this module serves. projectOf("SK-0003") == PROJECT routes a key here instead of
 # to Jira.

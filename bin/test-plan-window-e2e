@@ -1,0 +1,18 @@
+#!/bin/bash
+# Runs the plan window's end-to-end suite (vscode/plan-window/e2e): a real VS Code, with the plan
+# window extension loaded, driven through WebdriverIO. The first run downloads VS Code into
+# vscode/plan-window/e2e/.wdio-vscode-service.
+#   bin/test-plan-window-e2e            run every spec
+#   bin/test-plan-window-e2e --watch    pause after each step and print it, to follow the window
+#   bin/test-plan-window-e2e --spec e2e/specs/open-issue.e2e.js   other arguments go to wdio
+set -euo pipefail
+root=$(cd "$(dirname "$(realpath "$0")")/.." && pwd)
+cd "$root/vscode/plan-window/e2e"
+
+args=()
+for arg in "$@"; do
+  if [ "$arg" = "--watch" ]; then export E2E_WATCH=1; else args+=("$arg"); fi
+done
+
+[ -d node_modules ] || npm ci
+npm run e2e -- ${args[@]+"${args[@]}"}

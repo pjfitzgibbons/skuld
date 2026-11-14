@@ -13,11 +13,11 @@ set -eu
 
 kind=${1:?usage: ghbody.sh pr-create|pr-edit [KEY]}
 root=$(git rev-parse --show-toplevel)
-# L2: the prefix segment is optional, matching issueBranch() (lib/start.py) and jira.py's KEY_RE,
+# L2: the prefix segment is optional, matching issueBranch() (lib/start.py) and lib/issuekeys.py's ISSUE_KEY_PATTERN,
 # so a bare KEY-slug branch (no prefix) still resolves its key.
-key=${2:-$(git branch --show-current | sed -nE 's,^([^/]+/)?([A-Z][A-Z0-9]+-[0-9]+)-.*,\2,p')}
+key=${2:-$(git branch --show-current | sed -nE 's,^([^/]+/)?([A-Z]+-[0-9]+)-.*,\2,p')}
 [ -n "$key" ] || { echo "ghbody: no Jira key given and none in the branch name" >&2; exit 2; }
-printf '%s' "$key" | grep -qE '^[A-Z][A-Z0-9]+-[0-9]+$' ||
+printf '%s' "$key" | grep -qE '^[A-Z]+-[0-9]+$' ||
   { echo "ghbody: '$key' is not a Jira key; the body is .tmp/KEY/pr-body.md" >&2; exit 2; }
 
 case $kind in
@@ -34,7 +34,7 @@ esac
 # names a Jira key.
 # https://support.atlassian.com/jira-software-cloud/docs/process-issues-with-smart-commits/
 is_smart_commit_line() {
-  printf '%s\n' "$1" | grep -qE '[A-Z][A-Z0-9]+-[0-9]+' &&
+  printf '%s\n' "$1" | grep -qE '[A-Z]+-[0-9]+' &&
     printf '%s\n' "$1" | grep -qE '(^|[[:space:]])#[A-Za-z]'
 }
 

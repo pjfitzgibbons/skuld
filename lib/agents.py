@@ -1,14 +1,15 @@
-# The Claude status engine: which Claude session is on which issue's Desktop, in what state, and the
-# SlotBar pulse each Desktop should show. `plan agents` (lib/cli.py) lists the sessions, and its
-# LaunchAgent runs `plan agents tick --watch` to keep each Desktop pulsed (architecture §6.3, §7.1).
+# The Claude status engine: which Claude session is on which issue, in what state, and the colour
+# each issue's item in the Issues view should show (the pulses file, lib/pulses.py). `plan agents` (lib/cli.py) lists the sessions, and its
+# LaunchAgent runs `plan agents tick --watch` to keep each issue pulsed (architecture §6.3, §7.1).
 #
-# It reads `claude agents --json`, the slots file, git, the waiting markers Claude Code's hooks
-# keep (lib/waiting.py), once a minute each slotted issue's PR (lib/reviews.py), and, for a
+# It reads `claude agents --json`, the issues file, git, the waiting markers Claude Code's hooks
+# keep (lib/waiting.py), once a minute each listed issue's PR (lib/reviews.py), and, for a
 # listing's titles only, the store or Jira. It never writes to an issue or a session; its only
-# output is pulses and its listing.
+# output is the pulses file and its listing.
 #
-# Placing a session and choosing its Desktop's colour are pure functions over plain dicts, so the
-# tests make sessions up; the few functions that call claude, git or SlotBar sit at the bottom.
+# Placing a session and choosing its issue's colour are pure functions over plain dicts, so the
+# tests make sessions up; the few functions that call claude, git or the pulses file sit at the
+# bottom.
 import json
 import os
 import re
@@ -17,18 +18,19 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 
-from . import reviews, slotbar, term, waiting
+from . import pulses, reviews, term, waiting
+from .issuekeys import ISSUE_KEY_PATTERN, KEY_RE
 from .start import expandHome, git, run
 
 DEFAULT_CLAUDE_COMMAND = "~/.local/bin/claude"
-NO_DESKTOP = "-"
+NO_ISSUE = "-"
 TICK_SECONDS = 3
 WAKE_CHECK_SECONDS = 0.25
 
 # A worktree plan made: <repo>.worktrees/<KEY>, and anything below it.
-WORKTREE = re.compile(r"^(?P<root>.*\.worktrees/(?P<key>[A-Z][A-Z0-9]*-[0-9]+))(?:/|$)")
+WORKTREE = re.compile(rf"^(?P<root>.*\.worktrees/(?P<key>{ISSUE_KEY_PATTERN}))(?:/|$)")
 
-# Most urgent first: the order of the listing, and which state a Desktop with two Claudes shows.
+# Most urgent first: the order of the listing, and which state an issue with two Claudes shows.
 URGENCY = ("waiting", "done", "busy", "blocked", "idle")
 PULSE_OF_STATE = {"waiting": "orange", "done": "green"}
 # A Copilot review waiting on an issue's PR asks for a person too, so it outranks done.
@@ -39,7 +41,7 @@ SYMBOLS = {"waiting": "⏳", "done": "◆", "busy": "●", "blocked": "■", "id
 @dataclass(frozen=True)
 class Agent:
     key: str  # "" when the session's cwd isn't in an issue's worktree
-    desktop: str  # NO_DESKTOP when the key has no slot
+    issue: str  # key while the issues file lists it, else NO_ISSUE
     state: str
     waitingFor: str
     name: str
@@ -55,11 +57,6 @@ class Agent:
 def worktreeOf(cwd):
     found = WORKTREE.match(cwd or "")
     return (found["root"], found["key"]) if found else ("", "")
-
-
-# {KEY: Desktop} from the slots file's (slot, key) pairs.
-def desktopsByKey(slotEntries):
-    return {key: slot for slot, key in slotEntries}
 
 
 # Claude's own word for the session: `status` for an interactive one, `state` for a background one.
@@ -78,12 +75,17 @@ def stateOf(session, worktree, key, reportIsFresh, marked=False):
     return "waiting" if marked else state
 
 
-def agentOf(session, desktops, reportIsFresh, waitingIds=frozenset()):
+# The issue a session is placed on: its worktree's key while the issues file lists it.
+def issueOf(key, listedKeys):
+    return key if key and key in listedKeys else NO_ISSUE
+
+
+def agentOf(session, listedKeys, reportIsFresh, waitingIds=frozenset()):
     worktree, key = worktreeOf(session.get("cwd"))
     marked = session.get("sessionId") in waitingIds
     return Agent(
         key=key,
-        desktop=desktops.get(key, NO_DESKTOP),
+        issue=issueOf(key, listedKeys),
         state=stateOf(session, worktree, key, reportIsFresh, marked),
         waitingFor=session.get("waitingFor", ""),
         name=session.get("name", ""),
@@ -101,74 +103,89 @@ def mostUrgentFirst(agents):
 
 
 # waitingIds: the session ids Claude Code's hooks marked waiting (lib/waiting.py).
-def placeSessions(sessions, slotEntries, reportIsFresh, waitingIds=frozenset()):
-    desktops = desktopsByKey(slotEntries)
-    return mostUrgentFirst(agentOf(session, desktops, reportIsFresh, waitingIds) for session in sessions)
+# listedKeys: the issues file's keys (term.issueKeys()).
+def placeSessions(sessions, listedKeys, reportIsFresh, waitingIds=frozenset()):
+    listed = frozenset(listedKeys)
+    return mostUrgentFirst(agentOf(session, listed, reportIsFresh, waitingIds) for session in sessions)
 
 
 # --- colouring ---
 
 
-# The pulse every slotted Desktop should show: orange when its issue's PR has a Copilot review
-# waiting (reviewedKeys), else its most urgent Claude's colour, or off when none of its Claudes
-# needs a person, or it has no Claude at all.
-def wantedPulses(agents, slotEntries, reviewedKeys=frozenset()):
-    wanted = {slot: "off" for slot, _ in slotEntries}
+# The pulse every listed issue should show: orange when its PR has a Copilot review waiting
+# (reviewedKeys), else its most urgent Claude's colour, or off when none of its Claudes needs a
+# person, or it has no Claude at all.
+def wantedPulses(agents, listedKeys, reviewedKeys=frozenset()):
+    wanted = {key: "off" for key in listedKeys}
     for agent in reversed(mostUrgentFirst(agents)):
-        if agent.desktop in wanted:
-            wanted[agent.desktop] = PULSE_OF_STATE.get(agent.state, "off")
-    for slot, key in slotEntries:
+        if agent.issue in wanted:
+            wanted[agent.issue] = PULSE_OF_STATE.get(agent.state, "off")
+    for key in listedKeys:
         if key in reviewedKeys:
-            wanted[slot] = PULSE_OF_REVIEW
+            wanted[key] = PULSE_OF_REVIEW
     return wanted
 
 
-# {KEY: worktree} for each issue on a Desktop with a Claude in its worktree: the PRs to check.
-def slottedWorktrees(agents):
-    return {agent.key: agent.worktree for agent in agents if agent.key and agent.desktop != NO_DESKTOP}
+# {KEY: worktree} for each listed issue with a Claude in its worktree: the PRs to check.
+def listedWorktrees(agents):
+    return {agent.issue: agent.worktree for agent in agents if agent.issue != NO_ISSUE}
 
 
-# The pulses a tick sends: each Desktop whose wanted colour differs from the one last sent, and off
-# for a Desktop last sent a colour that has since left the slots file (its issue is done).
+# The pulses a tick sends: each issue whose wanted colour differs from the one last sent, and off
+# for an issue last sent a colour that has since left the issues file (it is done). An issue with no
+# record counts as last sent off, since a missing line shows no colour: off for it sends nothing.
 def pulsesToSend(sent, wanted):
-    changed = {desktop: color for desktop, color in wanted.items() if sent.get(desktop) != color}
-    for desktop in leftTheSlots(sent, wanted):
-        changed[desktop] = "off"
+    changed = {key: color for key, color in wanted.items() if sent.get(key, "off") != color}
+    for key in leftTheIssuesFile(sent, wanted):
+        changed[key] = "off"
     return changed
 
 
-def leftTheSlots(sent, wanted):
-    return [desktop for desktop, color in sent.items() if desktop not in wanted and color != "off"]
+def leftTheIssuesFile(sent, wanted):
+    return [key for key, color in sent.items() if key not in wanted and color != "off"]
 
 
 # --- showing ---
 
 
-def desktopLabel(desktop):
-    return NO_DESKTOP if desktop == NO_DESKTOP else f"D{desktop}"
+# Issues by key, the unplaced (NO_ISSUE, with or without its worktree's key) last.
+def issueOrder(issue):
+    return (issue.startswith(NO_ISSUE), issue)
 
 
-def desktopOrder(desktop):
-    return (desktop == NO_DESKTOP, int(desktop) if desktop.isdigit() else 0)
-
-
-# One line: each Desktop and its Claudes' states as symbols, most urgent first; unplaced last.
+# One line: each issue and its Claudes' states as symbols, most urgent first; unplaced last.
 def statusLine(agents):
     marks = {}
     for agent in mostUrgentFirst(agents):
-        marks[agent.desktop] = marks.get(agent.desktop, "") + SYMBOLS.get(agent.state, "?")
-    shown = [f"{desktopLabel(desktop)}:{marks[desktop]}" for desktop in sorted(marks, key=desktopOrder)]
+        label = statusLabel(agent)
+        marks[label] = marks.get(label, "") + SYMBOLS.get(agent.state, "?")
+    shown = [f"{issue}:{marks[issue]}" for issue in sorted(marks, key=issueOrder)]
     return " ".join(shown) or "no Claude"
+
+
+# The issue in the status line: "-(CIAM-9)" for a session in an unlisted issue's worktree.
+def statusLabel(agent):
+    if agent.issue == NO_ISSUE and agent.key:
+        return f"{NO_ISSUE}({agent.key})"
+    return agent.issue
 
 
 def stateText(agent):
     return f"{agent.state}: {agent.waitingFor}" if agent.waitingFor else agent.state
 
 
+# The issue column: the issue, or for a session in an unlisted issue's worktree the key it is in,
+# as "- (CIAM-9)", so the key isn't lost.
+def issueText(agent):
+    if agent.issue == NO_ISSUE and agent.key:
+        return f"{NO_ISSUE} ({agent.key})"
+    return agent.issue
+
+
 # The table, one session a line, in the order given.
 def tableLines(agents):
     return [
-        f"{stateText(agent):<22} {desktopLabel(agent.desktop):<4} {agent.key or NO_DESKTOP:<10} "
+        f"{stateText(agent):<22} {issueText(agent):<14} "
         f"{(agent.title or os.path.basename(agent.cwd)):<60.60} {agent.name}".rstrip()
         for agent in agents
     ]
@@ -196,7 +213,7 @@ def quietly(lookup, key):
         return ""
 
 
-# --- the outside world: claude, git, SlotBar ---
+# --- the outside world: claude, git, the pulses file ---
 
 
 def readSessions(claudeCommand=None):
@@ -221,45 +238,105 @@ def reportIsFresh(worktree, key):
     return reportTime > lastCommit
 
 
-def currentAgents(slotsFile=None, claudeCommand=None, waitingDir=None):
+def currentAgents(issuesFile=None, claudeCommand=None, waitingDir=None):
     sessions = readSessions(claudeCommand)
-    return placeSessions(sessions, term.slotEntries(slotsFile), reportIsFresh, waiting.waitingSessions(waitingDir))
+    return placeSessions(sessions, term.issueKeys(issuesFile), reportIsFresh, waiting.waitingSessions(waitingDir))
 
 
-# Sends each pulse through SlotBar and returns (the record of what was sent, failure messages).
-# A failed pulse most often means SlotBar isn't running, and a SlotBar that restarts has lost every
-# tint, so any failure empties the record: the next tick sends every Desktop its pulse again.
+# What the record holds for a key whose last write failed: it matches no colour, so the next tick
+# writes the key again, whether its colour is wanted or it has left the issues file (off).
+UNSENT = "unsent"
+SENT_COLORS = ("orange", "green")
+
+
+# --- the sent record on disk: what the engine last wrote, kept across restarts ---
+#
+# <pulses file>.sent holds {KEY: colour} for each issue the engine last pulsed orange or green. A
+# colour a person cleared with a click has no line in the pulses file, so without this record a
+# restarted engine would see "wanted orange, nothing sent" and write it back; the design pulses an
+# issue again only when its own colour changes. An off or UNSENT key is not stored: both are
+# written again when wanted, and a key left out of the file reads as off.
+
+def sentFile(pulsesFile=None):
+    return f"{term.resolvePulsesFile(pulsesFile)}.sent"
+
+
+# The record to start from: the pulses file's colours, with the record on disk over them. With no
+# record on disk (or a damaged one) that is the pulses file alone.
+def loadSent(pulsesFile=None):
+    return {**pulses.readPulses(pulsesFile), **readSentFile(sentFile(pulsesFile))}
+
+
+def readSentFile(path):
+    try:
+        with open(path, "r", encoding="utf8") as f:
+            stored = json.load(f)
+    except (FileNotFoundError, ValueError):
+        return {}
+    if not isinstance(stored, dict):
+        return {}
+    return {key: color for key, color in stored.items() if KEY_RE.match(key) and color in SENT_COLORS}
+
+
+def storable(record):
+    return {key: color for key, color in record.items() if color in SENT_COLORS}
+
+
+def saveSent(record, pulsesFile=None):
+    path = sentFile(pulsesFile)
+    with term.locked(path):
+        term.writeAtomically(path, json.dumps(storable(record), indent=2, sort_keys=True) + "\n")
+
+
+# Writes each pulse and returns (the record of what was written, failure messages). A key whose
+# write failed is recorded UNSENT; every other key keeps its record, so a colour cleared in the
+# Issues view since it was written isn't written back.
 def sendPulses(sent, toSend, pulse):
     record = dict(sent)
     failures = []
-    for desktop, color in toSend.items():
+    for key, color in toSend.items():
         try:
-            pulse(desktop, color)
-            record[desktop] = color
-        except RuntimeError as error:
+            pulse(key, color)
+            record[key] = color
+        except (RuntimeError, OSError) as error:
+            record[key] = UNSENT
             failures.append(str(error))
-    return ({} if failures else record), failures
+    return record, failures
 
 
-# One tick: read the sessions and slots, and pulse each Desktop whose colour changed since `sent`.
-# Reads no store or Jira, since it runs every few seconds. Returns (new record, failure messages).
-def tick(sent, slotsFile=None, claudeCommand=None, pulseCommand=None, waitingDir=None, reviewedKeys=frozenset()):
-    entries = term.slotEntries(slotsFile)
+# One tick: read the sessions and the issues file, and write each issue whose colour changed since
+# `sent` to the pulses file. Reads no store or Jira, since it runs every few seconds. Returns (new
+# record, failure messages).
+def tick(sent, issuesFile=None, pulsesFile=None, claudeCommand=None, waitingDir=None, reviewedKeys=frozenset()):
+    listedKeys = term.issueKeys(issuesFile)
     try:
-        agents = placeSessions(readSessions(claudeCommand), entries, reportIsFresh, waiting.waitingSessions(waitingDir))
+        agents = placeSessions(readSessions(claudeCommand), listedKeys, reportIsFresh, waiting.waitingSessions(waitingDir))
     except RuntimeError as error:
         return sent, [str(error)]
-    toSend = pulsesToSend(sent, wantedPulses(agents, entries, reviewedKeys))
-    return sendPulses(sent, toSend, lambda desktop, color: slotbar.pulseDesktop(desktop, color, pulseCommand))
+    toSend = pulsesToSend(sent, wantedPulses(agents, listedKeys, reviewedKeys))
+    return sendPulses(sent, toSend, lambda key, color: pulses.setPulse(key, color, pulsesFile))
 
 
-# The pulses one tick sent: each Desktop whose recorded colour changed from `before` to `after`.
+# tick(), then saves the record when the tick changed what is stored. A save that fails is a
+# failure message, never a crash: the engine runs on, and the next tick that changes it saves again.
+def rememberingTick(sent, issuesFile=None, pulsesFile=None, claudeCommand=None, waitingDir=None, reviewedKeys=frozenset()):
+    record, failures = tick(sent, issuesFile, pulsesFile, claudeCommand, waitingDir, reviewedKeys)
+    if storable(record) == storable(sent):
+        return record, failures
+    try:
+        saveSent(record, pulsesFile)
+    except OSError as error:
+        failures = [*failures, f"couldn't save {sentFile(pulsesFile)}: {error.strerror or error}"]
+    return record, failures
+
+
+# The pulses one tick wrote: each issue whose recorded colour changed from `before` to `after`.
 def pulsesSent(before, after):
-    return {desktop: color for desktop, color in after.items() if before.get(desktop) != color}
+    return {key: color for key, color in after.items() if before.get(key) != color and color != UNSENT}
 
 
-def pulseLine(pulses):
-    return "pulsed " + ", ".join(f"D{desktop} {color}" for desktop, color in sorted(pulses.items()))
+def pulseLine(written):
+    return "pulsed " + ", ".join(f"{key} {color}" for key, color in sorted(written.items()))
 
 
 def log(message):
@@ -267,7 +344,7 @@ def log(message):
 
 
 # Sleeps up to `seconds`, waking early when a hook writes or removes a waiting marker, so a Claude
-# that stops for a person turns its Desktop orange within a fraction of a second.
+# that stops for a person turns its issue orange within a fraction of a second.
 def sleepUntilMarkersChange(seconds, waitingDir=None):
     stamp = waiting.changeStamp(waitingDir)
     deadline = time.monotonic() + seconds
@@ -279,12 +356,12 @@ def sleepUntilMarkersChange(seconds, waitingDir=None):
 
 # The keys whose PR has a Copilot review waiting, read afresh; `previous` when the sessions can't
 # be read, so a failing `claude` doesn't clear a review's colour.
-def checkReviews(previous, slotsFile=None, claudeCommand=None, readPr=reviews.readPr):
+def checkReviews(previous, issuesFile=None, claudeCommand=None, readPr=reviews.readPr):
     try:
-        agents = currentAgents(slotsFile, claudeCommand)
+        agents = currentAgents(issuesFile, claudeCommand)
     except RuntimeError:
         return previous
-    return reviews.reviewedKeys(slottedWorktrees(agents), readPr)
+    return reviews.reviewedKeys(listedWorktrees(agents), readPr)
 
 
 def reviewLine(keys):
@@ -292,8 +369,8 @@ def reviewLine(keys):
 
 
 # checkReviews, logging each key whose review has just started waiting.
-def refreshReviews(reviewed, slotsFile=None, claudeCommand=None):
-    fresh = checkReviews(reviewed, slotsFile, claudeCommand)
+def refreshReviews(reviewed, issuesFile=None, claudeCommand=None):
+    fresh = checkReviews(reviewed, issuesFile, claudeCommand)
     if fresh - reviewed:
         log(reviewLine(fresh - reviewed))
     return fresh
@@ -302,12 +379,12 @@ def refreshReviews(reviewed, slotsFile=None, claudeCommand=None):
 # The keys whose PR has a Copilot review waiting, as the last finished check found them. Its own
 # thread checks once a minute, so a slow or stalled `gh` or `claude` never holds up a tick.
 class ReviewSnapshot:
-    def __init__(self, slotsFile=None, claudeCommand=None):
-        self.slotsFile, self.claudeCommand = slotsFile, claudeCommand
+    def __init__(self, issuesFile=None, claudeCommand=None):
+        self.issuesFile, self.claudeCommand = issuesFile, claudeCommand
         self.keys = frozenset()
 
     def refresh(self):
-        self.keys = refreshReviews(self.keys, self.slotsFile, self.claudeCommand)
+        self.keys = refreshReviews(self.keys, self.issuesFile, self.claudeCommand)
 
     def refreshForever(self, every=reviews.REVIEW_CHECK_SECONDS):
         while True:
@@ -319,28 +396,22 @@ class ReviewSnapshot:
         return self
 
 
-# The record to tick from: empty once SlotBar's process has changed (slotbar.runningId()), since a
-# restarted SlotBar has no tints and every Desktop must be sent again; otherwise `sent` as it is.
-def recordFor(sent, lastSlotBar, slotBar):
-    return sent if slotBar == lastSlotBar else {}
-
-
 # The LaunchAgent's loop: a tick every few seconds, or as soon as a waiting marker changes, and a
-# look at each slotted issue's PR once a minute on a thread of its own. Its log (stderr) gets a line when it starts, one
+# look at each listed issue's PR once a minute on a thread of its own. Its log (stderr) gets a line when it starts, one
 # when a Copilot review starts waiting, one for each tick that sends a pulse, and a failure only
-# when it differs from the last one, so a quiet Desktop or a SlotBar that stays quit adds nothing.
-def watch(slotsFile=None, claudeCommand=None, pulseCommand=None, every=TICK_SECONDS):
+# when it differs from the last one, so a quiet issue or a failure that persists adds nothing. It
+# starts from the sent record on disk over the pulses file's colours (loadSent), so a line left for
+# an issue no longer listed is removed and a colour a person cleared isn't written back.
+def watch(issuesFile=None, pulsesFile=None, claudeCommand=None, every=TICK_SECONDS):
     log(f"watching, a tick every {every}s, PRs every {reviews.REVIEW_CHECK_SECONDS}s")
-    sent, lastFailures, lastSlotBar = {}, [], slotbar.runningId()
-    reviewed = ReviewSnapshot(slotsFile, claudeCommand).startInBackground()
+    sent, lastFailures = loadSent(pulsesFile), []
+    reviewed = ReviewSnapshot(issuesFile, claudeCommand).startInBackground()
     while True:
-        slotBar = slotbar.runningId()
-        sent, lastSlotBar = recordFor(sent, lastSlotBar, slotBar), slotBar
         before = sent
-        sent, failures = tick(sent, slotsFile, claudeCommand, pulseCommand, reviewedKeys=reviewed.keys)
-        pulses = pulsesSent(before, sent)
-        if pulses:
-            log(pulseLine(pulses))
+        sent, failures = rememberingTick(sent, issuesFile, pulsesFile, claudeCommand, reviewedKeys=reviewed.keys)
+        written = pulsesSent(before, sent)
+        if written:
+            log(pulseLine(written))
         if failures and failures != lastFailures:
             log("; ".join(failures))
         lastFailures = failures
