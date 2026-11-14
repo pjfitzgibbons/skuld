@@ -115,7 +115,7 @@ test("the pulses file gives each listed key its colour; a half-written or foreig
 test("each item is labelled with its key, coloured from the pulses, and marked when its Claude is open", () => {
   const items = windowPlan.issueItems(["SK-1", "SK-2", "SK-3"], { "SK-1": "orange", "SK-2": "green", "SK-9": "green" }, ["SK-3"]);
   assert.deepEqual(items, [
-    { key: "SK-1", pulse: "orange", icon: "bell-dot", themeColor: "charts.orange", isOpen: false },
+    { key: "SK-1", pulse: "orange", iconFile: "media/waiting.svg", isOpen: false },
     { key: "SK-2", pulse: "green", icon: "pass-filled", themeColor: "charts.green", isOpen: false },
     { key: "SK-3", pulse: "off", icon: "circle-outline", themeColor: null, isOpen: true },
   ]);
@@ -257,4 +257,29 @@ test("the Claude terminal keeps CLAUDE_CONFIG_DIR, so the conversation check and
     windowPlan.claudeProjectDir(plan.worktree, terminalEnv, "/Users/p"),
     windowPlan.claudeProjectDir(plan.worktree, inherited, "/Users/p"),
   );
+});
+
+test("a key needs two or more leading letters or digits, as lib/jira.py KEY_RE", () => {
+  assert.deepEqual(windowPlan.parseIssueKeys("A-1\nSK-9\nCIAM-12\nS2-3"), ["SK-9", "CIAM-12", "S2-3"]);
+});
+
+test("a terminal name uses the same key rule", () => {
+  const terminals = [{ name: "Claude A-1" }, { name: "Claude SK-9" }];
+  assert.deepEqual(windowPlan.keysWithClaude(terminals), ["SK-9"]);
+});
+
+test("only a key with a pulse line is cleared on click", () => {
+  const pulses = windowPlan.parsePulses("SK-1=orange\n");
+  assert.equal(windowPlan.hasPulse(pulses, "SK-1"), true);
+  assert.equal(windowPlan.hasPulse(pulses, "SK-2"), false);
+  assert.equal(windowPlan.hasPulse(pulses, "constructor"), false);
+});
+
+test("the plan window is the one whose workspace file is plan.code-workspace in workspaceDir", () => {
+  const dir = "~/.cache/plan/code-workspaces";
+  assert.equal(windowPlan.isPlanWindow("/h/.cache/plan/code-workspaces/plan.code-workspace", dir, "/h"), true);
+  assert.equal(windowPlan.isPlanWindow("/h/.cache/plan/code-workspaces/../code-workspaces/plan.code-workspace", dir, "/h"), true);
+  assert.equal(windowPlan.isPlanWindow("/h/.cache/plan/code-workspaces/SK-9.code-workspace", dir, "/h"), false);
+  assert.equal(windowPlan.isPlanWindow("/elsewhere/plan.code-workspace", dir, "/h"), false);
+  assert.equal(windowPlan.isPlanWindow(undefined, dir, "/h"), false);
 });

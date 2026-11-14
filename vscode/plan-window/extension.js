@@ -1,4 +1,7 @@
-// The plan window: one VS Code window for every issue. Its Issues view in the Explorer shows one
+// The plan window: one VS Code window for every issue, and the only window this extension acts in.
+// Every window loads it, but only the window on <plan.workspaceDir>/plan.code-workspace gets the
+// Issues view (package.json's when: plan.isPlanWindow), the click command and the file watchers; in
+// any other window a link shows one message saying it is for the plan window. Its Issues view in the Explorer shows one
 // item per issue in plan's issues file, tinted from its pulses file and refreshed when either
 // changes; choosing an item, or a vscode://skuld.plan-window/open?key=<KEY> link, runs openIssue.
 // An issue that leaves the issues file leaves the view; its terminals stay until closed by hand,
@@ -13,12 +16,25 @@ const windowPlan = require("./plan");
 
 let refreshIssues = () => {};
 
+// Every VS Code window activates this extension, but only the plan window acts: elsewhere it
+// registers no view, command or watcher, and a link gets a message saying where it belongs.
 function activate(context) {
+  const isPlan = isPlanWindow();
+  vscode.commands.executeCommand("setContext", "plan.isPlanWindow", isPlan);
   context.subscriptions.push(vscode.window.registerUriHandler({ handleUri }));
-  registerIssuesView(context);
+  if (isPlan) registerIssuesView(context);
+}
+
+function isPlanWindow() {
+  const workspaceFile = vscode.workspace.workspaceFile;
+  return windowPlan.isPlanWindow(workspaceFile && workspaceFile.fsPath, planSetting("workspaceDir"));
 }
 
 async function handleUri(uri) {
+  if (!isPlanWindow()) {
+    vscode.window.showInformationMessage("plan window: this link is for the plan window.");
+    return;
+  }
   if (uri.path === "/browse") return openBrowseLink(uri.query);
   if (uri.path === "/open") return openOpenLink(uri.query);
   vscode.window.showErrorMessage(`plan window: unknown link ${uri.path}`);
@@ -58,7 +74,7 @@ async function openIssue(key) {
     await openTicketPage(plan);
     showShellTerminal(plan);
     showClaudeTerminal(plan);
-    clearPulse(key);
+    if (windowPlan.hasPulse(readPulses(), key)) clearPulse(key);
   } catch (error) {
     vscode.window.showErrorMessage(`plan window: ${error.message}`);
   }
@@ -141,7 +157,11 @@ function pulsesFile() {
 function registerIssuesView(context) {
   const changed = new vscode.EventEmitter();
   const view = vscode.window.createTreeView("plan.issues", {
-    treeDataProvider: { onDidChangeTreeData: changed.event, getChildren: issueTreeItems, getTreeItem: (item) => item },
+    treeDataProvider: {
+      onDidChangeTreeData: changed.event,
+      getChildren: () => issueTreeItems(context.extensionUri),
+      getTreeItem: (item) => item,
+    },
   });
   refreshIssues = () => {
     view.badge = pulsedBadge(readIssues());
@@ -175,19 +195,27 @@ function readIssueKeys() {
   return windowPlan.parseIssueKeys(windowPlan.readTextOrEmpty(issuesFile()));
 }
 
+function readPulses() {
+  return windowPlan.parsePulses(windowPlan.readTextOrEmpty(pulsesFile()));
+}
+
 function readIssues() {
-  const pulses = windowPlan.parsePulses(windowPlan.readTextOrEmpty(pulsesFile()));
-  return windowPlan.issueItems(readIssueKeys(), pulses, windowPlan.keysWithClaude(vscode.window.terminals));
+  return windowPlan.issueItems(readIssueKeys(), readPulses(), windowPlan.keysWithClaude(vscode.window.terminals));
 }
 
-function issueTreeItems() {
-  return readIssues().map(issueTreeItem);
+function issueTreeItems(extensionUri) {
+  return readIssues().map((issue) => issueTreeItem(issue, extensionUri));
 }
 
-function issueTreeItem(issue) {
-  const item = new vscode.TreeItem(issue.key);
+function issueIcon(issue, extensionUri) {
+  if (issue.iconFile) return vscode.Uri.joinPath(extensionUri, issue.iconFile);
   const tint = issue.themeColor ? new vscode.ThemeColor(issue.themeColor) : undefined;
-  item.iconPath = new vscode.ThemeIcon(issue.icon, tint);
+  return new vscode.ThemeIcon(issue.icon, tint);
+}
+
+function issueTreeItem(issue, extensionUri) {
+  const item = new vscode.TreeItem(issue.key);
+  item.iconPath = issueIcon(issue, extensionUri);
   item.description = issue.isOpen ? "open" : undefined;
   item.command = { command: "plan.openIssue", title: "Open issue", arguments: [issue.key] };
   return item;

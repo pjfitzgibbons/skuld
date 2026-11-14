@@ -4,6 +4,10 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
+// The one issue-key rule, lib/jira.py's KEY_RE: every key check here is built from it.
+const ISSUE_KEY_PATTERN = "[A-Z][A-Z0-9]+-[0-9]+";
+const ISSUE_KEY = new RegExp(`^${ISSUE_KEY_PATTERN}$`);
+
 // An issue: its plan.* settings, read from the issue's own workspace file (issueRecord), which
 // Start writes and nothing opens. A store issue has a ticket file; a Jira issue has none, and
 // ticketUrl, its Jira page, instead.
@@ -117,7 +121,7 @@ function ticketPageOptions(plan) {
   return page ? { url: page, reuseUrlFilter: page } : null;
 }
 
-const ISSUE_TERMINAL = /^(Claude|Shell) ([A-Z][A-Z0-9]*-[0-9]+)$/;
+const ISSUE_TERMINAL = new RegExp(`^(Claude|Shell) (${ISSUE_KEY_PATTERN})$`);
 
 // The issue a terminal was opened for, from its name ("Claude <KEY>" or "Shell <KEY>"), or null.
 function terminalIssue(terminal) {
@@ -192,7 +196,6 @@ function openRequest(query) {
 // workspace; each is read whole on every change, so a half-written one shows fewer items or
 // colours, never an error.
 
-const ISSUE_KEY = /^[A-Z][A-Z0-9]*-[0-9]+$/;
 const PULSE_COLORS = ["orange", "green"];
 
 function isIssueKey(text) {
@@ -222,9 +225,11 @@ function parsePulseLine(line) {
 }
 
 // A pulse is told apart by its icon as well as its colour (L7): orange is a Claude waiting on a
-// person or a review, green a fresh report. The colours are theme colour ids.
+// person or a review, green a fresh report. A codicon's colour is a theme colour id; orange is a
+// solid warning triangle, which no codicon is, so it is an SVG in the extension (iconFile, relative
+// to the extension's folder) that carries its own colour.
 const PULSE_LOOKS = {
-  orange: { icon: "bell-dot", themeColor: "charts.orange" },
+  orange: { iconFile: "media/waiting.svg" },
   green: { icon: "pass-filled", themeColor: "charts.green" },
   off: { icon: "circle-outline", themeColor: null },
 };
@@ -268,7 +273,26 @@ function clearPulseCommand(command, key) {
   return [command, ["pulse", key, "off"]];
 }
 
+// Whether `key` has a colour to clear: only a key with a line in the pulses file does, so a click
+// on an uncoloured issue runs no `plan pulse` at all.
+function hasPulse(pulses, key) {
+  return Object.hasOwn(pulses, key);
+}
+
+const PLAN_WORKSPACE_FILE = "plan.code-workspace";
+
+// Whether this window is the plan window (ADR 0004: one window holds every issue): the one whose
+// workspace file is <workspaceDir>/plan.code-workspace. workspaceFile is undefined in a window
+// with a folder or nothing open.
+function isPlanWindow(workspaceFile, workspaceDir, home = os.homedir()) {
+  if (!workspaceFile) return false;
+  const planFile = path.resolve(expandHome(workspaceDir, home), PLAN_WORKSPACE_FILE);
+  return path.resolve(workspaceFile) === planFile;
+}
+
 module.exports = {
+  hasPulse,
+  isPlanWindow,
   browseRequest,
   openRequest,
   readPlan,

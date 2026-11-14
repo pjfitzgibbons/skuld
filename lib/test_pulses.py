@@ -6,7 +6,7 @@ import threading
 import unittest
 from unittest import mock
 
-from lib import cli, pulses
+from lib import cli, pulses, term
 
 
 class PulseTests(unittest.TestCase):
@@ -24,6 +24,10 @@ class PulseTests(unittest.TestCase):
     def read(self):
         with open(self.pulsesFile) as f:
             return f.read()
+
+    def test_a_pulse_line_takes_the_same_keys_as_the_issues_file(self):
+        self.assertFalse(pulses.PULSE_LINE.match("C-1=orange"))
+        self.assertTrue(pulses.PULSE_LINE.match("C1-1=orange"))
 
     def test_a_pulse_writes_the_keys_colour(self):
         self.pulse("CIAM-12", "orange")
@@ -103,7 +107,7 @@ class PulseTests(unittest.TestCase):
         self.assertEqual(pulses.readPulses(self.pulsesFile), {key: "orange" for key in keys})
 
     def test_the_default_file_is_in_plans_cache(self):
-        self.assertEqual(pulses.DEFAULT_PULSES_FILE, "~/.cache/plan/pulses")
+        self.assertEqual(term.DEFAULT_PULSES_FILE, "~/.cache/plan/pulses")
 
 
 class PlanPulseTests(unittest.TestCase):

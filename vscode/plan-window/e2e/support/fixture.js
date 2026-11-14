@@ -8,7 +8,9 @@
 //   <root>/vscode          user data dir and extensions dir of the test VS Code
 //   <root>/claude-config   CLAUDE_CONFIG_DIR, where worktreeHasConversation looks
 //   <root>/issues, pulses  plan.issuesFile and plan.pulsesFile
-//   <root>/records         plan.workspaceDir, one <KEY>.code-workspace per issue
+//   <root>/records         plan.workspaceDir: plan.code-workspace, the plan window's workspace, and
+//                          one <KEY>.code-workspace per issue
+//   <root>/other           other.code-workspace, the workspace of a window that is not the plan window
 //   <root>/tickets         a store issue's ticket file
 //   <root>/worktrees       one directory per issue
 //   <root>/plan.log        one line per call of the fake plan
@@ -39,6 +41,9 @@ function pathsUnder(root) {
     issuesFile: path.join(root, "issues"),
     pulsesFile: path.join(root, "pulses"),
     workspaceDir: path.join(root, "records"),
+    planWorkspaceFile: path.join(root, "records", "plan.code-workspace"),
+    otherDir: path.join(root, "other"),
+    otherWorkspaceFile: path.join(root, "other", "other.code-workspace"),
     ticketsDir: path.join(root, "tickets"),
     worktreesDir: path.join(root, "worktrees"),
     planLog: path.join(root, "plan.log"),
@@ -61,12 +66,22 @@ function createDirectories(paths) {
     paths.storage,
     paths.claudeConfig,
     paths.workspaceDir,
+    paths.otherDir,
     paths.ticketsDir,
     paths.worktreesDir,
   ]) {
     fs.mkdirSync(dir, { recursive: true });
   }
   writeShellProfile(paths);
+  writeWorkspaces(paths);
+}
+
+// The plan window is the window on <workspaceDir>/plan.code-workspace; any other workspace is a
+// window the extension must leave alone. Neither holds a folder: the specs need no files open.
+function writeWorkspaces(paths) {
+  const planSettings = { "plan.workspaceDir": paths.workspaceDir, "plan.command": paths.fakePlan };
+  fs.writeFileSync(paths.planWorkspaceFile, JSON.stringify({ folders: [], settings: planSettings }));
+  fs.writeFileSync(paths.otherWorkspaceFile, JSON.stringify({ folders: [] }));
 }
 
 // What the run's environment adds to the launcher's: HOME and SHELL fixed so no user profile is

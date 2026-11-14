@@ -208,13 +208,11 @@ class FinishTests(unittest.TestCase):
         for name, value in (
             ("DEFAULT_ISSUES_FILE", os.path.join(self.cache, "issues")),
             ("DEFAULT_WORKSPACE_DIR", os.path.join(self.cache, "code-workspaces")),
+            ("DEFAULT_PULSES_FILE", os.path.join(self.cache, "pulses")),
         ):
             patch = mock.patch.object(term, name, value)
             patch.start()
             self.addCleanup(patch.stop)
-        patch = mock.patch.object(pulses, "DEFAULT_PULSES_FILE", os.path.join(self.cache, "pulses"))
-        patch.start()
-        self.addCleanup(patch.stop)
 
     def tearDown(self):
         for d in self._dirs:
@@ -267,7 +265,7 @@ class FinishTests(unittest.TestCase):
         before = os.stat(term.resolveIssuesFile()).st_mtime_ns
         finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
         self.assertEqual(os.stat(term.resolveIssuesFile()).st_mtime_ns, before)
-        self.assertFalse(os.path.exists(pulses.resolvePulsesFile()))
+        self.assertFalse(os.path.exists(term.resolvePulsesFile()))
         self.assertFalse(os.path.exists(term.planWorkspacePath()))
 
     def test_the_plan_workspace_in_a_configured_workspace_folder_loses_the_folder(self):

@@ -3,9 +3,16 @@
 // state it expects rather than sleeping.
 import { isDeepStrictEqual, inspect } from "node:util";
 import { browser } from "@wdio/globals";
+import { showComparison } from "./steps.js";
 
 const TIMEOUT_MS = 15000;
 const INTERVAL_MS = 250;
+
+// A value with strings quoted and each element of an array or object on its own line, so the
+// key, prompt and variables a Claude was started with read one per line in the watch output.
+function shown(value) {
+  return inspect(value, { compact: false, breakLength: 0, depth: 4 });
+}
 
 export async function eventually(read, expected) {
   let seen;
@@ -16,8 +23,10 @@ export async function eventually(read, expected) {
   try {
     await browser.waitUntil(arrived, { timeout: TIMEOUT_MS, interval: INTERVAL_MS });
   } catch {
-    throw new Error(`expected ${inspect(expected)}, last saw ${inspect(seen)}`);
+    showComparison(shown(expected), shown(seen), false);
+    throw new Error(`expected ${shown(expected)}, last saw ${shown(seen)}`);
   }
+  showComparison(shown(expected), shown(seen), true);
 }
 
 // Stays true for `ms`: for "nothing more happens", which is only believable after a wait.

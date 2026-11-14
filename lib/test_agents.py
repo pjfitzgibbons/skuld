@@ -218,8 +218,9 @@ class PulseOnChangeTests(unittest.TestCase):
         self.assertEqual(agents.pulsesToSend(sent, {"SK-0041": "orange", "CIAM-12": "off"}), {})
         self.assertEqual(agents.pulsesToSend(sent, {"SK-0041": "off", "CIAM-12": "off"}), {"SK-0041": "off"})
 
-    def test_nothing_sent_yet_sends_every_issue(self):
-        self.assertEqual(agents.pulsesToSend({}, {"SK-0041": "orange", "CIAM-12": "off"}), {"SK-0041": "orange", "CIAM-12": "off"})
+    def test_nothing_sent_yet_sends_every_coloured_issue_and_no_off(self):
+        self.assertEqual(agents.pulsesToSend({}, {"SK-0041": "orange", "CIAM-12": "off"}), {"SK-0041": "orange"})
+        self.assertEqual(agents.pulsesToSend({}, {"CIAM-12": "off"}), {})
 
     def test_an_issue_that_left_the_issues_file_is_cleared_once(self):
         self.assertEqual(agents.pulsesToSend({"SK-0041": "green", "CIAM-12": "off"}, {"CIAM-12": "off"}), {"SK-0041": "off"})
@@ -275,7 +276,7 @@ class TickTests(unittest.TestCase):
     def test_a_tick_writes_a_colour_only_when_an_issue_changes(self):
         sent, _ = self.tick({})
         self.assertEqual(self.colours(), {"SK-0041": "orange"})
-        self.assertEqual(sent, {"SK-0041": "orange", "CIAM-12": "off"})
+        self.assertEqual(sent, {"SK-0041": "orange"})
         with mock.patch.object(agents.pulses, "setPulse") as setPulse:
             sent, _ = self.tick(sent)
         setPulse.assert_not_called()
@@ -304,8 +305,8 @@ class TickTests(unittest.TestCase):
     def test_an_unwritable_pulses_file_never_stops_a_tick(self):
         with mock.patch.object(agents.pulses, "setPulse", side_effect=PermissionError("denied")):
             sent, failures = self.tick({})
-        self.assertEqual(sent, {"SK-0041": agents.UNSENT, "CIAM-12": agents.UNSENT})
-        self.assertEqual(failures, ["denied", "denied"])
+        self.assertEqual(sent, {"SK-0041": agents.UNSENT})
+        self.assertEqual(failures, ["denied"])
 
     # Review finding 2: a failed write used to empty the record, so the next tick rewrote every
     # colour, bringing back one cleared in the Issues view.
@@ -327,6 +328,66 @@ class TickTests(unittest.TestCase):
         with mock.patch.object(agents.pulses, "setPulse") as setPulse:
             self.tick(sent)
         self.assertEqual([call.args[:2] for call in setPulse.call_args_list], [("CIAM-12", "off")])
+
+    def test_the_first_tick_takes_no_lock_and_writes_nothing_for_an_issue_that_is_off(self):
+        self.sessions = []
+        with mock.patch.object(agents.pulses, "setPulse") as setPulse:
+            sent, failures = self.tick({})
+        setPulse.assert_not_called()
+        self.assertEqual((sent, failures), ({}, []))
+        self.assertFalse(os.path.exists(f"{self.pulsesFile}.lock"))
+
+    def rememberingTick(self, sent):
+        with mock.patch.object(agents, "readSessions", return_value=self.sessions):
+            return agents.rememberingTick(sent, self.issuesFile, self.pulsesFile, waitingDir=self.waitingDir)
+
+    def test_a_restarted_engine_does_not_write_back_a_colour_cleared_by_a_click(self):
+        sent, _ = self.rememberingTick({})
+        self.assertEqual(self.colours(), {"SK-0041": "orange"})
+        pulses.setPulse("SK-0041", "off", self.pulsesFile)  # cleared by a click in the Issues view
+        restarted = agents.loadSent(self.pulsesFile)
+        with mock.patch.object(agents.pulses, "setPulse") as setPulse:
+            self.rememberingTick(restarted)
+        setPulse.assert_not_called()
+        self.assertEqual(self.colours(), {})
+
+    def test_the_one_shot_tick_keeps_the_record_between_runs(self):
+        cfg = {"issuesFile": self.issuesFile, "pulsesFile": self.pulsesFile, "claudeCommand": None}
+        with mock.patch.object(agents, "readSessions", return_value=self.sessions):
+            cli.agentsTick(cfg, False)
+            pulses.setPulse("SK-0041", "off", self.pulsesFile)  # cleared by a click
+            cli.agentsTick(cfg, False)
+        self.assertEqual(self.colours(), {})
+
+    def test_with_no_sent_file_the_record_starts_from_the_pulses_file(self):
+        pulses.setPulse("SK-0041", "green", self.pulsesFile)
+        self.assertEqual(agents.loadSent(self.pulsesFile), {"SK-0041": "green"})
+
+    def test_the_sent_file_holds_only_colours_and_a_damaged_one_is_ignored(self):
+        self.rememberingTick({})
+        agents.saveSent({"SK-0041": "orange", "CIAM-12": agents.UNSENT, "SK-0001": "off"}, self.pulsesFile)
+        with open(agents.sentFile(self.pulsesFile)) as f:
+            self.assertEqual(json.load(f), {"SK-0041": "orange"})
+        with open(agents.sentFile(self.pulsesFile), "w") as f:
+            f.write("{not json")
+        self.assertEqual(agents.loadSent(self.pulsesFile), {"SK-0041": "orange"})  # the pulses file's colours
+
+    def test_a_pulses_file_line_the_record_dropped_as_unsent_is_cleared_after_a_restart(self):
+        pulses.setPulse("SK-0041", "orange", self.pulsesFile)
+        agents.saveSent({"SK-0041": agents.UNSENT}, self.pulsesFile)
+        self.sessions = []
+        self.rememberingTick(agents.loadSent(self.pulsesFile))
+        self.assertEqual(self.colours(), {})
+
+    def test_a_sent_file_that_cant_be_saved_is_a_failure_not_a_crash(self):
+        with mock.patch.object(agents, "saveSent", side_effect=PermissionError(13, "Permission denied")):
+            _, failures = self.rememberingTick({})
+        self.assertEqual(failures, [f"couldn't save {agents.sentFile(self.pulsesFile)}: Permission denied"])
+
+    def test_a_tick_that_changes_nothing_stored_saves_nothing(self):
+        self.sessions = []
+        self.rememberingTick({})
+        self.assertFalse(os.path.exists(agents.sentFile(self.pulsesFile)))
 
     def test_empty_output_from_claude_is_a_failure_not_an_empty_list(self):
         with mock.patch.object(agents, "run", return_value=""):
@@ -352,7 +413,15 @@ class ShowingTests(unittest.TestCase):
         table = agents.tableLines(self.found)
         self.assertTrue(table[0].startswith("waiting: input needed  SK-0041"))
         self.assertTrue(table[1].startswith("busy                   CIAM-12"))
-        self.assertTrue(table[2].startswith("idle                   -          skuld"))
+        self.assertTrue(table[2].startswith("idle                   -              skuld"))
+
+    def test_a_session_in_an_unlisted_issues_worktree_keeps_its_key_in_the_status_line(self):
+        found = place(session("/p/a.worktrees/CIAM-9", "busy"), session("/p/a.worktrees/SK-0041", "waiting"), session("/p/skuld"))
+        self.assertEqual(agents.statusLine(found), "SK-0041:⏳ -:○ -(CIAM-9):●")
+
+    def test_a_session_in_an_unlisted_issues_worktree_keeps_its_key_in_the_table(self):
+        found = agents.placeSessions([session("/p/a.worktrees/CIAM-9", "busy")], [], lambda w, k: False)
+        self.assertTrue(agents.tableLines(found)[0].startswith("busy                   - (CIAM-9)     CIAM-9"))
 
     def test_no_session_says_so(self):
         self.assertEqual(agents.statusLine([]), "no Claude")

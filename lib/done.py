@@ -479,7 +479,7 @@ def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result,
     worktree = issueWorktreePath(resolved, checkout, key)
     term.removeIssue(key, issuesFile)
     pulses.clearPulse(key, pulsesFile)
-    settings = term.planSettings(issuesFile, pulses.resolvePulsesFile(pulsesFile), workspaceDir)
+    settings = term.planSettings(issuesFile, pulsesFile, workspaceDir)
     term.removeFolder(worktree, term.planWorkspacePath(workspaceDir), settings)
     # The issue's workspace file is a throwaway: one that won't delete is a warning, not a failure.
     notes.extend(term.removeWorkspaceFiles(key, worktree, workspaceDir))

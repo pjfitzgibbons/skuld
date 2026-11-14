@@ -10,6 +10,7 @@
 import io
 import json
 import os
+import shutil
 import tempfile
 import threading
 import unittest
@@ -341,12 +342,59 @@ class PlanWorkspaceTests(unittest.TestCase):
         self.assertEqual(
             settings,
             {
+                "plan.command": term.PLAN_COMMAND,
+                "workbench.browser.openLocalhostLinks": True,
                 "plan.issuesFile": os.path.expanduser("~/.cache/plan/issues"),
                 "plan.pulsesFile": "/p/pulses",
                 "plan.workspaceDir": os.path.expanduser("~/.cache/plan/code-workspaces"),
             },
         )
         self.assertEqual(term.planSettings("/i", "/p", "/ws")["plan.workspaceDir"], "/ws")
+
+    def test_plan_command_is_this_checkouts_executable_bin_plan(self):
+        command = term.planSettings(None, None, None)["plan.command"]
+        self.assertTrue(os.path.isabs(command))
+        self.assertTrue(os.access(command, os.X_OK))
+        self.assertEqual(command, os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "bin", "plan")))
+
+    def test_the_plan_workspace_sends_clicked_localhost_links_to_its_integrated_browser(self):
+        self.assertIs(term.planSettings(None, None, None)["workbench.browser.openLocalhostLinks"], True)
+
+    def test_the_pulses_file_setting_is_resolved_here(self):
+        self.assertEqual(term.planSettings(None, "~/p/pulses", None)["plan.pulsesFile"], os.path.expanduser("~/p/pulses"))
+        self.assertEqual(term.planSettings(None, None, None)["plan.pulsesFile"], os.path.expanduser("~/.cache/plan/pulses"))
+
+    def test_the_first_folder_is_added_first_and_the_rest_follow(self):
+        term.addFolders(["/w/SK-0041"], self.path, SETTINGS, first="/issues")
+        term.addFolders(["/w/CIAM-12"], self.path, SETTINGS, first="/issues")
+        self.assertEqual(self.folders(), [{"path": "/issues"}, {"path": "/w/SK-0041"}, {"path": "/w/CIAM-12"}])
+
+    def test_a_first_folder_listed_further_down_moves_to_the_front(self):
+        self.write('{"folders": [{"path": "/w/SK-0041"}, {"path": "/w/CIAM-12"}, {"path": "/issues"}]}')
+        term.addFolders(["/w/SK-0042"], self.path, SETTINGS, first="/issues")
+        self.assertEqual(self.folders(), [{"path": "/issues"}, {"path": "/w/SK-0041"}, {"path": "/w/CIAM-12"}, {"path": "/w/SK-0042"}])
+
+    def test_a_relative_folder_is_relative_to_the_workspace_file_not_the_cwd(self):
+        worktree = os.path.join(os.path.dirname(self.path), "wt", "SK-0041")
+        self.write('{"folders": [{"path": "wt/SK-0041"}, {"path": "/issues"}]}')
+        elsewhere = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, elsewhere)
+        cwd = os.getcwd()
+        self.addCleanup(os.chdir, cwd)
+        os.chdir(elsewhere)
+        term.addFolders([worktree], self.path, SETTINGS)
+        self.assertEqual(self.folders(), [{"path": "wt/SK-0041"}, {"path": "/issues"}])
+        term.removeFolder(worktree, self.path, SETTINGS)
+        self.assertEqual(self.folders(), [{"path": "/issues"}])
+
+    def test_removing_reads_the_plan_workspace_once(self):
+        self.write('{"folders": [{"path": "/w/SK-0041"}]}')
+        with mock.patch.object(term, "readPlanWorkspace", wraps=term.readPlanWorkspace) as read:
+            term.removeFolder("/w/SK-0041", self.path, SETTINGS)
+        read.assert_called_once()
+
+    def test_a_key_needs_two_letters_or_digits_in_its_project(self):
+        self.assertEqual(term.uniqueKeys(["C-1", "CI-1", "C1-2"]), ["CI-1", "C1-2"])
 
     def test_a_missing_file_is_an_empty_workspace(self):
         self.assertEqual(term.readPlanWorkspace(self.path), {"folders": []})
@@ -393,32 +441,34 @@ class IssueWorkspaceFileTests(unittest.TestCase):
             term.writeWorkspaceFile(path, {"folders": []})
             self.assertTrue(os.path.exists(path))
 
-    def test_a_store_issue_lists_worktree_and_store_and_names_its_ticket(self):
-        workspace = term.issueWorkspace("SK-0030", "/w/SK-0030", "/issues", "Work on SK-0030.", "/issues/SK-0030-x.md")
-        self.assertEqual(workspace["folders"], [{"path": "/w/SK-0030"}, {"path": "/issues"}])
+    def test_a_store_issue_names_its_worktree_prompt_and_ticket(self):
+        workspace = term.issueWorkspace("SK-0030", "/w/SK-0030", "Work on SK-0030.", "/issues/SK-0030-x.md")
         settings = workspace["settings"]
-        self.assertEqual(settings["terminal.integrated.env.osx"], {"PLAN_KEY": "SK-0030"})
-        self.assertTrue(settings["window.title"].startswith("SK-0030"))
         self.assertEqual(settings["plan.key"], "SK-0030")
         self.assertEqual(settings["plan.worktree"], "/w/SK-0030")
         self.assertEqual(settings["plan.prompt"], "Work on SK-0030.")
         self.assertEqual(settings["plan.ticket"], "/issues/SK-0030-x.md")
 
+    def test_the_record_holds_only_plan_settings_and_no_folders(self):
+        workspace = term.issueWorkspace("SK-0030", "/w/SK-0030", "p", "/issues/SK-0030-x.md")
+        self.assertEqual(list(workspace), ["settings"])
+        self.assertTrue(all(name.startswith("plan.") for name in workspace["settings"]))
+
     def test_a_jira_issue_has_no_ticket_setting(self):
-        workspace = term.issueWorkspace("CIAM-1", "/w/CIAM-1", "/issues", "Work on Jira CIAM-1")
+        workspace = term.issueWorkspace("CIAM-1", "/w/CIAM-1", "Work on Jira CIAM-1")
         self.assertNotIn("plan.ticket", workspace["settings"])
 
     def test_a_jira_issue_has_its_browse_url_as_plan_ticketUrl(self):
         url = "https://jira.example/browse/CIAM-1"
-        settings = term.issueWorkspace("CIAM-1", "/w/CIAM-1", "/issues", "p", None, url)["settings"]
+        settings = term.issueWorkspace("CIAM-1", "/w/CIAM-1", "p", None, url)["settings"]
         self.assertEqual(settings["plan.ticketUrl"], url)
 
     def test_a_store_issue_has_no_plan_ticketUrl(self):
-        settings = term.issueWorkspace("SK-0030", "/w", "/issues", "p", "/issues/SK-0030-x.md", "https://x/")["settings"]
+        settings = term.issueWorkspace("SK-0030", "/w", "p", "/issues/SK-0030-x.md", "https://x/")["settings"]
         self.assertNotIn("plan.ticketUrl", settings)
 
     def test_the_written_file_reads_back_as_the_same_workspace(self):
-        workspace = term.issueWorkspace("CIAM-1", "/w/CIAM-1", "/issues", "p")
+        workspace = term.issueWorkspace("CIAM-1", "/w/CIAM-1", "p")
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "CIAM-1.code-workspace")
             term.writeWorkspaceFile(path, workspace)
@@ -489,9 +539,6 @@ class BrowseTests(unittest.TestCase):
         printed.assert_called_once_with("/issues/SK-0031-x.md")
         run.assert_not_called()
 
-    def test_the_issue_window_sends_clicked_localhost_links_to_its_integrated_browser(self):
-        settings = term.issueWorkspace("SK-0031", "/w", "/issues", "p")["settings"]
-        self.assertIs(settings["workbench.browser.openLocalhostLinks"], True)
 
 
 if __name__ == "__main__":

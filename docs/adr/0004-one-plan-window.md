@@ -42,15 +42,18 @@ it, and each issue's Claude runs in a terminal of that window. `plan` reads, swi
 - **VS Code places the window.** `code <plan workspace>` opens the plan workspace, or raises its
   window where it is. No Desktop switch, ^N shortcut or SkyLight read is involved.
 - **A plan workspace file lists every issue's worktree and the ticket store.**
-  `<workspaceDir>/plan.code-workspace` lists, as folders, the worktrees of the issues in the issues
-  file and the folder of each configured ticket store. `plan` writes it through a temp file and a
-  rename. Start and Open add the issue's worktree, and Done removes it; Done never removes a store
-  folder.
+  `<workspaceDir>/plan.code-workspace` lists, as folders, the ticket store's folder and the
+  worktrees of the issues in the issues file. `plan` writes it through a temp file and a rename. The
+  store's folder is always first: Start and Open add it, or move it to the front, so Done never
+  removes the folder VS Code names the workspace by. Start and Open add the issue's worktree, and
+  Done removes it; Done never removes the store folder. The workspace's settings carry `plan.command`,
+  the absolute path of the running checkout's `bin/plan`, which overrides the extension's default.
 - **Each issue keeps a workspace file of its own as its record.** Start and Open write
   `<workspaceDir>/<KEY>.code-workspace` with the issue's `plan.key`, `plan.worktree` and
   `plan.prompt`, and either `plan.ticket`, a store ticket's file, or `plan.ticketUrl`, a Jira
-  issue's browse URL, set only when there is no `plan.ticket`. `plan-window` reads it to open the
-  issue. No window opens on it.
+  issue's browse URL, set only when there is no `plan.ticket`. It holds settings only: no folders,
+  no window title and no terminal environment. `plan-window` reads it to open the issue and sets
+  `PLAN_KEY` in the issue's terminals. No window opens on it.
 - **The slots file, `windowsFile`, `SpacesPlacer`, `skuld-spaces`, `macos/spaces.swift` and
   `bin/build-spaces` go.** So do the `slotsFile`, `windowsFile`, `spacesHelper` and
   `reservedDesktops` config keys.
@@ -79,17 +82,23 @@ it, and each issue's Claude runs in a terminal of that window. `plan` reads, swi
   issues file and the plan workspace are written, they run `code <plan workspace>`. If `code`
   fails, Start stops and prints the command to run by hand. They then open the issue's `/open`
   link, best-effort.
+- **Only the plan window acts.** `plan-window` loads in every VS Code window but acts only in the
+  window whose workspace file is `<plan.workspaceDir>/plan.code-workspace`, through the context key
+  `plan.isPlanWindow`. Elsewhere there is no Issues view, no click command and no watcher, and an
+  `/open` or `/browse` link shows "this link is for the plan window." and does nothing else.
 - **A pulses file carries each issue's colour.** `pulsesFile` (default `~/.cache/plan/pulses`)
   holds `<KEY>=orange` or `<KEY>=green` lines; `off` removes the key's line. Writes go through a
   temp file and a rename. `plan pulse <KEY> <colour>` and the status engine write it, and the Issues view clears a colour
-  by running `plan pulse <KEY> off`. A missing
-  file means no colours. The view watches the issues file and the pulses file.
+  by running `plan pulse <KEY> off`, only for an issue that has a line. A missing
+  file means no colours. The engine keeps what it last sent in `<pulsesFile>.sent`, a JSON object
+  `{KEY: colour}` of orange and green, and lays it over the pulses file's colours at start, so a
+  colour cleared by a click stays cleared across a restart. The view watches the issues file and the pulses file.
 - **Done takes the issue out of the window.** Done removes the key from the issues file, the
   worktree from the plan workspace and the key's line from the pulses file. The issue leaves the
   Issues view. Its `Claude <KEY>` and `Shell <KEY>` terminals stay open until the human closes them,
   because `plan done` is often run in one of them.
 - **`plan agents` is keyed by issue.** It shows each Claude's issue key and state, and ticks per
-  issue.
+  issue. A session in the worktree of an unlisted key shows as `- (KEY)`.
 - **`plan list` and the picker lose the slot column.** With no Desktop there is nothing to show
   beside the status.
 
@@ -143,6 +152,10 @@ it, and each issue's Claude runs in a terminal of that window. `plan` reads, swi
 - **A closed plan window keeps every issue.** The issues file is not swept against the window. The
   next Start or Open reopens it with every issue's folder, and opening an issue that has no
   terminal starts one.
+- **Reopening a finished issue is one manual step.** Done removes the key, the pulse and the folder
+  and leaves the terminals open. The human sets the issue back to In Progress and runs
+  `plan start <KEY>`, which makes the worktree again, adds the key and the folder, and lets the
+  Claude terminal resume with `claude --continue` when the worktree's conversation files exist.
 - **Docs follow.** The architecture and the failure modes state this decision, and GUIDE follows
   them.
 - **Code follows** in SK-0063.

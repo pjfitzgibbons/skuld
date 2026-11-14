@@ -162,13 +162,14 @@ macOS only. In order:
     Clicking an item opens the issue (§4, step 10). First plan-window opens the issue's ticket,
     every time: a store ticket in an editor tab, or a Jira issue's page in the integrated browser.
     A tab already showing it comes to the front instead of a second one opening.
-    Then it opens the shell. Then, if the plan window has the issue's `Claude <KEY>` terminal, it
+    Then it opens the shell; both terminals get the issue's key as `PLAN_KEY`. Then, if the plan window has the issue's `Claude <KEY>` terminal, it
     comes to the front; otherwise plan-window creates it in the worktree and starts
     `claude --continue` when the worktree has an earlier Claude session, or `claude` with Start's
-    prompt when it has none. Claude comes last so that it has the focus. Then plan-window clears
-    the item's colour by running `plan pulse <KEY> off`; its `plan.command` setting names the
-    `plan` to run (default `plan`), and if that fails the window shows a warning and the colour
-    stays. Both terminals unset every `CLAUDE*`
+    prompt when it has none. Claude comes last so that it has the focus. Then, if the issue has a
+    line in the pulses file, plan-window clears the item's colour by running `plan pulse <KEY> off`;
+    its `plan.command` setting names the `plan` to run, which Start and Open set in the plan
+    workspace to the running checkout's `bin/plan`, and if that fails the window shows a warning
+    and the colour stays. Both terminals unset every `CLAUDE*`
     session variable the window inherited except `CLAUDE_CONFIG_DIR`, which says where Claude
     keeps its config and conversations and which the `--continue` check reads. So a window opened by `code` from inside a Claude session still
     gets a Claude that registers as a session of its own. When Done takes an issue out of the
@@ -176,7 +177,10 @@ macOS only. In order:
     often run `plan done` in one of them.
 
     It also handles the `vscode://skuld.plan-window/open` links that Start and Open send and the
-    `vscode://skuld.plan-window/browse` links that `plan browse` sends (§7). It is disabled in
+    `vscode://skuld.plan-window/browse` links that `plan browse` sends (§7). It acts only in the
+    plan window, the window on `<workspaceDir>/plan.code-workspace`: any other window has no
+    Issues view, no click command and no watchers, and a link that reaches one shows "this link is
+    for the plan window." and does nothing else. It is disabled in
     Restricted Mode, so trust the folder that holds each configured repo with its
     `<repo>.worktrees/`, and the ticket store's folder.
 
@@ -200,7 +204,9 @@ macOS only. In order:
     `.tmp/<KEY>/report.html` newer than the branch's last commit, and none otherwise, or once the
     issue leaves the issues file. It writes the file only when an issue's colour changes, so a
     colour cleared by clicking the issue's item stays clear until its Claude's state changes
-    again.
+    again, including across a restart: the engine keeps what it last sent in `<pulsesFile>.sent`
+    (orange and green only) and starts from it. Its first tick sends nothing for a listed issue
+    that is off.
     It also adds `bin/claude-waiting` to `~/.claude/settings.json` as a hook on Notification,
     UserPromptSubmit, PreToolUse, PostToolUse, Stop and SessionEnd, keeping your other hooks: a
     Claude that stops for a permission, a question or input turns its issue orange as its system
@@ -238,8 +244,8 @@ decides the repo (§4).
 | `plan browse <KEY \| pr#N \| url> [KEY]` | Open a page in the plan window's browser (§7) |
 | `plan serve start\|stop\|restart\|status` | Control the local server's LaunchAgent (§7); `status` prints the server's URL, whether it answers, and its pid |
 | `plan pulse <KEY> orange\|green\|off` | Set the issue's colour in the pulses file, which tints its item in the Issues view; `off` removes its line (§2, step 10) |
-| `plan agents [list]` | Every Claude session, most urgent first: its state, issue key (`-` when its key isn't in the issues file), issue title and name |
-| `plan agents status` | The same sessions on one line, as symbols beside each issue key: `⏳` waiting, `◆` done, `●` busy, `■` blocked, `○` idle |
+| `plan agents [list]` | Every Claude session, most urgent first: its state, issue key (`-` when it has none, `- (KEY)` for a session in the worktree of a key that isn't in the issues file), issue title and name |
+| `plan agents status` | The same sessions on one line, as symbols beside each issue key: `⏳` waiting, `◆` done, `●` busy, `■` blocked, `○` idle; an unlisted key shows as `-(KEY)` |
 | `plan agents --json` | The listing as JSON: each session's key, state, title, name and cwd |
 | `plan agents pick` | The listing in fzf; `enter` opens the chosen session's issue in the plan window |
 | `plan agents tick [--watch]` | Set each issue's colour in the pulses file once from its Claudes' states; `--watch` keeps doing so, as its LaunchAgent does (§2, step 12) |
@@ -283,11 +289,14 @@ runs only when it has something to do:
    rename, so a reader never sees a half-written file. The key stays until Done removes it,
    whether or not the plan window is open. The issue's worktree is added as a folder of the plan
    workspace file, `plan.code-workspace` in `workspaceDir`, written the same way. The plan
-   workspace also lists the folder of each configured ticket store, which Done never removes. The Issues view
+   workspace also lists the ticket store's folder, always as its first folder: Start and Open add
+   it or move it to the front, and Done never removes it. A key is `[A-Z][A-Z0-9]+-<digits>`, the
+   rule for the issues file, the pulses file and the extension. The Issues view
    and the Claude status engine read the issues file; `plan list` and the picker do not.
 8. **Open the plan window.** Write the issue's `<KEY>.code-workspace` to `workspaceDir`, with its
    key, worktree and prompt, and its ticket: `plan.ticket`, a store ticket's file, or
-   `plan.ticketUrl`, a Jira issue's browse URL, set only when there is no `plan.ticket`. It is
+   `plan.ticketUrl`, a Jira issue's browse URL, set only when there is no `plan.ticket`. It holds
+   these settings only, with no folders, window title or terminal environment. It is
    for plan-window to read; no window opens on it. Then run
    `code` on the plan workspace file. `code` opens the plan window, or raises it, wherever it is.
    VS Code knows a window by its workspace file's path, so Open never opens a second plan window,
@@ -305,6 +314,14 @@ runs only when it has something to do:
 
 Open on an issue whose worktree or plan-window folder is gone recreates what's missing
 ([failure-modes.md, *Open*](docs/failure-modes.md)).
+
+**Reopening a finished issue is one manual step.** Done removes the key, the pulse and the folder,
+and the issue's terminals stay open. Set the issue back to In Progress: in Jira for a Jira issue,
+or `status: in-progress` in the front matter of a store ticket. Then run `plan start <KEY>`. Start
+accepts an issue in progress and refuses only a done one. It makes the worktree at
+`<repo>.worktrees/<KEY>`, reusing a local branch for the issue, else checking out `origin`'s, else
+making a new branch from the base. It adds the key and the folder again, and the Claude terminal
+runs `claude --continue` when the worktree's conversation files exist.
 
 ## 5. Ship and the review round
 
@@ -491,7 +508,7 @@ calling terminal's `PLAN_KEY` ([architecture §7.6.1](docs/architecture.md#open-
 window, and plan-window opens the page in its integrated browser.
 
 A localhost or loopback link clicked in a terminal of the plan window opens in its integrated
-browser too, through `workbench.browser.openLocalhostLinks` in the plan workspace file. Any other
+browser too, through `workbench.browser.openLocalhostLinks` in the plan workspace file's settings. Any other
 clicked link goes to the system browser; open it with `plan browse <url>`.
 
 Every step is best-effort; the printed URL stands on its own. System `open` is never used for a

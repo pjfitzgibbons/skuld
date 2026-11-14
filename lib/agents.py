@@ -19,6 +19,7 @@ import time
 from dataclasses import asdict, dataclass
 
 from . import pulses, reviews, term, waiting
+from .jira import KEY_PATTERN, KEY_RE
 from .start import expandHome, git, run
 
 DEFAULT_CLAUDE_COMMAND = "~/.local/bin/claude"
@@ -27,7 +28,7 @@ TICK_SECONDS = 3
 WAKE_CHECK_SECONDS = 0.25
 
 # A worktree plan made: <repo>.worktrees/<KEY>, and anything below it.
-WORKTREE = re.compile(r"^(?P<root>.*\.worktrees/(?P<key>[A-Z][A-Z0-9]*-[0-9]+))(?:/|$)")
+WORKTREE = re.compile(rf"^(?P<root>.*\.worktrees/(?P<key>{KEY_PATTERN}))(?:/|$)")
 
 # Most urgent first: the order of the listing, and which state an issue with two Claudes shows.
 URGENCY = ("waiting", "done", "busy", "blocked", "idle")
@@ -131,9 +132,10 @@ def listedWorktrees(agents):
 
 
 # The pulses a tick sends: each issue whose wanted colour differs from the one last sent, and off
-# for an issue last sent a colour that has since left the issues file (it is done).
+# for an issue last sent a colour that has since left the issues file (it is done). An issue with no
+# record counts as last sent off, since a missing line shows no colour: off for it sends nothing.
 def pulsesToSend(sent, wanted):
-    changed = {key: color for key, color in wanted.items() if sent.get(key) != color}
+    changed = {key: color for key, color in wanted.items() if sent.get(key, "off") != color}
     for key in leftTheIssuesFile(sent, wanted):
         changed[key] = "off"
     return changed
@@ -146,28 +148,44 @@ def leftTheIssuesFile(sent, wanted):
 # --- showing ---
 
 
-# Issues by key, NO_ISSUE last.
+# Issues by key, the unplaced (NO_ISSUE, with or without its worktree's key) last.
 def issueOrder(issue):
-    return (issue == NO_ISSUE, issue)
+    return (issue.startswith(NO_ISSUE), issue)
 
 
 # One line: each issue and its Claudes' states as symbols, most urgent first; unplaced last.
 def statusLine(agents):
     marks = {}
     for agent in mostUrgentFirst(agents):
-        marks[agent.issue] = marks.get(agent.issue, "") + SYMBOLS.get(agent.state, "?")
+        label = statusLabel(agent)
+        marks[label] = marks.get(label, "") + SYMBOLS.get(agent.state, "?")
     shown = [f"{issue}:{marks[issue]}" for issue in sorted(marks, key=issueOrder)]
     return " ".join(shown) or "no Claude"
+
+
+# The issue in the status line: "-(CIAM-9)" for a session in an unlisted issue's worktree.
+def statusLabel(agent):
+    if agent.issue == NO_ISSUE and agent.key:
+        return f"{NO_ISSUE}({agent.key})"
+    return agent.issue
 
 
 def stateText(agent):
     return f"{agent.state}: {agent.waitingFor}" if agent.waitingFor else agent.state
 
 
+# The issue column: the issue, or for a session in an unlisted issue's worktree the key it is in,
+# as "- (CIAM-9)", so the key isn't lost.
+def issueText(agent):
+    if agent.issue == NO_ISSUE and agent.key:
+        return f"{NO_ISSUE} ({agent.key})"
+    return agent.issue
+
+
 # The table, one session a line, in the order given.
 def tableLines(agents):
     return [
-        f"{stateText(agent):<22} {agent.issue:<10} "
+        f"{stateText(agent):<22} {issueText(agent):<14} "
         f"{(agent.title or os.path.basename(agent.cwd)):<60.60} {agent.name}".rstrip()
         for agent in agents
     ]
@@ -228,6 +246,46 @@ def currentAgents(issuesFile=None, claudeCommand=None, waitingDir=None):
 # What the record holds for a key whose last write failed: it matches no colour, so the next tick
 # writes the key again, whether its colour is wanted or it has left the issues file (off).
 UNSENT = "unsent"
+SENT_COLORS = ("orange", "green")
+
+
+# --- the sent record on disk: what the engine last wrote, kept across restarts ---
+#
+# <pulses file>.sent holds {KEY: colour} for each issue the engine last pulsed orange or green. A
+# colour a person cleared with a click has no line in the pulses file, so without this record a
+# restarted engine would see "wanted orange, nothing sent" and write it back; the design pulses an
+# issue again only when its own colour changes. An off or UNSENT key is not stored: both are
+# written again when wanted, and a key left out of the file reads as off.
+
+def sentFile(pulsesFile=None):
+    return f"{term.resolvePulsesFile(pulsesFile)}.sent"
+
+
+# The record to start from: the pulses file's colours, with the record on disk over them. With no
+# record on disk (or a damaged one) that is the pulses file alone.
+def loadSent(pulsesFile=None):
+    return {**pulses.readPulses(pulsesFile), **readSentFile(sentFile(pulsesFile))}
+
+
+def readSentFile(path):
+    try:
+        with open(path, "r", encoding="utf8") as f:
+            stored = json.load(f)
+    except (FileNotFoundError, ValueError):
+        return {}
+    if not isinstance(stored, dict):
+        return {}
+    return {key: color for key, color in stored.items() if KEY_RE.match(key) and color in SENT_COLORS}
+
+
+def storable(record):
+    return {key: color for key, color in record.items() if color in SENT_COLORS}
+
+
+def saveSent(record, pulsesFile=None):
+    path = sentFile(pulsesFile)
+    with term.locked(path):
+        term.writeAtomically(path, json.dumps(storable(record), indent=2, sort_keys=True) + "\n")
 
 
 # Writes each pulse and returns (the record of what was written, failure messages). A key whose
@@ -257,6 +315,19 @@ def tick(sent, issuesFile=None, pulsesFile=None, claudeCommand=None, waitingDir=
         return sent, [str(error)]
     toSend = pulsesToSend(sent, wantedPulses(agents, listedKeys, reviewedKeys))
     return sendPulses(sent, toSend, lambda key, color: pulses.setPulse(key, color, pulsesFile))
+
+
+# tick(), then saves the record when the tick changed what is stored. A save that fails is a
+# failure message, never a crash: the engine runs on, and the next tick that changes it saves again.
+def rememberingTick(sent, issuesFile=None, pulsesFile=None, claudeCommand=None, waitingDir=None, reviewedKeys=frozenset()):
+    record, failures = tick(sent, issuesFile, pulsesFile, claudeCommand, waitingDir, reviewedKeys)
+    if storable(record) == storable(sent):
+        return record, failures
+    try:
+        saveSent(record, pulsesFile)
+    except OSError as error:
+        failures = [*failures, f"couldn't save {sentFile(pulsesFile)}: {error.strerror or error}"]
+    return record, failures
 
 
 # The pulses one tick wrote: each issue whose recorded colour changed from `before` to `after`.
@@ -329,14 +400,15 @@ class ReviewSnapshot:
 # look at each listed issue's PR once a minute on a thread of its own. Its log (stderr) gets a line when it starts, one
 # when a Copilot review starts waiting, one for each tick that sends a pulse, and a failure only
 # when it differs from the last one, so a quiet issue or a failure that persists adds nothing. It
-# starts from the pulses file's colours, so a line left for an issue no longer listed is removed.
+# starts from the sent record on disk over the pulses file's colours (loadSent), so a line left for
+# an issue no longer listed is removed and a colour a person cleared isn't written back.
 def watch(issuesFile=None, pulsesFile=None, claudeCommand=None, every=TICK_SECONDS):
     log(f"watching, a tick every {every}s, PRs every {reviews.REVIEW_CHECK_SECONDS}s")
-    sent, lastFailures = pulses.readPulses(pulsesFile), []
+    sent, lastFailures = loadSent(pulsesFile), []
     reviewed = ReviewSnapshot(issuesFile, claudeCommand).startInBackground()
     while True:
         before = sent
-        sent, failures = tick(sent, issuesFile, pulsesFile, claudeCommand, reviewedKeys=reviewed.keys)
+        sent, failures = rememberingTick(sent, issuesFile, pulsesFile, claudeCommand, reviewedKeys=reviewed.keys)
         written = pulsesSent(before, sent)
         if written:
             log(pulseLine(written))

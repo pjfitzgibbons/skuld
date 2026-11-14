@@ -241,7 +241,7 @@ def cmdStart(cfg, key):
         print(note)
     ticket = jira.browseUrl(key) if fileissues_mod.isFileBacked(key) else None
     ticketUrl = None if ticket else jira.browseUrl(key)
-    writeIssueWorkspaceFile(cfg, key, result["dir"], store, ticket, ticketUrl)
+    writeIssueWorkspaceFile(cfg, key, result["dir"], ticket, ticketUrl)
     addToIssuesFile(cfg, key)
     planWorkspace = addToPlanWorkspace(cfg, result["dir"], store)
     term_mod.openPlanWindow(planWorkspace)
@@ -258,11 +258,12 @@ def addToIssuesFile(cfg, key):
         term_mod.addIssue(key, cfg.get("issuesFile"))
 
 
-# The issue's worktree, and the ticket store's folder unless the plan workspace already lists it.
+# The issue's worktree, and the ticket store's folder, which the plan workspace keeps first: Done
+# removes the worktree, and VS Code restarts its extension host when the first folder goes.
 def addToPlanWorkspace(cfg, worktree, store):
     path = planWorkspaceFrom(cfg)
     with term_mod.step("adding the issue's folder to the plan workspace", f"Check that {os.path.dirname(path)} is writable."):
-        term_mod.addFolders([worktree, store], path, planSettingsFrom(cfg))
+        term_mod.addFolders([worktree], path, planSettingsFrom(cfg), first=store)
     return path
 
 
@@ -271,8 +272,7 @@ def planWorkspaceFrom(cfg):
 
 
 def planSettingsFrom(cfg):
-    pulsesFile = pulses_mod.resolvePulsesFile(cfg.get("pulsesFile"))
-    return term_mod.planSettings(cfg.get("issuesFile"), pulsesFile, cfg.get("workspaceDir"))
+    return term_mod.planSettings(cfg.get("issuesFile"), cfg.get("pulsesFile"), cfg.get("workspaceDir"))
 
 
 # What Claude is first asked to do. A store issue names its ticket file: "Work on Jira SK-0003"
@@ -287,9 +287,9 @@ def claudePrompt(key, ticket):
 
 
 # ticket is a store issue's ticket file; ticketUrl is a Jira issue's browse URL, None otherwise.
-def writeIssueWorkspaceFile(cfg, key, worktree, store, ticket, ticketUrl=None):
+def writeIssueWorkspaceFile(cfg, key, worktree, ticket, ticketUrl=None):
     path = term_mod.workspaceFilePath(key, cfg.get("workspaceDir"))
-    workspace = term_mod.issueWorkspace(key, worktree, store, claudePrompt(key, ticket), ticket, ticketUrl)
+    workspace = term_mod.issueWorkspace(key, worktree, claudePrompt(key, ticket), ticket, ticketUrl)
     with term_mod.step("writing the issue's workspace file", f"Check that {os.path.dirname(path)} is writable."):
         term_mod.writeWorkspaceFile(path, workspace)
     return path
@@ -449,13 +449,13 @@ def issueTitle(cfg, key):
     return jiraFrom(cfg, key).issue(key)["fields"]["summary"]
 
 
-# One tick writes what differs from the pulses file as it stands; the watch loop starts from it too.
+# One tick writes what differs from the engine's sent record (lib/agents.py loadSent); the watch loop starts from it too.
 def agentsTick(cfg, keepWatching):
     issuesFile, pulsesFile, claudeCommand = cfg.get("issuesFile"), cfg.get("pulsesFile"), cfg.get("claudeCommand")
     if keepWatching:
         return agents_mod.watch(issuesFile, pulsesFile, claudeCommand)  # runs until stopped
-    sent = pulses_mod.readPulses(pulsesFile)
-    _, failures = agents_mod.tick(sent, issuesFile, pulsesFile, claudeCommand)
+    sent = agents_mod.loadSent(pulsesFile)
+    _, failures = agents_mod.rememberingTick(sent, issuesFile, pulsesFile, claudeCommand)
     for failure in failures:
         print(failure, file=sys.stderr)
     return 1 if failures else None

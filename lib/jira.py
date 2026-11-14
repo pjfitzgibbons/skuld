@@ -16,7 +16,8 @@ import urllib.request
 # A Jira key: a project code of two or more letters/digits starting with a letter, a dash, a
 # number. CIAM-123, not a bare number or a branch-release tag. This is the one pattern every
 # other key check in the repo (the scripts' KEY_RE-equivalents, pr.sh, ghbody.sh) must match (L2).
-KEY_RE = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
+KEY_PATTERN = r"[A-Z][A-Z0-9]+-\d+"
+KEY_RE = re.compile(f"^{KEY_PATTERN}$")
 
 
 def projectOf(key):

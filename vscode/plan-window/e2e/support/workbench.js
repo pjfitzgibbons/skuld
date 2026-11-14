@@ -87,8 +87,9 @@ export function notificationShows(texts) {
   );
 }
 
-// The Issues view's items, in order, as the DOM shows them: the key, the codicon (bell-dot,
-// pass-filled or circle-outline) and the icon's colour, "" when it has none. The DOM is all the
+// The Issues view's items, in order, as the DOM shows them: the key, the icon (the codicon's class,
+// pass-filled or circle-outline, or "waiting.svg" for the custom orange triangle, read from the
+// icon's background image) and the icon's colour, "" when it has none. The DOM is all the
 // view exposes of a tree item's icon.
 export function issueItems() {
   return browser.execute(() => {
@@ -100,11 +101,20 @@ export function issueItems() {
       const icon = row.querySelector(".custom-view-tree-node-item-icon");
       return {
         key: row.getAttribute("aria-label").trim(),
-        icon: [...icon.classList].find((name) => name.startsWith("codicon-") && name !== "codicon-colored"),
+        icon:
+          [...icon.classList].find((name) => name.startsWith("codicon-") && name !== "codicon-colored") ||
+          (getComputedStyle(icon).backgroundImage.match(/([^/"]+\.svg)/) || [])[1],
         color: icon.style.color,
       };
     });
   });
+}
+
+// Whether the Explorer has an Issues section at all, which only the plan window shows.
+export function issuesViewIsShowing() {
+  return browser.execute(() =>
+    [...document.querySelectorAll(".pane-header")].some((element) => element.textContent.trim() === "Issues"),
+  );
 }
 
 export async function issueKeys() {
@@ -159,21 +169,17 @@ export function windowSize() {
   return browser.execute(() => ({ width: window.outerWidth, height: window.outerHeight }));
 }
 
-export const WINDOW_SIZE = { width: 1000, height: 800 };
-
-// The size the window can have: WINDOW_SIZE, or the screen's available area where that is smaller.
-export async function achievableWindowSize() {
+// The window's size: the left half of the screen's available area, full height, so a person can
+// watch it beside a terminal on a small screen.
+export async function halfScreenSize() {
   const available = await browser.execute(() => ({ width: screen.availWidth, height: screen.availHeight }));
-  return {
-    width: Math.min(WINDOW_SIZE.width, available.width),
-    height: Math.min(WINDOW_SIZE.height, available.height),
-  };
+  return { width: Math.floor(available.width / 2), height: available.height };
 }
 
 // Moves the window to the screen's top left and resizes it, so the screen's bottom edge does not
 // clamp it further than the screen's size does.
 export async function resizeWindow() {
-  const wanted = await achievableWindowSize();
+  const wanted = await halfScreenSize();
   await browser.execute(
     (w, h) => {
       window.moveTo(0, 0);

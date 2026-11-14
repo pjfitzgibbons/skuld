@@ -83,10 +83,37 @@ async function introduce(title, steps, see) {
   await waitForEnter();
 }
 
+// Text indented under a step's "expected:" or "saw:" label, one line per line of the text.
+function indented(text) {
+  return text
+    .split("\n")
+    .map((line) => `         ${line}`)
+    .join("\n");
+}
+
+// Set while a scenario's step runs, so the checks a hook makes (beforeEach waiting for the view)
+// show no comparison between scenarios or after a FAIL.
+let runningStep = false;
+
+// In watch mode, shows under the running step what a check compared: the expected value, what was
+// seen, and whether they matched. A plain run shows nothing; its failures carry both values.
+export function showComparison(expected, seen, matched) {
+  if (!WATCHING || !runningStep) return;
+  const verdict = matched ? `${GREEN}matches${RESET}` : `${RED}does not match${RESET}`;
+  show(`       expected:\n${indented(expected)}`);
+  show(`       saw:\n${indented(seen)}`);
+  show(`       ${verdict}`);
+}
+
 async function runSteps(steps) {
   for (const [index, [description, action]] of steps.entries()) {
     show(`${DIM}  > ${index + 1}. ${description}${RESET}`);
-    await action();
+    runningStep = true;
+    try {
+      await action();
+    } finally {
+      runningStep = false;
+    }
     const isLast = index === steps.length - 1;
     await browser.pause(isLast ? PAUSE_MS * LAST_STEP_PAUSE_FACTOR : PAUSE_MS);
   }

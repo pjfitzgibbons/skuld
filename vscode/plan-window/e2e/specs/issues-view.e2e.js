@@ -3,7 +3,7 @@ import { eventually, staysTrue } from "../support/eventually.js";
 import { useFreshFixture } from "../support/hooks.js";
 import { scenario } from "../support/steps.js";
 import {
-  achievableWindowSize,
+  halfScreenSize,
   issueItems,
   issueKeys,
   notificationCount,
@@ -41,11 +41,11 @@ describe("the test window", () => {
     ],
   });
 
-  scenario("is 1000 by 800, not maximized or full screen", {
+  scenario("fills the left half of the screen, not maximized or full screen", {
     see: [
-      "the window is a modest 1000 by 800 rectangle (less only where the screen is smaller), not filling the screen",
+      "the window takes the left half of the screen, full height, leaving the right half free",
     ],
-    steps: [["read the window's size", async () => expect(await windowSize()).toEqual(await achievableWindowSize())]],
+    steps: [["read the window's size", async () => expect(await windowSize()).toEqual(await halfScreenSize())]],
   });
 });
 
@@ -85,8 +85,8 @@ describe("the Issues view", () => {
     ],
   });
 
-  scenario("shows an orange bell for an orange pulse, a green tick for a green one, and a plain circle for none", {
-    see: ["SK-0101 gets an orange bell icon", "SK-0102 gets a green tick icon", "SK-0103 gets a plain grey circle"],
+  scenario("shows a solid orange warning triangle for an orange pulse, a green tick for a green one, and a plain circle for none", {
+    see: ["SK-0101 gets a solid orange warning triangle icon", "SK-0102 gets a green tick icon", "SK-0103 gets a plain grey circle"],
     steps: [
       [
         "write three issues, SK-0101 orange and SK-0102 green",
@@ -96,21 +96,21 @@ describe("the Issues view", () => {
         },
       ],
       [
-        "the three items show the bell, the tick and the circle",
+        "the three items show the warning triangle, the tick and the circle",
         () =>
           eventually(
             () => issueItems().then((items) => items.map(({ key, icon }) => [key, icon])),
             [
-              ["SK-0101", "codicon-bell-dot"],
+              ["SK-0101", "waiting.svg"],
               ["SK-0102", "codicon-pass-filled"],
               ["SK-0103", "codicon-circle-outline"],
             ],
           ),
       ],
       [
-        "the bell is the theme's orange, the tick its green, and the circle has no colour",
+        "the triangle is its own orange, so has no theme colour; the tick is the theme's green; the circle has no colour",
         async () => {
-          expect((await itemOf("SK-0101")).color).toBe(await themeColor("charts.orange"));
+          expect((await itemOf("SK-0101")).color).toBe("");
           expect((await itemOf("SK-0102")).color).toBe(await themeColor("charts.green"));
           expect((await itemOf("SK-0103")).color).toBe("");
         },
@@ -119,7 +119,7 @@ describe("the Issues view", () => {
   });
 
   scenario("changes an item's colour when the pulses file changes", {
-    see: ["SK-0101 starts as an orange bell, turns into a green tick, then into a plain circle"],
+    see: ["SK-0101 starts as a solid orange warning triangle, turns into a green tick, then into a plain circle"],
     steps: [
       [
         "write SK-0101 into the issues file, orange in the pulses file",
@@ -128,7 +128,7 @@ describe("the Issues view", () => {
           fixture.writePulses({ "SK-0101": "orange" });
         },
       ],
-      ["the item is the orange bell", () => eventually(() => iconOf("SK-0101"), "codicon-bell-dot")],
+      ["the item is the solid orange warning triangle", () => eventually(() => iconOf("SK-0101"), "waiting.svg")],
       ["the pulses file now says SK-0101 is green", () => fixture.writePulses({ "SK-0101": "green" })],
       ["the item turns into the green tick", () => eventually(() => iconOf("SK-0101"), "codicon-pass-filled")],
       ["the pulses file no longer lists SK-0101", () => fixture.writePulses({})],

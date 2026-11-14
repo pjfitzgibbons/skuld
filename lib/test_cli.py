@@ -97,12 +97,19 @@ class CmdOpenTests(unittest.TestCase):
         self.assertEqual(settings["plan.ticket"], "/issues/SK-0001-slug.md")
         self.assertIn("read /issues/SK-0001-slug.md first", settings["plan.prompt"])
 
+    def test_open_moves_the_store_to_the_front_of_a_workspace_that_lists_it_later(self):
+        os.makedirs(os.path.dirname(self.planWorkspace))
+        with open(self.planWorkspace, "w") as f:
+            json.dump({"folders": [{"path": self.worktree("CIAM-1")}, {"path": "/issues"}]}, f)
+        self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
+        self.assertEqual(self.planFolders(), ["/issues", self.worktree("CIAM-1"), self.worktree("SK-0001")])
+
     def test_open_adds_the_key_to_the_issues_file_and_the_worktree_to_the_plan_workspace(self):
         self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
         self.runOpen("CIAM-1")
         self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
         self.assertEqual(term_mod.issueKeys(self.cfg["issuesFile"]), ["SK-0001", "CIAM-1"])
-        self.assertEqual(self.planFolders(), [self.worktree("SK-0001"), "/issues", self.worktree("CIAM-1")])
+        self.assertEqual(self.planFolders(), ["/issues", self.worktree("SK-0001"), self.worktree("CIAM-1")])
 
     def test_start_and_open_with_no_store_stop_before_anything_changes(self):
         del self.cfg["issueStore"]
@@ -151,12 +158,12 @@ class CmdOpenTests(unittest.TestCase):
     def test_a_garbage_plan_workspace_is_replaced_keeping_its_settings_when_it_has_some(self):
         os.makedirs(os.path.dirname(self.planWorkspace))
         with open(self.planWorkspace, "w") as f:
-            f.write('{"folders": "x", "settings": {"window.title": "plan"}}')
+            f.write('{"folders": "x", "settings": {"editor.tabSize": 2}}')
         self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
         with open(self.planWorkspace, encoding="utf8") as f:
             workspace = json.load(f)
-        self.assertEqual(workspace["folders"], [{"path": self.worktree("SK-0001")}, {"path": "/issues"}])
-        self.assertEqual(workspace["settings"]["window.title"], "plan")
+        self.assertEqual(workspace["folders"], [{"path": "/issues"}, {"path": self.worktree("SK-0001")}])
+        self.assertEqual(workspace["settings"]["editor.tabSize"], 2)
 
     def test_the_plan_workspace_names_the_issues_pulses_and_records_folder(self):
         self.cfg["pulsesFile"] = os.path.join(self.tmp, "pulses")
@@ -166,6 +173,8 @@ class CmdOpenTests(unittest.TestCase):
         self.assertEqual(
             settings,
             {
+                "plan.command": term_mod.PLAN_COMMAND,
+                "workbench.browser.openLocalhostLinks": True,
                 "plan.issuesFile": self.cfg["issuesFile"],
                 "plan.pulsesFile": self.cfg["pulsesFile"],
                 "plan.workspaceDir": self.cfg["workspaceDir"],

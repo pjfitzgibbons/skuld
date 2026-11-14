@@ -57,8 +57,8 @@ GitHub's, and they are the one GitHub integration; GitHub Issues is not used.
 | Issues file | The list of issues that have been Started or Opened and not yet Done, one `<KEY>` per line, that the Issues view and the Claude status engine read (§7.1) |
 | Pulses file | Each issue's colour in the Issues view, one `<KEY>=orange` or `<KEY>=green` line per coloured issue, written by `plan pulse` and the Claude status engine (§7.1) |
 | Issues view | The view `plan.issues` that the `plan-window` extension adds to the plan window's Explorer: one item per issue in the issues file, tinted from the pulses file. Clicking an item opens the issue (§6.3, §7.1) |
-| Plan window | The one VS Code window for all issues, on the plan workspace file, `<workspaceDir>/plan.code-workspace`, which lists as folders the worktrees of the issues in the issues file and the folder of each configured ticket store. Each issue's Claude runs in an integrated terminal named "Claude <KEY>", and pages open in its integrated browser (§7.1) |
-| Issue workspace file | `<workspaceDir>/<KEY>.code-workspace`, the issue's record of its key, worktree, prompt and ticket (a store ticket's file in `plan.ticket`, or a Jira issue's browse URL in `plan.ticketUrl`), which `plan-window` reads to open the issue. No window opens on it (§7.1) |
+| Plan window | The one VS Code window for all issues, on the plan workspace file, `<workspaceDir>/plan.code-workspace`, which lists as folders the ticket store's folder, always first, and the worktrees of the issues in the issues file. Each issue's Claude runs in an integrated terminal named "Claude <KEY>", and pages open in its integrated browser (§7.1) |
+| Issue workspace file | `<workspaceDir>/<KEY>.code-workspace`, the issue's record of its key, worktree, prompt and ticket (a store ticket's file in `plan.ticket`, or a Jira issue's browse URL in `plan.ticketUrl`), which `plan-window` reads to open the issue. It holds settings only: no folders, no window title and no terminal environment. No window opens on it (§7.1) |
 | Start | Moving an issue to "in progress" from `plan start`, which makes its branch and worktree and logs "Started" on the issue (§7.1) |
 | Round | One pass of review: the commit message, PR body and review replies in `<store>/reviews/<KEY>/` that `pr` sends (§7.2) |
 | Finish | The squash merge of the issue's PR, then Done, which notes the merge on the issue and leaves closing it to the human (§7.3) |
@@ -287,9 +287,24 @@ issue's `plan.key`, `plan.worktree` and `plan.prompt`, and either `plan.ticket`,
 file, or `plan.ticketUrl`, a Jira issue's browse URL, set only when there is no `plan.ticket`.
 `plan-window` reads it when the issue is opened; no window opens on it. Start rewrites it each time. Start then adds the
 issue to the issues file and its worktree to the plan workspace file, `plan.code-workspace` in the
-same folder, which lists as folders the worktrees of the issues in the issues file and the folder
-of each configured ticket store, and is written through a temp file and a rename. Start then runs `code` on the plan workspace file, which opens
-the plan window or raises it. If `code` fails, Start stops and prints the command to run by hand.
+same folder, which lists as folders the ticket store's folder and the worktrees of the issues in
+the issues file, and is written through a temp file and a rename. The store's folder is always the
+first folder: Start and Open add it when it is missing and move it to the front when it is listed
+further down, so the folder Done removes is never the one VS Code names the workspace by. Start
+then runs `code` on the plan workspace file, which opens the plan window or raises it. If `code`
+fails, Start stops and prints the command to run by hand.
+
+**The plan window is the only window that acts.** Every VS Code window loads `plan-window`, but it
+acts only in the window whose workspace file is `<plan.workspaceDir>/plan.code-workspace`. That
+window sets the context key `plan.isPlanWindow`, and the Issues view's `when` clause shows the view
+only where the key is true. In any other window there is no Issues view, no click command and no
+file watcher. A `/open` or `/browse` link that reaches such a window shows "this link is for the
+plan window." and does nothing else.
+
+**The plan workspace's settings tell `plan-window` where things are.** Start and Open write
+`plan.issuesFile`, `plan.pulsesFile`, `plan.workspaceDir` and `plan.command` there, and
+`workbench.browser.openLocalhostLinks`. `plan.command` is the absolute path of the running
+checkout's `bin/plan`, and it overrides the extension's default `plan`.
 
 **Opening an issue brings up its Claude.** A click on the issue's item in the Issues view, or the
 link `vscode://skuld.plan-window/open?key=<KEY>`, opens the issue. `plan-window` reads the issue
@@ -301,8 +316,8 @@ store ticket's file in an editor tab, or a Jira issue's browse URL in the integr
 already showing the ticket or the page is brought to the front, and a second one is never opened. Then
 the shell beside Claude opens, then the Claude terminal is focused or created, and last the
 issue's colour is cleared. Claude comes after the ticket and the shell so that focus ends on it.
-Both terminals carry the issue's key in their
-environment, so a command run in either knows its issue. Both unset every `CLAUDE*` session variable the
+`plan-window` sets `PLAN_KEY` in the environment of both terminals, since the issue
+workspace file holds no terminal environment, so a command run in either knows its issue. Both unset every `CLAUDE*` session variable the
 window inherited: a window opened by `code` from inside a Claude session carries that session's
 `CLAUDE_CODE_CHILD_SESSION` and `CLAUDE_PID`, and a Claude started with them never registers, so
 `claude agents --json` wouldn't list it. `CLAUDE_CONFIG_DIR` is kept. It says where Claude keeps
@@ -313,11 +328,20 @@ terminals stay until the human closes them, since `plan done` is often run in on
 
 **Each issue's item in the Issues view shows its Claude's state.** The status engine, `lib/agents.py`, places
 each session from `claude agents --json` by its cwd: a cwd in `<repo>.worktrees/<KEY>` gives the
-key, and the key counts only while it is in the issues file. A session it can't place shows on `-`
-and pulses nothing. An issue pulses orange while one of its Claudes waits on a person (a question, a
+key, and the key counts only while it is in the issues file. A key is `[A-Z][A-Z0-9]+-<digits>` (`jira.KEY_RE`),
+the rule for the issues file, the pulses file's lines and the extension alike. A session it can't
+place shows on `-` and pulses nothing; a session in the worktree of a key that isn't listed shows
+as `- (KEY)` in `plan agents` and as `-(KEY)` in the status line, so the key isn't lost. An issue pulses orange while one of its Claudes waits on a person (a question, a
 permission), green while one is idle with `.tmp/<KEY>/report.html` newer than the branch's last
 commit, and is cleared (`off`) otherwise, or when it leaves the issues file. Orange outranks green.
 A tick writes the pulses file only when an issue's colour changes, and reads no store or Jira.
+
+**The engine's record of what it sent is kept on disk.** `<pulsesFile>.sent` holds a JSON object
+`{KEY: colour}` for each issue last pulsed orange or green; off is not stored. It is written under
+the same lock and through the same temp file and rename as the other shared files. At start the
+engine lays this record over the pulses file's colours (`agents.loadSent`), so a colour cleared by
+a click stays cleared across a restart, and the first tick sends nothing for a listed issue that is
+off.
 
 **A Claude's own hooks say when it waits.** `claude agents --json` doesn't call a session at a
 permission prompt `waiting`, so the engine also reads Claude Code's hooks. `bin/claude-waiting`,
@@ -328,8 +352,8 @@ call, Stop or end. A marked session is waiting, except an idle one with a fresh 
 done. The watch loop checks the directory's mtime four times a second and ticks as soon as it
 changes, so the issue's item turns orange as the notification shows. The hook prints nothing and always
 exits 0; a dead session's marker is ignored, since the engine places only the sessions `claude
-agents --json` lists. Clicking an issue's item in the Issues view clears its colour, and the engine pulses it
-again only when that issue's colour changes. `plan agents` lists the same sessions with each issue's title, from the store for a store
+agents --json` lists. Clicking an issue's item in the Issues view clears its colour only when the issue has a line in
+the pulses file, and the engine pulses it again only when that issue's colour changes. `plan agents` lists the same sessions with each issue's title, from the store for a store
 key and from Jira only when the machine config names the key's project.
 
 **A Copilot review on an issue's PR turns its item orange too.** Once a minute, on its own thread, the watch loop runs `gh pr view` in the worktree of each issue in the issues file that has a Claude (`lib/reviews.py`). Each tick uses whatever the last finished check found, so a slow GitHub never holds up a pulse, and a `gh` call is given up after 20 seconds. If the PR is open and Copilot has reviewed its head commit (`headRefOid`), the review is waiting, and the issue pulses orange even over green. The next push moves the head and clears it, so nothing is kept between checks. A worktree with no PR, or a `gh` that fails, counts as no review. The LaunchAgent's PATH includes the directory of the `gh` that `bin/install-agents` found.
@@ -346,7 +370,8 @@ read it; `plan list` and the picker do not.
 `~/.cache/plan/pulses`) holds a `<KEY>=orange` or `<KEY>=green` line per coloured issue, and `off`
 removes the key's line. `plan pulse <KEY> <orange|green|off>` and the status engine write it,
 through a temp file and a rename. `plan-window` clears an issue's colour by running
-`plan pulse <KEY> off` (its `plan.command` setting, default `plan`); if the command fails, the
+`plan pulse <KEY> off` with its `plan.command` setting, the running checkout's `bin/plan`, and only
+when the key has a line; if the command fails, the
 window shows a warning and the colour stays. Done removes the key's line along with its
 issues-file line. A missing file means no issue has a colour. The Issues view watches the issues
 file and the pulses file.
@@ -368,6 +393,14 @@ needs no helper or permission grant.
 - **Window on another Desktop or display.** `code` raises it where it is.
 - **A finished issue.** Done removes the issue's key from the issues file and its worktree from
   the plan workspace. Its terminals stay in the plan window until the human closes them.
+- **Reopening a finished issue is one manual step.** Done removes the key, the pulse and the folder,
+  and leaves the terminals open. To reopen, the human sets the issue back to In Progress (a Jira
+  issue in Jira; a store ticket by `status: in-progress` in its front matter), then runs
+  `plan start <KEY>`. Start accepts an issue in the in-progress category and refuses only a done
+  one. With no worktree it makes one at `<repo>.worktrees/<KEY>`, reusing a local branch for the
+  issue, else checking out `origin`'s, else making a new branch from the base. It then adds the key
+  and the folder again like any Start, and the Claude terminal resumes with `claude --continue`
+  when the worktree's conversation files exist.
 
 
 If the issue's branch already exists here or on `origin`, Start reuses it on its own base. On an

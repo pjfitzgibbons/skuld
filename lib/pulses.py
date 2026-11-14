@@ -9,11 +9,10 @@
 import re
 
 from . import term
-from .start import expandHome
+from .jira import KEY_PATTERN
 
-DEFAULT_PULSES_FILE = "~/.cache/plan/pulses"
 COLORS = ("orange", "green", "off")
-PULSE_LINE = re.compile(r"^(?P<key>[A-Z][A-Z0-9]*-[0-9]+)=(?P<color>orange|green)$")
+PULSE_LINE = re.compile(rf"^(?P<key>{KEY_PATTERN})=(?P<color>orange|green)$")
 
 
 # `plan pulse`: the key must be one the issues file lists, since only a listed issue has an item.
@@ -29,7 +28,7 @@ def pulse(key, color, issuesFile=None, pulsesFile=None):
 # write it from separate processes.
 def setPulse(key, color, pulsesFile=None):
     checkColor(color)
-    path = resolvePulsesFile(pulsesFile)
+    path = term.resolvePulsesFile(pulsesFile)
     with term.locked(path):
         before = readPulses(path)
         after = withColor(before, key, color)
@@ -53,10 +52,6 @@ def checkColor(color):
         raise RuntimeError(f'pulse: colour must be orange, green or off, not "{color}"')
 
 
-def resolvePulsesFile(pulsesFile=None):
-    return expandHome(pulsesFile or DEFAULT_PULSES_FILE)
-
-
 # {KEY: colour} in file order, from the valid lines; a later line for a key wins.
 def readPulses(pulsesFile=None):
     return {found["key"]: found["color"] for found in map(PULSE_LINE.match, readLines(pulsesFile)) if found}
@@ -64,11 +59,11 @@ def readPulses(pulsesFile=None):
 
 def readLines(pulsesFile=None):
     try:
-        with open(resolvePulsesFile(pulsesFile), "r", encoding="utf8") as f:
+        with open(term.resolvePulsesFile(pulsesFile), "r", encoding="utf8") as f:
             return [line.strip() for line in f.read().split("\n") if line.strip()]
     except FileNotFoundError:
         return []
 
 
 def writePulses(pulses, pulsesFile=None):
-    term.writeLines(resolvePulsesFile(pulsesFile), [f"{key}={color}" for key, color in pulses.items()])
+    term.writeLines(term.resolvePulsesFile(pulsesFile), [f"{key}={color}" for key, color in pulses.items()])

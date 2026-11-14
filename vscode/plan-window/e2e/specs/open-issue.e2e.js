@@ -48,7 +48,7 @@ describe("choosing an issue with a local ticket", () => {
 
   scenario("opens a shell terminal and a Claude terminal named for the issue", {
     see: [
-      `a "Claude ${KEY}" terminal opens as a tab in the editor area, printing a line that starts key=${KEY}`,
+      `a "Claude ${KEY}" terminal opens as a tab in the editor area, printing "fake Claude started" and "issue key (PLAN_KEY):    ${KEY}"`,
       `a "Shell ${KEY}" terminal opens in the panel at the bottom`,
     ],
     steps: [
@@ -61,7 +61,7 @@ describe("choosing an issue with a local ticket", () => {
   });
 
   scenario("starts Claude on the issue's prompt, with no --continue, when the worktree has no conversation", {
-    see: [`the Claude terminal prints args=[Work on ${KEY}.] and no --continue`],
+    see: [`the Claude terminal prints 'argument (the prompt):   "Work on ${KEY}."' and no --continue line`],
     steps: [
       [`click ${KEY}`, () => clickIssue(KEY)],
       [
@@ -72,7 +72,7 @@ describe("choosing an issue with a local ticket", () => {
   });
 
   scenario("starts Claude with --continue when the worktree has a conversation", {
-    see: ["the Claude terminal prints args=[--continue]"],
+    see: ["the Claude terminal prints 'argument:                --continue' and no prompt line"],
     steps: [
       ["leave a conversation for the worktree in Claude's config dir", () => fixture.addConversation(issue.worktree)],
       [`click ${KEY}`, () => clickIssue(KEY)],
@@ -81,7 +81,7 @@ describe("choosing an issue with a local ticket", () => {
   });
 
   scenario("starts Claude with CLAUDE_CONFIG_DIR and no other CLAUDE* variable, though the window has some", {
-    see: ["the Claude terminal prints config_dir=<the fixture's claude-config> and other_claude_variables=none"],
+    see: ["the Claude terminal prints 'CLAUDE_CONFIG_DIR:' with the fixture's claude-config and 'other CLAUDE* variables: none'"],
     steps: [
       [
         "check the window itself was launched with CLAUDE_CODE_CHILD_SESSION and CLAUDE_PID set",
@@ -143,6 +143,7 @@ describe("choosing an issue with a local ticket", () => {
   scenario("runs `plan pulse <KEY> off` to clear the colour, with no warning", {
     see: ["nothing visible but the ticket and terminals opening, and no warning toast at the bottom right"],
     steps: [
+      [`${KEY} is orange`, () => fixture.writePulses({ [KEY]: "orange" })],
       [`click ${KEY}`, () => clickIssue(KEY)],
       [
         "the fake plan was called once, with pulse, the key and off",
@@ -152,9 +153,19 @@ describe("choosing an issue with a local ticket", () => {
     ],
   });
 
+  scenario("does not run plan when the issue has no colour to clear", {
+    see: [`${KEY} opens its ticket and terminals, with no warning, and plan is not run`],
+    steps: [
+      [`click ${KEY}, which has no line in the pulses file`, () => clickIssue(KEY)],
+      ["both terminals open", () => eventually(sortedTerminalNames, TERMINALS)],
+      ["the fake plan is never called", () => staysTrue(async () => fixture.planCalls().length === 0)],
+    ],
+  });
+
   scenario("warns that it could not clear the colour when plan fails", {
     see: [`a warning toast at the bottom right: plan window: could not clear ${KEY}'s colour … fixture plan failure`],
     steps: [
+      [`${KEY} is orange`, () => fixture.writePulses({ [KEY]: "orange" })],
       ["make the fake plan fail", () => fixture.makePlanFail()],
       [`click ${KEY}`, () => clickIssue(KEY)],
       [
@@ -165,7 +176,7 @@ describe("choosing an issue with a local ticket", () => {
   });
 
   scenario("leaves the item's colour when plan fails", {
-    see: [`${KEY} is an orange bell, the warning toast shows, and ${KEY} is still the orange bell`],
+    see: [`${KEY} is a solid orange warning triangle, the warning toast shows, and ${KEY} is still the solid orange warning triangle`],
     steps: [
       [
         `${KEY} is orange and the fake plan fails`,
@@ -177,8 +188,8 @@ describe("choosing an issue with a local ticket", () => {
       [`click ${KEY}`, () => clickIssue(KEY)],
       ["the warning shows", () => eventually(() => notificationShows(["could not clear"]), true)],
       [
-        "the item is still the orange bell",
-        () => eventually(async () => (await issueItems()).map((item) => item.icon), ["codicon-bell-dot"]),
+        "the item is still the solid orange warning triangle",
+        () => eventually(async () => (await issueItems()).map((item) => item.icon), ["waiting.svg"]),
       ],
     ],
   });
@@ -215,6 +226,7 @@ describe("a vscode://skuld.plan-window/open link", () => {
   scenario("does what choosing the issue does", {
     see: [`with no click: the ${KEY} ticket tab, the Claude terminal and the Shell terminal open, and no warning`],
     steps: [
+      [`${KEY} is orange`, () => fixture.writePulses({ [KEY]: "orange" })],
       [
         `send the window vscode://skuld.plan-window/open?key=${KEY}`,
         () => sendLink(`vscode://skuld.plan-window/open?key=${KEY}`),

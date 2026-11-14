@@ -1,7 +1,8 @@
-# The plan window's plumbing: each issue's workspace file, the plan workspace that holds every
-# started issue's worktree, opening the plan window with `code`, the issues file that the Issues
-# view and the Claude status engine read, opening a page in the window's integrated browser, and
-# Ship's tmux window. All via subprocess, like start.py's run(); no vscode import, no new deps.
+# The plan window's plumbing: each issue's workspace file (settings only), the plan workspace that
+# holds the ticket store's folder, always first, and every started issue's worktree, opening the
+# plan window with `code`, the issues file that the Issues view and the Claude status engine read,
+# opening a page in the window's integrated browser, and Ship's tmux window. All via subprocess,
+# like start.py's run(); no vscode import, no new deps.
 # VS Code places the window: `code <plan workspace>` opens it, or raises it wherever it is
 # (ADR 0004).
 #
@@ -17,14 +18,19 @@ import sys
 from contextlib import contextmanager
 from urllib.parse import quote, urlencode, urlparse
 
+from .jira import KEY_RE
 from .start import expandHome, run
 
 DEFAULT_ISSUES_FILE = "~/.cache/plan/issues"
-ISSUE_KEY = re.compile(r"^[A-Z][A-Z0-9]*-[0-9]+$")
+DEFAULT_PULSES_FILE = "~/.cache/plan/pulses"
 
 
 def resolveIssuesFile(issuesFile=None):
     return expandHome(issuesFile or DEFAULT_ISSUES_FILE)
+
+
+def resolvePulsesFile(pulsesFile=None):
+    return expandHome(pulsesFile or DEFAULT_PULSES_FILE)
 
 
 # The issues file's keys, in file order, each once. A missing file is empty, and a line that isn't
@@ -39,7 +45,7 @@ def issueKeys(issuesFile=None):
 
 
 def uniqueKeys(lines):
-    return list(dict.fromkeys(line for line in lines if ISSUE_KEY.match(line)))
+    return list(dict.fromkeys(line for line in lines if KEY_RE.match(line)))
 
 
 # Appends key unless the file already lists it. The Issues view rereads the file on its own.
@@ -117,8 +123,8 @@ def removeIfThere(path):
 # --- The plan window: one VS Code window on the plan workspace, a folder per started issue ---
 #
 # The plan workspace (<workspaceDir>/plan.code-workspace) lists the worktree of each issue in the
-# issues file, and the ticket store's folder. Start and Open add the issue's folder and the
-# store's, and Done removes only the issue's. Every write also sets the plan.* settings that tell
+# issues file, and the ticket store's folder, which is always first. Start and Open add the issue's
+# folder and the store's, and Done removes only the issue's. Every write also sets the plan.* settings that tell
 # plan-window where the issues file, the pulses file and the issue records are (planSettings());
 # every other key, and every other setting, is kept as it is.
 PLAN_WORKSPACE_NAME = "plan.code-workspace"
@@ -145,49 +151,74 @@ def readPlanWorkspace(path):
 
 
 # Whether folder is worktree's entry. Paths are compared resolved: git lists a worktree by its real
-# path (/private/var/... on macOS) where Start may have named it through a symlink (/var/...).
-def isFolderOf(folder, worktree):
-    return isinstance(folder, dict) and isinstance(folder.get("path"), str) and os.path.realpath(folder["path"]) == os.path.realpath(worktree)
+# path (/private/var/... on macOS) where Start may have named it through a symlink (/var/...). A
+# relative folder path is relative to the folder holding the workspace file (base), as in VS Code.
+def isFolderOf(folder, worktree, base):
+    if not (isinstance(folder, dict) and isinstance(folder.get("path"), str)):
+        return False
+    return os.path.realpath(os.path.join(base, folder["path"])) == os.path.realpath(worktree)
 
 
-# The settings plan-window reads from the plan workspace, each an expanded path. pulsesFile is
-# already resolved (lib/pulses.py's resolvePulsesFile()), since pulses.py builds on this module.
+# This checkout's bin/plan, found from this file's own location as bin/plan finds lib: the plan
+# that is running. plan-window runs it for `pulse <KEY> off` (plan.command).
+PLAN_COMMAND = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "plan")
+
+
+# The settings the plan workspace carries: the plan.* ones plan-window reads, each an expanded path
+# (plan.command is this checkout's bin/plan), and the one VS Code setting that sends a clicked
+# localhost link to the window's integrated browser. One place to add a setting: Start, Open and Done all write these.
 def planSettings(issuesFile, pulsesFile, workspaceDir):
     return {
+        "plan.command": PLAN_COMMAND,
+        "workbench.browser.openLocalhostLinks": True,  # a clicked localhost link opens in the window
         "plan.issuesFile": resolveIssuesFile(issuesFile),
-        "plan.pulsesFile": pulsesFile,
+        "plan.pulsesFile": resolvePulsesFile(pulsesFile),
         "plan.workspaceDir": expandHome(workspaceDir or DEFAULT_WORKSPACE_DIR),
     }
 
 
 # Appends each of paths as a folder unless the plan workspace already lists it, and sets settings.
-def addFolders(paths, path, settings):
+# `first` is a folder kept first: added when missing, moved to the front when listed further down,
+# so the folder Done removes is never the one VS Code names the workspace by.
+def addFolders(paths, path, settings, first=None):
+    base = os.path.dirname(path)
+
     def add(folders):
-        for added in paths:
-            if not any(isFolderOf(folder, added) for folder in folders):
+        for added in [*([first] if first else []), *paths]:
+            if not any(isFolderOf(folder, added, base) for folder in folders):
                 folders = [*folders, {"path": added}]
-        return folders
+        return movedToFront(folders, first, base) if first else folders
 
     with locked(path):
         updatePlanWorkspace(path, add, settings)
 
 
+# folders with the entry for `first` moved to the front; the rest keep their order.
+def movedToFront(folders, first, base):
+    at = next(i for i, folder in enumerate(folders) if isFolderOf(folder, first, base))
+    return [folders[at], *folders[:at], *folders[at + 1:]]
+
+
 # Drops worktree's folder and sets settings, writing only when the plan workspace lists it, so
 # Done on an issue the file doesn't list leaves the file alone.
 def removeFolder(worktree, path, settings):
-    def remove(folders):
-        return [folder for folder in folders if not isFolderOf(folder, worktree)]
-
+    base = os.path.dirname(path)
     with locked(path):
-        if any(isFolderOf(folder, worktree) for folder in readPlanWorkspace(path)["folders"]):
-            updatePlanWorkspace(path, remove, settings)
+        workspace = readPlanWorkspace(path)
+        if any(isFolderOf(folder, worktree, base) for folder in workspace["folders"]):
+            kept = [folder for folder in workspace["folders"] if not isFolderOf(folder, worktree, base)]
+            saveIfChanged(path, workspace, kept, settings)
 
 
 # Rewrites the plan workspace with changeFolders applied to its folders and settings merged into
 # its settings, writing only when that changes it.
 def updatePlanWorkspace(path, changeFolders, settings):
     workspace = readPlanWorkspace(path)
-    changed = {**workspace, "folders": changeFolders(workspace["folders"]), "settings": withSettings(workspace.get("settings"), settings)}
+    saveIfChanged(path, workspace, changeFolders(workspace["folders"]), settings)
+
+
+def saveIfChanged(path, workspace, folders, settings):
+    changed = {**workspace, "folders": folders, "settings": withSettings(workspace.get("settings"), settings)}
     if changed != workspace:
         writeWorkspaceFile(path, changed)
 
@@ -251,24 +282,21 @@ def removeThrowaway(path):
     return None
 
 
-# The issue's record: the worktree and the ticket store as its folders (the worktree first), the key in the window title and in every terminal's environment, and the plan.*
-# settings the plan-window extension reads (vscode/plan-window) to open the ticket and start
-# Claude. A store issue has a ticket file (plan.ticket); a Jira issue has none, and has its browse
-# URL (plan.ticketUrl) instead.
-def issueWorkspace(key, worktree, store, prompt, ticket=None, ticketUrl=None):
+# The issue's record: only the plan.* settings the plan-window extension reads (issueRecord in
+# vscode/plan-window/plan.js) to open the ticket and start Claude. No window opens on it, so it has
+# no folders and no window settings. A store issue has a ticket file (plan.ticket); a Jira issue
+# has none, and has its browse URL (plan.ticketUrl) instead.
+def issueWorkspace(key, worktree, prompt, ticket=None, ticketUrl=None):
     settings = {
-        "window.title": f"{key}${{separator}}${{activeEditorShort}}",
-        "terminal.integrated.env.osx": {"PLAN_KEY": key},
         "plan.key": key,
         "plan.worktree": worktree,
         "plan.prompt": prompt,
-        "workbench.browser.openLocalhostLinks": True,  # a clicked localhost link opens in the window
     }
     if ticket:
         settings["plan.ticket"] = ticket
     elif ticketUrl:
         settings["plan.ticketUrl"] = ticketUrl
-    return {"folders": [{"path": worktree}, {"path": store}], "settings": settings}
+    return {"settings": settings}
 
 
 def writeWorkspaceFile(path, workspace):

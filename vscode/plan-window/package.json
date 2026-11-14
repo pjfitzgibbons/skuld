@@ -1,7 +1,7 @@
 {
   "name": "plan-window",
   "displayName": "plan window",
-  "description": "Shows plan's issues in the Explorer and opens an issue's Claude terminal, shell and ticket in the plan window, and opens plan browse's pages in the integrated browser.",
+  "description": "In the plan window only, shows plan's issues in the Explorer, opens an issue's Claude terminal, shell and ticket, and opens plan browse's pages in the integrated browser. Other windows ignore it.",
   "publisher": "skuld",
   "version": "0.0.1",
   "private": true,
@@ -12,7 +12,7 @@
   "contributes": {
     "views": {
       "explorer": [
-        { "id": "plan.issues", "name": "Issues" }
+        { "id": "plan.issues", "name": "Issues", "when": "plan.isPlanWindow" }
       ]
     },
     "configuration": {
@@ -40,7 +40,7 @@
           "type": "string",
           "default": "~/.cache/plan/code-workspaces",
           "scope": "window",
-          "description": "Where plan start writes each issue's <KEY>.code-workspace, read for its worktree, ticket and prompt. Matches workspaceDir in plan's config."
+          "description": "Where plan start writes plan.code-workspace and each issue's <KEY>.code-workspace. The window on plan.code-workspace is the plan window, the only one this extension acts in; each <KEY>.code-workspace is read for its worktree, ticket and prompt. Matches workspaceDir in plan's config."
         }
       }
     }
