@@ -406,6 +406,45 @@ class FinishTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "isn't in .* origin"):
             finish(jira, s["checkouts"], KEY, view=lambda cwd, branch: pr, cwd=s["checkout"])
 
+    def test_removes_worktree_holding_the_e2e_suites_downloaded_vscode(self):
+        s = self.sandbox()
+        writeIgnoredFolder(s["dir"], "vscode/plan-window/e2e/.wdio-vscode-service", 5)
+        finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        self.assertFalse(os.path.exists(s["dir"]))
+
+    def test_refusal_names_an_ignored_folder_once_and_lists_none_of_its_files(self):
+        s = self.sandbox()
+        writeIgnoredFolder(s["dir"], "cache", 50)
+        with self.assertRaises(RuntimeError) as raised:
+            finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        lines = str(raised.exception).splitlines()
+        self.assertIn("has ignored files its removal would delete", lines[0])
+        self.assertEqual(lines[1:], ["cache/"])
+        self.assertTrue(os.path.exists(s["dir"]))
+
+    def test_refusal_caps_the_list_and_counts_the_rest(self):
+        s = self.sandbox()
+        for i in range(13):
+            writeIgnoredFolder(s["dir"], f"cache{i:02d}", 1)
+        with self.assertRaises(RuntimeError) as raised:
+            finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        lines = str(raised.exception).splitlines()
+        self.assertEqual(len(lines), 1 + 10 + 1)
+        self.assertEqual(lines[-1], "and 3 more")
+
+
+def writeIgnoredFolder(dir, relative, count):
+    folder = os.path.join(dir, relative)
+    os.makedirs(os.path.join(folder, "sub"), exist_ok=True)
+    # The repo's exclude file ignores the folder, as the repo's .gitignore does for a tool's cache.
+    exclude = git(dir, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude").strip()
+    os.makedirs(os.path.dirname(exclude), exist_ok=True)
+    with open(exclude, "a") as f:
+        f.write(f"/{relative}/\n")
+    for i in range(count):
+        with open(os.path.join(folder, "sub", f"f{i}.txt"), "w") as f:
+            f.write("x\n")
+
 
 class DisposableTests(unittest.TestCase):
     def test_lists_ignored_names_worktree_removal_may_delete_unasked(self):
