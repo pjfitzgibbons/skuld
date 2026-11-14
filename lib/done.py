@@ -162,8 +162,8 @@ def fetchHead(cwd, pr):
 # what tools make again. "name/" is a folder of that name at any depth, "name" a file or folder.
 # .wdio-vscode-service/ is the e2e suite's downloaded VS Code; the next run downloads it again.
 DISPOSABLE = [
-    ".tmp/", "node_modules/", ".venv/", "__pycache__/", ".pytest_cache/", ".coverage", ".ruby-lsp/", "htmlcov/", "dist/", "build/",
-    ".wdio-vscode-service/",
+    ".tmp/", "node_modules/", ".venv/", "__pycache__/", ".pytest_cache/", ".ruff_cache/", ".coverage", ".ruby-lsp/", "htmlcov/",
+    "dist/", "build/", ".wdio-vscode-service/",
 ]
 
 # The refusal names this many ignored entries, then counts the rest.

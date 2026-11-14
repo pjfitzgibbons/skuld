@@ -412,6 +412,12 @@ class FinishTests(unittest.TestCase):
         finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
         self.assertFalse(os.path.exists(s["dir"]))
 
+    def test_removes_worktree_holding_ruffs_cache(self):
+        s = self.sandbox()
+        writeIgnoredFolder(s["dir"], ".ruff_cache", 3)
+        finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        self.assertFalse(os.path.exists(s["dir"]))
+
     def test_refusal_names_an_ignored_folder_once_and_lists_none_of_its_files(self):
         s = self.sandbox()
         writeIgnoredFolder(s["dir"], "cache", 50)
