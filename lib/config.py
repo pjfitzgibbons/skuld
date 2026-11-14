@@ -50,9 +50,9 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #   projectMarkers { <Jira project key>: <short marker string shown in the picker/list>, e.g.
 #                  { "CIAM": "C" } }. Cosmetic only; falls back to the project key itself.
 #                  Default: {}.
-#   disposable     Branch name patterns (globs, as done.py's DISPOSABLE already defines them)
-#                  that Done may delete after a merge without asking. Default: done.py's
-#                  DISPOSABLE list.
+#   disposable     Ignored folder and file names ("name/" a folder, "name" a file or folder,
+#                  at any depth) that Done may delete with a merged issue's worktree without
+#                  asking. Replaces done.py's DISPOSABLE list. Default: DISPOSABLE.
 #   pr             Path to the `pr` script Ship invokes. Default: "~/.local/bin/pr".
 #   typeMap        { <Jira issue type name>: <branch prefix> }, e.g. { "Story": "feat",
 #                  "Bug": "fix" }. An issue type absent from the map gets "chore"
