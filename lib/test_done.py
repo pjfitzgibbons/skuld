@@ -276,6 +276,26 @@ class FinishTests(unittest.TestCase):
         finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"], workspaceDir=workspaceDir)
         self.assertEqual(term.readPlanWorkspace(planWorkspace)["folders"], [])
 
+    def test_a_failing_last_write_warns_what_to_do_by_hand_and_done_still_finishes(self):
+        s = self.sandbox()
+        planWorkspace = term.planWorkspacePath()
+        term.addIssue(KEY)
+        pulses.setPulse(KEY, "green")
+        term.addFolders([s["dir"]], planWorkspace, {})
+        with open(planWorkspace, "w") as f:
+            f.write('{\n  // mine\n  "folders": [],\n}\n')  # JSONC: the plan workspace can't be read
+        with mock.patch.object(term, "removeIssue", side_effect=OSError("disk full")):
+            result = finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        warnings = [n for n in result["notes"] if n.startswith("Warning:")]
+        self.assertEqual(len(warnings), 2)
+        self.assertIn(f"removing {KEY} from the issues file failed: disk full", warnings[0])
+        self.assertIn("Delete the", warnings[0])
+        self.assertIn("could not be read", warnings[1])
+        self.assertIn(f"Remove {os.path.realpath(s['dir'])} from the folders in", warnings[1])
+        self.assertEqual(pulses.readPulses(), {})  # the step between the two failures still ran
+        self.assertFalse(os.path.exists(s["dir"]))
+        self.assertTrue(any(f"Close {KEY} in Jira" in n for n in result["notes"]))
+
     def test_deletes_the_issue_windows_workspace_files(self):
         s = self.sandbox()
         workspaceDir = os.path.join(s["root"], "ws")

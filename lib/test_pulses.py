@@ -26,8 +26,8 @@ class PulseTests(unittest.TestCase):
             return f.read()
 
     def test_a_pulse_line_takes_the_same_keys_as_the_issues_file(self):
-        self.assertFalse(pulses.PULSE_LINE.match("C-1=orange"))
-        self.assertTrue(pulses.PULSE_LINE.match("C1-1=orange"))
+        self.assertTrue(pulses.PULSE_LINE.match("SK-0063=orange"))
+        self.assertFalse(pulses.PULSE_LINE.match("C1-1=orange"))
 
     def test_a_pulse_writes_the_keys_colour(self):
         self.pulse("CIAM-12", "orange")

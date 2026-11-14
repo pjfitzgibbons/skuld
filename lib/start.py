@@ -11,7 +11,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .jira import KEY_RE, projectOf
+from .issuekeys import KEY_RE, projectOf
 
 # Jira issue types vary per project and have no fixed branch convention, unlike Redmine's trackers.
 # The map is config (plan.typeMap), not a hardcoded constant; this is only its default.

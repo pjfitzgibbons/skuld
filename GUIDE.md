@@ -290,8 +290,8 @@ runs only when it has something to do:
    whether or not the plan window is open. The issue's worktree is added as a folder of the plan
    workspace file, `plan.code-workspace` in `workspaceDir`, written the same way. The plan
    workspace also lists the ticket store's folder, always as its first folder: Start and Open add
-   it or move it to the front, and Done never removes it. A key is `[A-Z][A-Z0-9]+-<digits>`, the
-   rule for the issues file, the pulses file and the extension. The Issues view
+   it or move it to the front, and Done never removes it. A key matches `ISSUE_KEY_PATTERN`, the
+   rule for the issues file, the pulses file and the extension (architecture §5). The Issues view
    and the Claude status engine read the issues file; `plan list` and the picker do not.
 8. **Open the plan window.** Write the issue's `<KEY>.code-workspace` to `workspaceDir`, with its
    key, worktree and prompt, and its ticket: `plan.ticket`, a store ticket's file, or

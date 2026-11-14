@@ -155,7 +155,17 @@ class CmdOpenTests(unittest.TestCase):
             "couldn't open SK-0001 in the plan window: --open-url failed; click it in the Issues view\n",
         )
 
-    def test_a_garbage_plan_workspace_is_replaced_keeping_its_settings_when_it_has_some(self):
+    def test_a_plan_workspace_that_cant_be_read_stops_open_naming_the_file_and_stays_as_it_is(self):
+        os.makedirs(os.path.dirname(self.planWorkspace))
+        text = '{\n  // mine\n  "folders": [],\n}\n'
+        with open(self.planWorkspace, "w") as f:
+            f.write(text)
+        with self.assertRaisesRegex(RuntimeError, r"adding the issue's folder to the plan workspace failed: .*plan\.code-workspace could not be read.*\nFix or delete"):
+            self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
+        with open(self.planWorkspace, encoding="utf8") as f:
+            self.assertEqual(f.read(), text)
+
+    def test_a_plan_workspace_with_a_bad_folders_is_replaced_keeping_its_settings_when_it_has_some(self):
         os.makedirs(os.path.dirname(self.planWorkspace))
         with open(self.planWorkspace, "w") as f:
             f.write('{"folders": "x", "settings": {"editor.tabSize": 2}}')

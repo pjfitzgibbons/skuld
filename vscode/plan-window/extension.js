@@ -67,11 +67,13 @@ async function openOpenLink(query) {
 // What choosing an issue does: bring up its ticket (a store issue's file, or a Jira issue's page),
 // its shell and its Claude in this window, then ask the plan CLI to clear its colour, since it's
 // been seen. The status engine (lib/agents.py) colours it again only when its Claude's state changes.
+// The ticket steps are best-effort, each with its own warning (a moved ticket file must not keep the
+// terminals from opening); an issue record that can't be read stops the click.
 async function openIssue(key) {
   try {
     const plan = readIssueRecord(key);
-    await showTicket(plan);
-    await openTicketPage(plan);
+    await bestEffort(key, () => showTicket(plan));
+    await bestEffort(key, () => openTicketPage(plan));
     showShellTerminal(plan);
     showClaudeTerminal(plan);
     if (windowPlan.hasPulse(readPulses(), key)) clearPulse(key);
@@ -79,6 +81,14 @@ async function openIssue(key) {
     vscode.window.showErrorMessage(`plan window: ${error.message}`);
   }
   refreshIssues();
+}
+
+async function bestEffort(key, ticketStep) {
+  try {
+    await ticketStep();
+  } catch (error) {
+    vscode.window.showWarningMessage(`plan window: could not show the ticket for ${key}: ${error.message}`);
+  }
 }
 
 // Runs `plan pulse <KEY> off` without blocking the extension host. The CLI writes the pulses file

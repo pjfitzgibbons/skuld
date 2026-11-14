@@ -19,7 +19,7 @@ import time
 from dataclasses import asdict, dataclass
 
 from . import pulses, reviews, term, waiting
-from .jira import KEY_PATTERN, KEY_RE
+from .issuekeys import ISSUE_KEY_PATTERN, KEY_RE
 from .start import expandHome, git, run
 
 DEFAULT_CLAUDE_COMMAND = "~/.local/bin/claude"
@@ -28,7 +28,7 @@ TICK_SECONDS = 3
 WAKE_CHECK_SECONDS = 0.25
 
 # A worktree plan made: <repo>.worktrees/<KEY>, and anything below it.
-WORKTREE = re.compile(rf"^(?P<root>.*\.worktrees/(?P<key>{KEY_PATTERN}))(?:/|$)")
+WORKTREE = re.compile(rf"^(?P<root>.*\.worktrees/(?P<key>{ISSUE_KEY_PATTERN}))(?:/|$)")
 
 # Most urgent first: the order of the listing, and which state an issue with two Claudes shows.
 URGENCY = ("waiting", "done", "busy", "blocked", "idle")

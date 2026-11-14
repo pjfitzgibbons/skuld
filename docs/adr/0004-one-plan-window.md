@@ -62,7 +62,7 @@ it, and each issue's Claude runs in a terminal of that window. `plan` reads, swi
   already fakes, and there is no second adapter in view. A port with one trivial adapter and no
   boundary to protect is indirection, so Start and Open call a `term` function that runs `code`.
 - **An issues file replaces the slots file.** It lists the Started or Opened issues that are not
-  yet Done, one `<KEY>` per line. Start and Open add a key and Done removes it. It is the roster
+  yet Done, one `<KEY>` per line, each a key by `ISSUE_KEY_PATTERN` (architecture §5). Start and Open add a key and Done removes it. It is the roster
   that the plan workspace, the Issues view and the status engine follow.
 - **An "Issues" view in VS Code's Explorer replaces SlotBar.** `plan-window` contributes the view
   `plan.issues` under `contributes.views.explorer`. It shows one item per key in the issues file,

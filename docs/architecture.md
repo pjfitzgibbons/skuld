@@ -47,7 +47,7 @@ GitHub's, and they are the one GitHub integration; GitHub Issues is not used.
 
 | Term | Definition |
 | --- | --- |
-| Issue | The unit of planned work, named by its key, `PREFIX-n`: a project prefix and a per-project number, zero-padded to four digits in the store (`SK-0012`). It lives in the ticket store or in Jira |
+| Issue | The unit of planned work, named by its key, `PREFIX-n`: a project prefix and a per-project number, zero-padded to four digits in the store (`SK-0012`). It lives in the ticket store or in Jira. A key's shape is `ISSUE_KEY_PATTERN` (§5) |
 | Project | A key prefix and the repos its work happens in. Store projects are listed in skuld's `store.yml`, Jira projects in the machine config |
 | Ticket store | A git repo, outside every development repo, holding ticket files, milestones and review files, with its own remote (§3, §7.7) |
 | Configured repo | A development repo some project lists by its `origin` remote, checked out on this Mac at a path in `checkouts` (§7.0) |
@@ -134,6 +134,14 @@ issue's number is one above the highest found in `active/` and `archive/` togeth
 reused. It is zero-padded to four digits, so a listing of the store sorts in number order, and
 `plan` pads a key typed without the zeros (`SK-12` is `SK-0012`). Its file is `<KEY>-<slug>.md`, the slug fixed when the file is made, so a retitle doesn't
 rename it.
+
+**A key matches `ISSUE_KEY_PATTERN`, `[A-Z]+-[0-9]+`.** Where a whole string is tested the pattern is
+anchored, `^[A-Z]+-[0-9]+$`. A project prefix is capital letters only and the number is ASCII digits, so
+`CIAM-123` and `SK-0063` are keys, and `ab-1`, `AB-`, `AB_C-1`, `AB2-1` and a number in non-ASCII digits are
+not. `lib/issuekeys.py` defines it as `ISSUE_KEY_PATTERN`, and `plan-window` carries the same string in
+`plan.js`; a test on each side asserts the exact value. Every key check in `lib`, the extension, the
+skill's scripts and the Claude hooks uses it: the issues file, the pulses file, branch names, worktree
+folders, `.tmp/<KEY>/` folders and `plan` arguments.
 
 Its branch is `<type>/<KEY>-<slug>`, with the prefix chosen from the issue's type: a Jira
 Story or Task, or a store `task` or `question`, is `feat/`; a Bug or `bug` is `fix/`; anything else
@@ -328,8 +336,8 @@ terminals stay until the human closes them, since `plan done` is often run in on
 
 **Each issue's item in the Issues view shows its Claude's state.** The status engine, `lib/agents.py`, places
 each session from `claude agents --json` by its cwd: a cwd in `<repo>.worktrees/<KEY>` gives the
-key, and the key counts only while it is in the issues file. A key is `[A-Z][A-Z0-9]+-<digits>` (`jira.KEY_RE`),
-the rule for the issues file, the pulses file's lines and the extension alike. A session it can't
+key, and the key counts only while it is in the issues file. A key is an `ISSUE_KEY_PATTERN` key (§5), the
+rule for the issues file, the pulses file's lines and the extension alike. A session it can't
 place shows on `-` and pulses nothing; a session in the worktree of a key that isn't listed shows
 as `- (KEY)` in `plan agents` and as `-(KEY)` in the status line, so the key isn't lost. An issue pulses orange while one of its Claudes waits on a person (a question, a
 permission), green while one is idle with `.tmp/<KEY>/report.html` newer than the branch's last

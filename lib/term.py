@@ -18,7 +18,7 @@ import sys
 from contextlib import contextmanager
 from urllib.parse import quote, urlencode, urlparse
 
-from .jira import KEY_RE
+from .issuekeys import KEY_RE
 from .start import expandHome, run
 
 DEFAULT_ISSUES_FILE = "~/.cache/plan/issues"
@@ -134,20 +134,27 @@ def planWorkspacePath(workspaceDir=None):
     return os.path.join(expandHome(workspaceDir or DEFAULT_WORKSPACE_DIR), PLAN_WORKSPACE_NAME)
 
 
-# The plan workspace as a dict with a `folders` list. A missing file is an empty workspace; so is
-# one that isn't a JSON object, and a `folders` that isn't a list is an empty one, so a damaged
-# file never stops Start, and the next write repairs it.
+# The plan workspace as a dict with a `folders` list. A missing file is an empty workspace, and a
+# `folders` that isn't a list is an empty one. A file that exists but can't be read as a JSON
+# object (VS Code accepts comments and trailing commas there, which json can't parse) raises, so
+# the next write never replaces a hand-edited file with a bare one.
 def readPlanWorkspace(path):
     try:
         with open(path, "r", encoding="utf8") as f:
             workspace = json.load(f)
-    except (FileNotFoundError, ValueError):
+    except FileNotFoundError:
         workspace = {}
+    except (ValueError, OSError) as error:
+        raise unreadablePlanWorkspace(path, error) from error
     if not isinstance(workspace, dict):
-        workspace = {}
+        raise unreadablePlanWorkspace(path, "it isn't a JSON object")
     if not isinstance(workspace.get("folders"), list):
         workspace["folders"] = []
     return workspace
+
+
+def unreadablePlanWorkspace(path, reason):
+    return RuntimeError(f"the plan workspace {path} could not be read ({reason}); fix it or delete it")
 
 
 # Whether folder is worktree's entry. Paths are compared resolved: git lists a worktree by its real

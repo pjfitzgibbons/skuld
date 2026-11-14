@@ -9,10 +9,10 @@
 import re
 
 from . import term
-from .jira import KEY_PATTERN
+from .issuekeys import ISSUE_KEY_PATTERN
 
 COLORS = ("orange", "green", "off")
-PULSE_LINE = re.compile(rf"^(?P<key>{KEY_PATTERN})=(?P<color>orange|green)$")
+PULSE_LINE = re.compile(rf"^(?P<key>{ISSUE_KEY_PATTERN})=(?P<color>orange|green)$")
 
 
 # `plan pulse`: the key must be one the issues file lists, since only a listed issue has an item.

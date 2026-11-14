@@ -4,8 +4,9 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-// The one issue-key rule, lib/jira.py's KEY_RE: every key check here is built from it.
-const ISSUE_KEY_PATTERN = "[A-Z][A-Z0-9]+-[0-9]+";
+// The one issue-key rule. lib/issuekeys.py's ISSUE_KEY_PATTERN is the canonical copy; this string must
+// stay equal to it (plan.test.js asserts the value). Every key check here is built from it.
+const ISSUE_KEY_PATTERN = "[A-Z]+-[0-9]+";
 const ISSUE_KEY = new RegExp(`^${ISSUE_KEY_PATTERN}$`);
 
 // An issue: its plan.* settings, read from the issue's own workspace file (issueRecord), which
@@ -291,6 +292,7 @@ function isPlanWindow(workspaceFile, workspaceDir, home = os.homedir()) {
 }
 
 module.exports = {
+  ISSUE_KEY_PATTERN,
   hasPulse,
   isPlanWindow,
   browseRequest,

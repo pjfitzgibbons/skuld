@@ -288,6 +288,17 @@ def branchForKey(checkout, key, typeMap=None):
     return refs("refs/heads") or refs("refs/remotes/origin")
 
 
+# Runs one of Done's last writes. A write that fails is a warning naming what to do by hand, not a
+# failure: the branch and worktree are already gone, so the remaining steps still run. None when it worked.
+def unwritten(name, byHand, write):
+    try:
+        with term.step(name, byHand):
+            write()
+    except RuntimeError as error:
+        return f"Warning: {error}"
+    return None
+
+
 # The issue's worktree path: the one Done resolved, where Start and Open wrote the legacy workspace
 # file beside it, else the one Start would make.
 def issueWorktreePath(resolved, checkout, key):
@@ -477,9 +488,15 @@ def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result,
     # workspace (term.addFolders); the store's folder stays for the other issues. Done opens no
     # browser -- only the "Close KEY in Jira" note above, once, ever points Peter at the issue.
     worktree = issueWorktreePath(resolved, checkout, key)
-    term.removeIssue(key, issuesFile)
-    pulses.clearPulse(key, pulsesFile)
     settings = term.planSettings(issuesFile, pulsesFile, workspaceDir)
-    term.removeFolder(worktree, term.planWorkspacePath(workspaceDir), settings)
+    planWorkspace = term.planWorkspacePath(workspaceDir)
+    notes.extend(filter(None, [
+        unwritten(f"removing {key} from the issues file", f"Delete the {key} line from {term.resolveIssuesFile(issuesFile)}.",
+                  lambda: term.removeIssue(key, issuesFile)),
+        unwritten(f"clearing {key}'s colour", f"Run `plan pulse {key} off`.",
+                  lambda: pulses.clearPulse(key, pulsesFile)),
+        unwritten(f"removing {key}'s folder from the plan workspace", f"Remove {worktree} from the folders in {planWorkspace}.",
+                  lambda: term.removeFolder(worktree, planWorkspace, settings)),
+    ]))
     # The issue's workspace file is a throwaway: one that won't delete is a warning, not a failure.
     notes.extend(term.removeWorkspaceFiles(key, worktree, workspaceDir))

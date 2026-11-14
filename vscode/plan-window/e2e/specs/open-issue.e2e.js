@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { expect } from "@wdio/globals";
 import { eventually, staysTrue } from "../support/eventually.js";
 import { useFreshFixture } from "../support/hooks.js";
@@ -191,6 +192,19 @@ describe("choosing an issue with a local ticket", () => {
         "the item is still the solid orange warning triangle",
         () => eventually(async () => (await issueItems()).map((item) => item.icon), ["waiting.svg"]),
       ],
+    ],
+  });
+
+  scenario("opens both terminals and warns when the ticket file is missing", {
+    see: [
+      `a warning toast at the bottom right: plan window: could not show the ticket for ${KEY}: …`,
+      `a "Claude ${KEY}" and a "Shell ${KEY}" terminal still open`,
+    ],
+    steps: [
+      [`the ${KEY} ticket file is gone, as when a store ticket moves`, () => fs.rmSync(issue.ticket)],
+      [`click ${KEY}`, () => clickIssue(KEY)],
+      ["a warning names the issue's ticket", () => eventually(() => notificationShows([`could not show the ticket for ${KEY}`]), true)],
+      ["both terminals open", () => eventually(sortedTerminalNames, TERMINALS)],
     ],
   });
 

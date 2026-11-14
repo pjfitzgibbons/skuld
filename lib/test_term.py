@@ -393,19 +393,31 @@ class PlanWorkspaceTests(unittest.TestCase):
             term.removeFolder("/w/SK-0041", self.path, SETTINGS)
         read.assert_called_once()
 
-    def test_a_key_needs_two_letters_or_digits_in_its_project(self):
-        self.assertEqual(term.uniqueKeys(["C-1", "CI-1", "C1-2"]), ["CI-1", "C1-2"])
+    def test_a_key_is_capital_letters_a_dash_and_digits(self):
+        self.assertEqual(term.uniqueKeys(["C-1", "CI-1", "C1-2", "ci-1"]), ["C-1", "CI-1"])
 
     def test_a_missing_file_is_an_empty_workspace(self):
         self.assertEqual(term.readPlanWorkspace(self.path), {"folders": []})
 
-    def test_a_garbage_file_is_an_empty_workspace_the_next_write_repairs(self):
-        for garbage in ("{not json", "[1, 2]", '{"folders": 3}'):
-            with self.subTest(garbage=garbage):
-                self.write(garbage)
-                self.assertEqual(self.folders(), [])
-                term.addFolders(["/w/SK-0041"], self.path, SETTINGS)
-                self.assertEqual(self.folders(), [{"path": "/w/SK-0041"}])
+    def test_a_folders_that_is_not_a_list_is_an_empty_one_the_next_write_repairs(self):
+        self.write('{"folders": 3}')
+        self.assertEqual(self.folders(), [])
+        term.addFolders(["/w/SK-0041"], self.path, SETTINGS)
+        self.assertEqual(self.folders(), [{"path": "/w/SK-0041"}])
+
+    def test_a_file_that_cant_be_read_as_a_json_object_raises_and_stays_as_it_is(self):
+        hand_edited = '{\n  // mine\n  "folders": [{"path": "/a"},],\n}\n'
+        for text in (hand_edited, "{not json", "[1, 2]"):
+            with self.subTest(text=text):
+                self.write(text)
+                for change in (
+                    lambda: term.addFolders(["/w/SK-0041"], self.path, SETTINGS),
+                    lambda: term.removeFolder("/w/SK-0041", self.path, SETTINGS),
+                ):
+                    with self.assertRaisesRegex(RuntimeError, r"plan\.code-workspace could not be read.*fix it or delete it"):
+                        change()
+                with open(self.path, encoding="utf8") as f:
+                    self.assertEqual(f.read(), text)
 
     def test_writing_leaves_no_temp_file_behind(self):
         term.addFolders(["/w/SK-0041"], self.path, SETTINGS)

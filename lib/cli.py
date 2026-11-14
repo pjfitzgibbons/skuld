@@ -17,7 +17,8 @@ from . import serve as serve_mod
 from . import ship as ship_mod
 from . import start as startLib
 from . import term as term_mod
-from .jira import KEY_RE, Jira, projectOf
+from .issuekeys import ISSUE_KEY_PATTERN, KEY_RE, projectOf
+from .jira import Jira
 
 
 # The client key's commands go through: FileIssues for a SK-<nnnn> key (lib/fileissues.py, user
@@ -79,7 +80,7 @@ def resolveDir(cfg, jira, key):
 # Pulls a Jira key out of a branch name built by branchName() (<type>/<KEY>-<slug>) or a bare
 # <KEY>-<slug>; raises if the branch doesn't carry one, since ship/go without a key need one.
 def keyFromBranch(branch):
-    match = re.search(r"(?:^|/)([A-Z][A-Z0-9]*-[0-9]+)-", branch)
+    match = re.search(rf"(?:^|/)({ISSUE_KEY_PATTERN})-", branch)
     if not match:
         raise RuntimeError(f'current branch "{branch}" doesn\'t carry a Jira key; pass one: plan ship CIAM-123')
     return match.group(1)
@@ -262,7 +263,7 @@ def addToIssuesFile(cfg, key):
 # removes the worktree, and VS Code restarts its extension host when the first folder goes.
 def addToPlanWorkspace(cfg, worktree, store):
     path = planWorkspaceFrom(cfg)
-    with term_mod.step("adding the issue's folder to the plan workspace", f"Check that {os.path.dirname(path)} is writable."):
+    with term_mod.step("adding the issue's folder to the plan workspace", f"Fix or delete {path} if it can't be read, check that {os.path.dirname(path)} is writable, then run the command again."):
         term_mod.addFolders([worktree], path, planSettingsFrom(cfg), first=store)
     return path
 

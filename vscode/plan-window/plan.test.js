@@ -259,12 +259,19 @@ test("the Claude terminal keeps CLAUDE_CONFIG_DIR, so the conversation check and
   );
 });
 
-test("a key needs two or more leading letters or digits, as lib/jira.py KEY_RE", () => {
-  assert.deepEqual(windowPlan.parseIssueKeys("A-1\nSK-9\nCIAM-12\nS2-3"), ["SK-9", "CIAM-12", "S2-3"]);
+test("the key pattern is lib/issuekeys.py's ISSUE_KEY_PATTERN, exactly", () => {
+  assert.equal(windowPlan.ISSUE_KEY_PATTERN, "[A-Z]+-[0-9]+");
+});
+
+test("a key is capital letters, a dash and ASCII digits", () => {
+  assert.deepEqual(
+    windowPlan.parseIssueKeys("SK-9\nCIAM-123\nSK-0063\nab-1\nAB-\nAB_C-1\nAB-\u0661\u0662\nAB2-1"),
+    ["SK-9", "CIAM-123", "SK-0063"],
+  );
 });
 
 test("a terminal name uses the same key rule", () => {
-  const terminals = [{ name: "Claude A-1" }, { name: "Claude SK-9" }];
+  const terminals = [{ name: "Claude AB2-1" }, { name: "Claude SK-9" }];
   assert.deepEqual(windowPlan.keysWithClaude(terminals), ["SK-9"]);
 });
 
