@@ -16,10 +16,17 @@ const windowPlan = require("./plan");
 
 let refreshIssues = () => {};
 
+// Output > "plan window": when the window activated and which link or issue it started, for finding
+// why a click or link did nothing. Set in activate.
+let planLog;
+
 // Every VS Code window activates this extension, but only the plan window acts: elsewhere it
 // registers no view, command or watcher, and a link gets a message saying where it belongs.
 function activate(context) {
+  planLog = vscode.window.createOutputChannel("plan window", { log: true });
+  context.subscriptions.push(planLog);
   const isPlan = isPlanWindow();
+  planLog.info(`activated; plan window: ${isPlan}`);
   vscode.commands.executeCommand("setContext", "plan.isPlanWindow", isPlan);
   context.subscriptions.push(vscode.window.registerUriHandler({ handleUri }));
   if (isPlan) registerIssuesView(context);
@@ -31,6 +38,7 @@ function isPlanWindow() {
 }
 
 async function handleUri(uri) {
+  planLog.info(`starting link ${uri.path}?${uri.query}`);
   if (!isPlanWindow()) {
     vscode.window.showInformationMessage("plan window: this link is for the plan window.");
     return;
@@ -70,12 +78,13 @@ async function openOpenLink(query) {
 // The ticket steps are best-effort, each with its own warning (a moved ticket file must not keep the
 // terminals from opening); an issue record that can't be read stops the click.
 async function openIssue(key) {
+  planLog.info(`starting open ${key}`);
   try {
     const plan = readIssueRecord(key);
-    await bestEffort(key, "show the ticket", () => showTicket(plan));
-    await bestEffort(key, "show the ticket", () => openTicketPage(plan));
+    await bestEffort(key, () => showTicket(plan));
+    await bestEffort(key, () => openTicketPage(plan));
     showShellTerminal(plan);
-    await showClaudeTerminal(plan);
+    showClaudeTerminal(plan);
     if (windowPlan.hasPulse(readPulses(), key)) clearPulse(key);
   } catch (error) {
     vscode.window.showErrorMessage(`plan window: ${error.message}`);
@@ -83,11 +92,11 @@ async function openIssue(key) {
   refreshIssues();
 }
 
-async function bestEffort(key, whatFailed, step) {
+async function bestEffort(key, ticketStep) {
   try {
-    await step();
+    await ticketStep();
   } catch (error) {
-    vscode.window.showWarningMessage(`plan window: could not ${whatFailed} for ${key}: ${error.message}`);
+    vscode.window.showWarningMessage(`plan window: could not show the ticket for ${key}: ${error.message}`);
   }
 }
 
@@ -128,48 +137,9 @@ async function openTicketPage(plan) {
   if (options) await openInBrowser(options);
 }
 
-async function showClaudeTerminal(plan) {
+function showClaudeTerminal(plan) {
   const terminal = windowPlan.findClaudeTerminal(plan, vscode.window.terminals) || createClaudeTerminal(plan);
   terminal.show(false);
-  await bestEffort(plan.key, "set the editor group locks", () => lockClaudeGroupOnly(plan, terminal));
-}
-
-// The ticket opens in the first editor group and Claude in the second. The Claude terminal's group is
-// locked, so other editors open beside it, and the ticket's group is left unlocked. Lock and unlock
-// act on the active group, so each group is focused by its column first. Lock and unlock set the
-// state and never toggle it, so a second Open leaves the same locks. Focus ends on Claude.
-async function lockClaudeGroupOnly(plan, terminal) {
-  const claudeGroup = await waitForTabGroup((tab) => isClaudeTab(plan, tab));
-  if (!claudeGroup) return;
-  const ticketGroup = windowPlan.groupHoldingTab(vscode.window.tabGroups.all, (tab) => isTicketTab(plan, tab));
-  if (ticketGroup && ticketGroup !== claudeGroup) await setGroupLock(ticketGroup, "unlock");
-  await setGroupLock(claudeGroup, "lock");
-  terminal.show(false);
-}
-
-async function setGroupLock(group, lockOrUnlock) {
-  const focus = windowPlan.focusGroupCommand(group.viewColumn);
-  if (!focus) return;
-  await vscode.commands.executeCommand(focus);
-  await vscode.commands.executeCommand(`workbench.action.${lockOrUnlock}EditorGroup`);
-}
-
-function isClaudeTab(plan, tab) {
-  return tab.input instanceof vscode.TabInputTerminal && tab.label === windowPlan.claudeTerminalName(plan);
-}
-
-function isTicketTab(plan, tab) {
-  return plan.ticket !== null && tab.input instanceof vscode.TabInputText && tab.input.uri.fsPath === plan.ticket;
-}
-
-// A terminal's editor tab appears a moment after show(), so the group is looked for until it does.
-async function waitForTabGroup(isTab, attempts = 40) {
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    const group = windowPlan.groupHoldingTab(vscode.window.tabGroups.all, isTab);
-    if (group) return group;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return undefined;
 }
 
 function showShellTerminal(plan) {

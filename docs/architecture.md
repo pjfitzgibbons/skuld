@@ -427,8 +427,7 @@ Start refuses a closed issue. A lock file per issue keeps two invocations from s
 **The issue beside Claude.** Opening the issue puts its ticket beside Claude: a store ticket in an
 editor tab of the plan window, on the ticket file in the store, never on a copy in a worktree; a
 Jira issue's browse URL in the plan window's integrated browser. The ticket opens in the first
-editor group and the Claude terminal in the second; `plan-window` locks the Claude terminal's group
-so other editors open beside it, and leaves the ticket's group unlocked. Start prints the URL or file
+editor group and the Claude terminal in the second. Start prints the URL or file
 path. Claude's
 prompt names the tracker: a Jira key, or the ticket file's path.
 

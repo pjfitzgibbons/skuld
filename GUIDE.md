@@ -311,9 +311,7 @@ runs only when it has something to do:
    to run by hand.
 9. **Print the ticket.** A Jira issue's browse URL, or a store ticket's file path, is printed.
    The ticket opens beside Claude when the issue is opened (step 10): a store ticket in an editor
-   tab, a Jira issue's page in the plan window's integrated browser. The ticket is in the first
-   editor group and Claude in the second; plan-window locks Claude's group, so other editors open
-   beside it, and leaves the ticket's group unlocked.
+   tab, a Jira issue's page in the plan window's integrated browser.
 10. **Open the issue.** Send `vscode://skuld.plan-window/open?key=<KEY>` with `code --open-url`, which opens the issue in
     the plan window as a click on its item does (§2, step 10), so the command ends with the human
     at the issue's Claude. Its terminals carry the issue's key in their environment. This step is

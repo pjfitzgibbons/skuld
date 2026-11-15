@@ -6,7 +6,6 @@ import { scenario } from "../support/steps.js";
 import {
   clickIssue,
   issueItems,
-  isGroupLockedWithTab,
   issueKeys,
   notificationCount,
   notificationShows,
@@ -263,29 +262,4 @@ describe("a vscode://skuld.plan-window/open link", () => {
       ["no warning shows", () => staysTrue(async () => (await notificationCount()) === 0)],
     ],
   });
-
-  scenario("locks the Claude terminal's group and not the ticket's, however many times it is sent", {
-    see: [
-      `${KEY}'s Claude terminal tab has the lock icon at the right end of its tab bar`,
-      "the ticket tab's group shows no lock",
-      "the same after the link is sent a second time",
-    ],
-    steps: [
-      [`send the window the link plan sends`, () => sendLink(`vscode://skuld.plan-window/open?key%3D${KEY}`)],
-      ["the Claude terminal's group is locked and the ticket's is not", () => expectLocks(issue.ticket)],
-      [`send the same link again`, () => sendLink(`vscode://skuld.plan-window/open?key%3D${KEY}`)],
-      [
-        "the locks are as they were",
-        async () => {
-          await eventually(sortedTerminalNames, TERMINALS);
-          await expectLocks(issue.ticket);
-        },
-      ],
-    ],
-  });
 });
-
-async function expectLocks(ticketFile) {
-  await eventually(() => isGroupLockedWithTab(`Claude ${KEY}`), true);
-  await eventually(() => isGroupLockedWithTab(path.basename(ticketFile)), false);
-}
