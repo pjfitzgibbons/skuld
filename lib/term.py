@@ -13,6 +13,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import stat
 import sys
 from contextlib import contextmanager
@@ -233,6 +234,97 @@ def saveIfChanged(path, workspace, folders, settings):
 # A settings value that isn't an object is replaced, like a damaged `folders`.
 def withSettings(existing, settings):
     return {**(existing if isinstance(existing, dict) else {}), **settings}
+
+
+# --- The plan-window extension's link ---
+#
+# VS Code loads the extension from a link in its extensions folder. A link missing, or pointing at
+# another checkout (a worktree without the current extension, say), makes the /open link do
+# nothing, so Start and Open check it first and stop with the whole fix. The link is only read here,
+# never rewritten.
+EXTENSIONS_DIR_ENV = "PLAN_EXTENSIONS_DIR"  # tests and a VS Code run with --extensions-dir
+DEFAULT_EXTENSIONS_DIR = "~/.vscode/extensions"
+EXTENSION_LINK_PREFIX = "skuld.plan-window-"
+EXTENSION_LINK_NAME = f"{EXTENSION_LINK_PREFIX}0.0.1"
+
+
+def extensionsDir():
+    return expandHome(os.environ.get(EXTENSIONS_DIR_ENV) or DEFAULT_EXTENSIONS_DIR)
+
+
+# The checkout this file runs from: the folder above lib/.
+def runningCheckout():
+    return os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+
+def extensionSource(checkout):
+    return os.path.join(checkout, "vscode", "plan-window")
+
+
+# Every skuld.plan-window-* entry in the extensions folder, whatever its version suffix.
+def planWindowEntries(folder):
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return []
+    return [os.path.join(folder, name) for name in names if name.startswith(EXTENSION_LINK_PREFIX)]
+
+
+def resolvesIntoCheckout(entry, checkout):
+    source = os.path.realpath(extensionSource(checkout))
+    return os.path.realpath(entry) == source
+
+
+def linkTarget(entry):
+    return os.readlink(entry) if os.path.islink(entry) else "(not a link)"
+
+
+def whatIsWrong(entries, folder):
+    if not entries:
+        return f"no {EXTENSION_LINK_PREFIX}* link in {folder}"
+    return "\n".join(f"{entry} -> {linkTarget(entry)}" for entry in entries)
+
+
+TRASH_DIR = "~/.Trash"
+
+
+# The step that clears one entry from the extensions folder. A link is removed. Anything else (a
+# real directory, a file) is moved to the Trash, so nothing is deleted: `mv -i` asks before it
+# replaces a same-named item already there, and an entry in the Trash is outside the extensions
+# folder, so it no longer matches skuld.plan-window-*.
+def clearStep(entry):
+    if os.path.islink(entry):
+        return f"rm {shlex.quote(entry)}"
+    return f"mv -i {shlex.quote(entry)} {shlex.quote(expandHome(TRASH_DIR))}/"
+
+
+# The fix, one numbered step each, every path shell-quoted. Entries the fixed link won't replace are
+# cleared first, so only one entry loads: a leftover of another version suffix, and the fixed name
+# itself when it is not a link (`ln -sfn` onto a directory links inside it). A missing folder is made.
+def fixSteps(entries, folder, checkout, command, key):
+    fixed = os.path.join(folder, EXTENSION_LINK_NAME)
+    steps = [clearStep(entry) for entry in entries if entry != fixed or not os.path.islink(entry)]
+    if not os.path.isdir(folder):
+        steps.append(f"mkdir -p {shlex.quote(folder)}")
+    steps.append(f"ln -sfn {shlex.quote(extensionSource(checkout))} {shlex.quote(fixed)}")
+    steps.append("Restart VS Code (quit and reopen).")
+    steps.append(f"Re-run: plan {command} {key}")
+    return [f"  {number}. {step}" for number, step in enumerate(steps, 1)]
+
+
+# Stops Start or Open, before anything changes, unless an extension link resolves into the checkout
+# plan runs from. The message is the whole fix.
+def checkExtensionLink(command, key, folder=None, checkout=None):
+    folder = folder or extensionsDir()
+    checkout = checkout or runningCheckout()
+    entries = planWindowEntries(folder)
+    if any(resolvesIntoCheckout(entry, checkout) for entry in entries):
+        return
+    steps = fixSteps(entries, folder, checkout, command, key)
+    raise RuntimeError(
+        f"plan-window extension link is wrong: {whatIsWrong(entries, folder)}\n"
+        f"plan runs from {checkout}. To fix:\n" + "\n".join(steps)
+    )
 
 
 # Opens the plan window, or raises it wherever it is. A failure stops Start, naming the command to

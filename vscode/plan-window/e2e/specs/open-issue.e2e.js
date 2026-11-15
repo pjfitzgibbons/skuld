@@ -1,4 +1,4 @@
-import fs from "node:fs";
+import path from "node:path";
 import { expect } from "@wdio/globals";
 import { eventually, staysTrue } from "../support/eventually.js";
 import { useFreshFixture } from "../support/hooks.js";
@@ -201,7 +201,12 @@ describe("choosing an issue with a local ticket", () => {
       `a "Claude ${KEY}" and a "Shell ${KEY}" terminal still open`,
     ],
     steps: [
-      [`the ${KEY} ticket file is gone, as when a store ticket moves`, () => fs.rmSync(issue.ticket)],
+      // A path no earlier spec opened: VS Code keeps a closed file's document in memory, so a file an
+      // earlier spec opened still opens after it is deleted.
+      [
+        `the ${KEY} record names a ticket file that is gone, as when a store ticket moves`,
+        () => fixture.writeRecord(KEY, { "plan.ticket": path.join(fixture.paths.ticketsDir, `${KEY}-moved.md`) }, issue.worktree),
+      ],
       [`click ${KEY}`, () => clickIssue(KEY)],
       ["a warning names the issue's ticket", () => eventually(() => notificationShows([`could not show the ticket for ${KEY}`]), true)],
       ["both terminals open", () => eventually(sortedTerminalNames, TERMINALS)],
@@ -242,8 +247,8 @@ describe("a vscode://skuld.plan-window/open link", () => {
     steps: [
       [`${KEY} is orange`, () => fixture.writePulses({ [KEY]: "orange" })],
       [
-        `send the window vscode://skuld.plan-window/open?key=${KEY}`,
-        () => sendLink(`vscode://skuld.plan-window/open?key=${KEY}`),
+        `send the window the link plan sends, vscode://skuld.plan-window/open?key%3D${KEY}`,
+        () => sendLink(`vscode://skuld.plan-window/open?key%3D${KEY}`),
       ],
       [
         "the ticket opens, both terminals open, Claude starts and plan clears the colour",

@@ -411,6 +411,12 @@ needs no helper or permission grant.
   when the worktree's conversation files exist.
 
 
+Start and Open first check the plan-window extension's link: when no
+`~/.vscode/extensions/skuld.plan-window-*` entry resolves into the checkout `plan` runs from, they
+stop before the lock, the transition, the worktree, the issues-file line and the plan window, and
+print where the link points and the fix ([failure-modes.md](failure-modes.md)). The link is only
+read, never rewritten.
+
 If the issue's branch already exists here or on `origin`, Start reuses it on its own base. On an
 issue in progress the command is Open, which reopens the worktree and brings the issue into the
 plan window, recreating any part that is missing ([failure-modes.md,
@@ -420,7 +426,8 @@ Start refuses a closed issue. A lock file per issue keeps two invocations from s
 
 **The issue beside Claude.** Opening the issue puts its ticket beside Claude: a store ticket in an
 editor tab of the plan window, on the ticket file in the store, never on a copy in a worktree; a
-Jira issue's browse URL in the plan window's integrated browser. Start prints the URL or file
+Jira issue's browse URL in the plan window's integrated browser. The ticket opens in the first
+editor group and the Claude terminal in the second. Start prints the URL or file
 path. Claude's
 prompt names the tracker: a Jira key, or the ticket file's path.
 

@@ -16,10 +16,17 @@ const windowPlan = require("./plan");
 
 let refreshIssues = () => {};
 
+// Output > "plan window": when the window activated and which link or issue it started, for finding
+// why a click or link did nothing. Set in activate.
+let planLog;
+
 // Every VS Code window activates this extension, but only the plan window acts: elsewhere it
 // registers no view, command or watcher, and a link gets a message saying where it belongs.
 function activate(context) {
+  planLog = vscode.window.createOutputChannel("plan window", { log: true });
+  context.subscriptions.push(planLog);
   const isPlan = isPlanWindow();
+  planLog.info(`activated; plan window: ${isPlan}`);
   vscode.commands.executeCommand("setContext", "plan.isPlanWindow", isPlan);
   context.subscriptions.push(vscode.window.registerUriHandler({ handleUri }));
   if (isPlan) registerIssuesView(context);
@@ -31,6 +38,7 @@ function isPlanWindow() {
 }
 
 async function handleUri(uri) {
+  planLog.info(`starting link ${uri.path}?${uri.query}`);
   if (!isPlanWindow()) {
     vscode.window.showInformationMessage("plan window: this link is for the plan window.");
     return;
@@ -70,6 +78,7 @@ async function openOpenLink(query) {
 // The ticket steps are best-effort, each with its own warning (a moved ticket file must not keep the
 // terminals from opening); an issue record that can't be read stops the click.
 async function openIssue(key) {
+  planLog.info(`starting open ${key}`);
   try {
     const plan = readIssueRecord(key);
     await bestEffort(key, () => showTicket(plan));
