@@ -157,9 +157,11 @@ macOS only. In order:
     `-f` and `-n` replace a link that already exists, so running it again repairs a link that
     points at another checkout. `plan start` and `plan open` check the link before they change
     anything: when no `skuld.plan-window-*` entry resolves into the checkout `plan` runs from, they
-    stop and print where the link points, the numbered fix (remove a leftover link of another
-    version, `ln -sfn` with the running checkout's path, "Restart VS Code (quit and reopen).",
-    re-run the command), and never run `ln` themselves.
+    stop and print where the link points, the numbered fix with every path shell-quoted (remove a
+    leftover link of another version, or move a real directory at any `skuld.plan-window-*` name to
+    `~/.Trash`; `mkdir -p` an extensions folder that does not exist; `ln -sfn` with the running
+    checkout's path, "Restart VS Code (quit and reopen).", re-run the command), and never run
+    `ln`, `mv` or `mkdir` themselves.
 
     It adds an **Issues** view to the plan window's Explorer sidebar: one item per issue in the
     issues file (§4, step 7), in the file's order, labelled with its key. An item is tinted orange

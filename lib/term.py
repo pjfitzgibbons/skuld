@@ -13,6 +13,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import stat
 import sys
 from contextlib import contextmanager
@@ -284,12 +285,28 @@ def whatIsWrong(entries, folder):
     return "\n".join(f"{entry} -> {linkTarget(entry)}" for entry in entries)
 
 
-# The fix, one numbered step each. A leftover entry the fixed link won't replace (another version
-# suffix) is removed first, so only one entry loads.
+TRASH_DIR = "~/.Trash"
+
+
+# The step that clears one entry from the extensions folder. A link is removed. Anything else (a
+# real directory, a file) is moved to the Trash, so nothing is deleted: `mv -i` asks before it
+# replaces a same-named item already there, and an entry in the Trash is outside the extensions
+# folder, so it no longer matches skuld.plan-window-*.
+def clearStep(entry):
+    if os.path.islink(entry):
+        return f"rm {shlex.quote(entry)}"
+    return f"mv -i {shlex.quote(entry)} {shlex.quote(expandHome(TRASH_DIR))}/"
+
+
+# The fix, one numbered step each, every path shell-quoted. Entries the fixed link won't replace are
+# cleared first, so only one entry loads: a leftover of another version suffix, and the fixed name
+# itself when it is not a link (`ln -sfn` onto a directory links inside it). A missing folder is made.
 def fixSteps(entries, folder, checkout, command, key):
     fixed = os.path.join(folder, EXTENSION_LINK_NAME)
-    steps = [f"rm {entry}" for entry in entries if entry != fixed]
-    steps.append(f"ln -sfn {extensionSource(checkout)} {fixed}")
+    steps = [clearStep(entry) for entry in entries if entry != fixed or not os.path.islink(entry)]
+    if not os.path.isdir(folder):
+        steps.append(f"mkdir -p {shlex.quote(folder)}")
+    steps.append(f"ln -sfn {shlex.quote(extensionSource(checkout))} {shlex.quote(fixed)}")
     steps.append("Restart VS Code (quit and reopen).")
     steps.append(f"Re-run: plan {command} {key}")
     return [f"  {number}. {step}" for number, step in enumerate(steps, 1)]

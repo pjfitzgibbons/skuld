@@ -7,7 +7,9 @@
 // support/fixture.js says what the fixture holds and how it isolates the run.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ConfigParser } from "@wdio/config/node";
 import { resizeWindow } from "./support/workbench.js";
+import { sessionsFor, specArguments } from "./support/sessions.js";
 import { WATCHING, assertWatchable } from "./support/steps.js";
 import { ROOT_VARIABLE, createRunFixture, openFixture, pluginSettings, removeRunFixture } from "./support/fixture.js";
 
@@ -27,34 +29,31 @@ const e2eDir = path.dirname(fileURLToPath(import.meta.url));
 // wdio's --spec replaces every session's own specs with the given ones (@wdio/config's getSpecs
 // ignores a capability's specs once `spec` is passed), so each session would run them, and a spec for
 // the plan window would run in the other window too. The sessions to start are chosen here, from
-// the --spec arguments the launcher got, and handed to the workers in the environment: a worker loads
-// this file again with arguments of its own.
+// the files the --spec arguments match, and handed to the workers in the environment: a worker
+// loads this file again with arguments of its own.
 const SESSIONS_VARIABLE = "PLAN_E2E_SESSIONS";
-const OTHER_WINDOW_SPECS = path.join(e2eDir, "specs", "other-window") + path.sep;
 
-function specArguments(argv) {
-  return argv.flatMap((arg, at) => (arg === "--spec" ? [argv[at + 1]] : arg.startsWith("--spec=") ? [arg.slice(7)] : []));
+// The files a --spec pattern matches, expanded by the function wdio expands it with (ConfigParser.
+// getFilePaths, relative to the folder of this file, with a :line suffix removed), so a pattern
+// selects here what it selects in wdio.
+function filesMatching(pattern) {
+  return ConfigParser.getFilePaths([pattern], e2eDir).map((file) => fileURLToPath(file));
 }
 
-function belongsToOtherWindow(spec) {
-  return path.resolve(spec).startsWith(OTHER_WINDOW_SPECS);
-}
-
-// "plan", "other" or "both": the sessions the given specs call for, and both with none given.
-function sessionsFor(specs) {
-  if (specs.length === 0) return "both";
-  const other = specs.filter(belongsToOtherWindow).length;
-  if (other === 0) return "plan";
-  if (other === specs.length) return "other";
-  console.error("--spec names specs of both sessions (specs/ and specs/other-window/); run one session at a time.");
-  process.exit(1);
+function sessionsForArguments(argv) {
+  try {
+    return sessionsFor(specArguments(argv), filesMatching, e2eDir);
+  } catch (error) {
+    console.error(error.message);
+    process.exit(1);
+  }
 }
 
 // The launcher makes the fixture; the workers load this file again and inherit its environment.
 if (!process.env[ROOT_VARIABLE]) {
   refuseWatchingWithoutTerminal();
   createRunFixture();
-  process.env[SESSIONS_VARIABLE] = sessionsFor(specArguments(process.argv));
+  process.env[SESSIONS_VARIABLE] = sessionsForArguments(process.argv);
 }
 const sessions = process.env[SESSIONS_VARIABLE] || "both";
 const fixture = openFixture();

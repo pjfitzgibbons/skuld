@@ -11,6 +11,7 @@
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -154,6 +155,46 @@ class CmdOpenTests(unittest.TestCase):
         message = self.stoppedBy("open")
         self.assertIn(f"  1. rm {leftover}\n  2. ln -sfn ", message)
         self.assertIn("  4. Re-run: plan open SK-0001", message)
+
+    def test_a_real_directory_at_the_fixed_name_is_moved_to_the_trash_before_linking(self):
+        link = self.replaceLink()
+        os.mkdir(link)
+        trash = term_mod.expandHome(term_mod.TRASH_DIR)
+        message = self.stoppedBy("open")
+        self.assertIn(f"  1. mv -i {link} {trash}/\n  2. ln -sfn ", message)
+        self.assertIn(f"{link}\n  3. Restart VS Code", message)
+
+    def test_a_leftover_real_directory_is_moved_to_the_trash_where_a_link_is_removed(self):
+        self.replaceLink()
+        directory = os.path.join(self.extensions, "skuld.plan-window-0.0.0")
+        os.mkdir(directory)
+        link = os.path.join(self.extensions, "skuld.plan-window-0.0.1")
+        os.symlink(os.path.join(self.tmp, "old"), link)
+        message = self.stoppedBy("open")
+        trash = term_mod.expandHome(term_mod.TRASH_DIR)
+        self.assertIn(f"  1. mv -i {directory} {trash}/\n  2. ln -sfn ", message)
+        self.assertNotIn("rm ", message)
+
+    def test_every_path_in_the_fix_is_shell_quoted(self):
+        spaced = os.path.join(self.tmp, "my extensions")
+        os.mkdir(spaced)
+        leftover = os.path.join(spaced, "skuld.plan-window-0.0.0")
+        os.symlink(os.path.join(self.tmp, "old"), leftover)
+        with mock.patch.dict(os.environ, {term_mod.EXTENSIONS_DIR_ENV: spaced}):
+            message = self.stoppedBy("open")
+        fixed = os.path.join(spaced, term_mod.EXTENSION_LINK_NAME)
+        source = term_mod.extensionSource(term_mod.runningCheckout())
+        self.assertIn(f"  1. rm '{leftover}'\n", message)
+        self.assertIn(f"  2. ln -sfn {shlex.quote(source)} '{fixed}'\n", message)
+
+    def test_a_missing_extensions_folder_is_made_before_linking(self):
+        missing = os.path.join(self.tmp, "no such", "extensions")
+        with mock.patch.dict(os.environ, {term_mod.EXTENSIONS_DIR_ENV: missing}):
+            message = self.stoppedBy("open")
+        fixed = os.path.join(missing, term_mod.EXTENSION_LINK_NAME)
+        self.assertIn(f"no skuld.plan-window-* link in {missing}", message)
+        self.assertIn(f"  1. mkdir -p '{missing}'\n  2. ln -sfn ", message)
+        self.assertIn(f"'{fixed}'\n  3. Restart VS Code", message)
 
     def test_a_link_into_this_checkout_with_another_version_suffix_opens(self):
         self.replaceLink()
