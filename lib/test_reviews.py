@@ -137,15 +137,15 @@ class RequestRoundTests(unittest.TestCase):
     def test_restart_is_passed_on_and_the_outcome_read(self):
         from subprocess import CompletedProcess
 
-        answer = CompletedProcess("x", 0, stdout='{"path": "/w/r.md", "note": "written"}\n', stderr="")
+        answer = CompletedProcess("x", 0, stdout='{"path": "/w/r.md", "note": "written", "token": "t1"}\n', stderr="")
         with mock.patch.object(reviews.subprocess, "run", return_value=answer) as run:
-            self.assertEqual(reviews.requestRound("/w", "SK-1", restart=True), ("/w/r.md", "written"))
+            self.assertEqual(reviews.requestRound("/w", "SK-1", restart=True), ("/w/r.md", "written", "t1"))
         self.assertEqual(run.call_args.args[0][-3:], ["request", "SK-1", "--restart"])
 
     def test_if_due_is_passed_on(self):
         from subprocess import CompletedProcess
 
-        answer = CompletedProcess("x", 0, stdout='{"path": null, "note": "n"}', stderr="")
+        answer = CompletedProcess("x", 0, stdout='{"path": null, "note": "n", "token": null}', stderr="")
         with mock.patch.object(reviews.subprocess, "run", return_value=answer) as run:
             reviews.requestRound("/w", "SK-1", ifDue=True)
         self.assertEqual(run.call_args.args[0][-3:], ["request", "SK-1", "--if-due"])
@@ -153,10 +153,19 @@ class RequestRoundTests(unittest.TestCase):
     def test_nothing_written_comes_back_as_no_path(self):
         from subprocess import CompletedProcess
 
-        answer = CompletedProcess("x", 0, stdout='{"path": null, "note": "HEAD abc was reviewed in round 1"}', stderr="")
+        answer = CompletedProcess("x", 0, stdout='{"path": null, "note": "HEAD abc was reviewed in round 1", "token": null}', stderr="")
         with mock.patch.object(reviews.subprocess, "run", return_value=answer):
-            self.assertEqual(reviews.requestRound("/w", "SK-1"), (None, "HEAD abc was reviewed in round 1"))
+            self.assertEqual(reviews.requestRound("/w", "SK-1"), (None, "HEAD abc was reviewed in round 1", None))
 
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_withdraw_runs_the_script_in_the_worktree_with_the_token_and_returns_what_it_did(self):
+        from subprocess import CompletedProcess
+
+        answer = CompletedProcess("x", 0, stdout="round 1's request withdrawn\n", stderr="")
+        with mock.patch.object(reviews.subprocess, "run", return_value=answer) as run:
+            self.assertEqual(reviews.withdrawRequest("/w", "SK-1", "t1"), "round 1's request withdrawn")
+        self.assertEqual(run.call_args.kwargs["cwd"], "/w")
+        self.assertEqual(run.call_args.args[0][-4:], ["withdraw", "SK-1", "--token", "t1"])

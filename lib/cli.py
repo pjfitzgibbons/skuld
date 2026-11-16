@@ -320,12 +320,14 @@ def branchKey(branch):
     return found.group(1) if found else None
 
 
-# Opens the round's tab; when that fails the request is withdrawn, so the next `pr` starts the round again.
-def openReviewTab(cfg, key, request):
+# Opens the round's tab. When that fails, a request this run wrote (it has a token) is withdrawn, so
+# the next `pr` starts the round again; the script withdraws it only if it is still this run's and no
+# reviewer has claimed it. A reopened request is left as it is.
+def openReviewTab(cfg, worktree, key, request, token):
     try:
         term_mod.openClaudeTab(reviews_mod.reviewPrompt(key, request), existingPlanWorkspace(cfg))
     except (RuntimeError, OSError):
-        reviews_mod.withdrawRequest(request)
+        print(reviews_mod.withdrawRequest(worktree, key, token) if token else "request left as it is: it was reopened", file=sys.stderr)
         raise
 
 
@@ -345,11 +347,11 @@ def cmdReview(cfg, key, restart=False, ifDue=False):
     branch = startLib.git(worktree, "branch", "--show-current").strip()
     if branchKey(branch) != key:
         raise RuntimeError(f"this worktree's branch is {branch or '(detached)'}, not {key}'s; run plan review {key} in {key}'s worktree")
-    request, note = reviews_mod.requestRound(worktree, key, restart, ifDue)
+    request, note, token = reviews_mod.requestRound(worktree, key, restart, ifDue)
     if not request:
         print(note)
         return
-    openReviewTab(cfg, key, request)
+    openReviewTab(cfg, worktree, key, request, token)
     print("review ready in a new Claude tab in the plan window; press Enter to start")
 
 

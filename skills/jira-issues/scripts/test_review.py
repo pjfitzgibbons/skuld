@@ -266,6 +266,13 @@ class FakeSources:
         self.blob_heads.append(head)
         return self.blob_map, self.deleted
 
+    def reviews(self, pull_request):
+        return [{"id": 55 + n, "body": post["body"], "commit_id": post["commit_id"]} for n, post in enumerate(self.posts)]
+
+    def pull_comments(self, pull_request):
+        return [{"id": 201 + n, "body": c["body"], "commit_id": c["commit_id"], "subject_type": "file"}
+                for n, c in enumerate(self.file_comments)]
+
     def gh_api(self, endpoint, payload=None):
         if endpoint.endswith("/comments") and payload:
             self.file_comments.append(payload)
@@ -375,6 +382,7 @@ class Request(InRounds):
         self.assertIn(str(self.folder(1) / "review.next.json"), text)
         self.assertIn(f"`{Path.cwd()}`", text)
         stored = json.loads((self.folder(1) / "request.json").read_text())
+        self.assertRegex(stored.pop("token"), "^[0-9a-f]{32}$")
         self.assertEqual(stored, {"round": 1, "head": HEAD, "pr": 7, "range": f"origin/main...{HEAD}",
                                   "call": f"/code-review high --max-findings all origin/main...{HEAD}"})
 
@@ -1123,6 +1131,139 @@ class Claim(InRounds):
         self.claimed_round()
         with self.assertRaisesRegex(review.ReviewError, "can't tell whether round 1's reviewer .*claude agents boom"):
             ask(self.sources(agents_error="claude agents boom"), restart=True)
+
+
+class Withdraw(Claim):
+    """Taking back a request whose tab never opened: only the one this run wrote, only while it is
+    still the request and nobody has claimed it."""
+
+    def written(self, head=HEAD):
+        return review.request("SK-9", FakeSources(head=head), restart=False, if_due=True)
+
+    def test_a_request_this_run_wrote_is_withdrawn_and_the_next_if_due_run_writes_it_again(self):
+        outcome = self.written()
+        said = review.withdraw("SK-9", FakeSources(), outcome.token)
+        self.assertIn("withdrawn", said)
+        self.assertFalse((self.folder(1) / "request.json").exists())
+        self.assertFalse((self.folder(1) / "request.md").exists())
+        self.assertIn("withdrawn", self.log(1))
+        self.assertIsNotNone(self.written().path)
+
+    def test_a_reopened_request_has_no_token_to_withdraw_it_by(self):
+        self.written()
+        self.assertIsNone(review.request("SK-9", FakeSources(head=HEAD)).token)
+        self.assertTrue((self.folder(1) / "request.json").exists())
+
+    def test_a_claimed_request_is_not_withdrawn(self):
+        outcome = self.written()
+        review.claim("SK-9", self.sources([self.reviewer_in_a_tab()]))
+        self.assertIn("claimed it", review.withdraw("SK-9", FakeSources(), outcome.token))
+        self.assertTrue((self.folder(1) / "request.json").exists())
+
+    def test_a_request_replaced_by_a_restart_is_not_withdrawn_by_the_old_token(self):
+        old = self.written(head=OLD)
+        replacement = review.request("SK-9", FakeSources(head=HEAD), restart=True)
+        self.assertIn("not the one this run wrote", review.withdraw("SK-9", FakeSources(), old.token))
+        self.assertEqual(self.stored()["token"], replacement.token)
+        self.assertTrue((self.folder(1) / "request.md").exists())
+
+    def test_withdraw_takes_the_review_lock(self):
+        outcome = self.written()
+        (self.rounds / review.LOCK_NAME).write_text(f"{os.getpid()} finish\n")
+        with self.assertRaisesRegex(review.ReviewError, "another review run"):
+            review.withdraw("SK-9", FakeSources(), outcome.token)
+        self.assertTrue((self.folder(1) / "request.json").exists())
+
+
+class LostAnswers(InRounds):
+    """A POST GitHub took whose answer, or the journal write after it, was lost is found on the PR
+    by its finding markers on the rerun; one that never arrived is sent again."""
+
+    def start(self, keys):
+        ask(FakeSources())
+        self.write(1, "review.next.json", record(head=HEAD, findings=[finding(key) for key in keys]))
+
+    def lost_after_posting(self, kind):
+        class Lost(FakeSources):
+            armed = True
+
+            def gh_api(self, endpoint, payload=None):
+                answer = super().gh_api(endpoint, payload)
+                is_file = endpoint.endswith("/pulls/7/comments")
+                if self.armed and payload and is_file == (kind == "file"):
+                    self.armed = False
+                    raise review.ReviewError("connection lost after the POST")
+                return answer
+        return Lost()
+
+    def test_a_review_posted_remotely_whose_answer_was_lost_is_not_posted_again(self):
+        self.start(["f.py:3:crash"])
+        sources = self.lost_after_posting("review")
+        with self.assertRaises(review.ReviewError):
+            review.finish("SK-9", sources)
+        self.assertEqual(len(sources.posts), 1)
+        review.finish("SK-9", sources)
+        self.assertEqual(len(sources.posts), 1)
+        self.assertEqual(self.saved(1)["findings"][0]["commentId"], 100)
+
+    def test_a_review_whose_journal_write_was_lost_is_found_by_its_body_markers_too(self):
+        self.start(["elsewhere.py:1:loss", "f.py:3:crash"])
+        sources = self.lost_after_posting("review")
+        with self.assertRaises(review.ReviewError):
+            review.finish("SK-9", sources)
+        review.finish("SK-9", sources)
+        self.assertEqual(len(sources.posts), 1)
+        saved = {f["key"]: f for f in self.saved(1)["findings"]}
+        self.assertEqual(saved["elsewhere.py:1:loss"]["reviewId"], 55)
+        self.assertEqual(saved["f.py:3:crash"]["commentId"], 100)
+
+    def test_a_file_comment_posted_remotely_whose_answer_was_lost_is_not_posted_again(self):
+        self.start(["f.py:99:loss"])
+        sources = self.lost_after_posting("file")
+        with self.assertRaises(review.ReviewError):
+            review.finish("SK-9", sources)
+        review.finish("SK-9", sources)
+        self.assertEqual(len(sources.file_comments), 1)
+        self.assertEqual(self.saved(1)["findings"][0]["commentId"], 201)
+
+    def test_a_post_that_never_arrived_is_posted_on_the_rerun(self):
+        self.start(["f.py:3:crash"])
+        sources = FakeSources(post_error="gh api failed")
+        with self.assertRaises(review.ReviewError):
+            review.finish("SK-9", sources)
+        self.assertEqual(json.loads((self.folder(1) / "posted.json").read_text())["intent"]["kind"], "review")
+        sources.post_error = None
+        review.finish("SK-9", sources)
+        self.assertEqual(len(sources.posts), 1)
+        self.assertEqual(self.saved(1)["findings"][0]["commentId"], 100)
+
+    def test_a_file_comment_that_never_arrived_is_posted_on_the_rerun(self):
+        self.start(["f.py:99:loss"])
+
+        class Refuses(FakeSources):
+            refuse = True
+
+            def gh_api(self, endpoint, payload=None):
+                if self.refuse and payload and endpoint.endswith("/pulls/7/comments"):
+                    raise review.ReviewError("gh api failed")
+                return super().gh_api(endpoint, payload)
+        sources = Refuses()
+        with self.assertRaises(review.ReviewError):
+            review.finish("SK-9", sources)
+        sources.refuse = False
+        review.finish("SK-9", sources)
+        self.assertEqual(len(sources.file_comments), 1)
+
+    def test_a_review_of_an_earlier_round_with_the_same_key_is_not_taken_for_this_ones(self):
+        self.start(["f.py:3:crash"])
+        sources = FakeSources(post_error="gh api failed")
+        sources.posts.append({"body": "Review round 0: 1 finding(s) in this review.\n<!-- review-finding: f.py:3:crash -->",
+                              "commit_id": HEAD, "comments": []})
+        with self.assertRaises(review.ReviewError):
+            review.finish("SK-9", sources)
+        sources.post_error = None
+        review.finish("SK-9", sources)
+        self.assertEqual(len(sources.posts), 2)
 
 
 if __name__ == "__main__":

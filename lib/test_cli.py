@@ -444,7 +444,7 @@ class CmdReviewTests(unittest.TestCase):
         self.addCleanup(os.chdir, before)
         os.chdir(self.top)
 
-    def review(self, *args, outcome=(".tmp/SK-0001/rounds/1/request.md", "written")):
+    def review(self, *args, outcome=(".tmp/SK-0001/rounds/1/request.md", "written", "t1")):
         out = io.StringIO()
         with mock.patch.object(cli.config_mod, "load", return_value=JIRA_ON), mock.patch.object(
             cli.reviews_mod, "requestRound", return_value=outcome
@@ -463,7 +463,7 @@ class CmdReviewTests(unittest.TestCase):
         self.assertEqual(self.request.call_args.args[1:], ("SK-0001", True, False))
 
     def test_if_due_is_passed_to_the_request_and_a_note_with_no_path_opens_no_tab(self):
-        said = self.review("SK-0001", "--if-due", outcome=(None, "round 1 was requested for HEAD abc and hasn't finished"))
+        said = self.review("SK-0001", "--if-due", outcome=(None, "round 1 was requested for HEAD abc and hasn't finished", None))
         self.assertEqual(self.request.call_args.args[1:], ("SK-0001", False, True))
         self.open.assert_not_called()
         self.assertIn("hasn't finished", said)
@@ -480,23 +480,29 @@ class CmdReviewTests(unittest.TestCase):
                 main(["review", "SK-0001"])
         opened.assert_not_called()
 
-    def test_a_tab_that_fails_to_open_withdraws_the_request_and_the_next_if_due_call_opens_it(self):
-        round1 = os.path.join(self.top, ".tmp", "SK-0001", "rounds", "1")
-        os.makedirs(round1)
-        for name in ("request.json", "request.md"):
-            open(os.path.join(round1, name), "w").close()
-        outcome = (os.path.join(round1, "request.md"), "written")
+    def failing_tab(self, outcome):
+        err = io.StringIO()
         with mock.patch.object(cli.config_mod, "load", return_value=JIRA_ON), mock.patch.object(
             cli.reviews_mod, "requestRound", return_value=outcome
-        ), mock.patch.object(term_mod, "openClaudeTab", side_effect=RuntimeError("code is not on PATH")):
+        ), mock.patch.object(cli.reviews_mod, "withdrawRequest", return_value="withdrawn it") as withdrawn, mock.patch.object(
+            term_mod, "openClaudeTab", side_effect=RuntimeError("code is not on PATH")
+        ), contextlib.redirect_stderr(err):
             with self.assertRaisesRegex(RuntimeError, "code is not on PATH"):
                 main(["review", "SK-0001", "--if-due"])
-        self.assertEqual(sorted(os.listdir(round1)), ["review.log"])
-        self.review("SK-0001", "--if-due", outcome=outcome)
-        self.open.assert_called_once()
+        return withdrawn, err.getvalue()
+
+    def test_a_tab_that_fails_to_open_withdraws_the_request_this_run_wrote_by_its_token(self):
+        withdrawn, said = self.failing_tab((".tmp/SK-0001/rounds/1/request.md", "written", "t1"))
+        self.assertEqual(withdrawn.call_args.args[1:], ("SK-0001", "t1"))
+        self.assertEqual(said, "withdrawn it\n")
+
+    def test_a_tab_that_fails_to_open_for_a_reopened_request_withdraws_nothing(self):
+        withdrawn, said = self.failing_tab((".tmp/SK-0001/rounds/1/request.md", "reopened", None))
+        withdrawn.assert_not_called()
+        self.assertIn("left as it is", said)
 
     def test_nothing_due_prints_why_and_opens_nothing(self):
-        said = self.review("SK-0001", outcome=(None, "HEAD abc12345 was reviewed in round 1"))
+        said = self.review("SK-0001", outcome=(None, "HEAD abc12345 was reviewed in round 1", None))
         self.open.assert_not_called()
         self.assertEqual(said, "HEAD abc12345 was reviewed in round 1\n")
 
@@ -526,7 +532,7 @@ class CmdReviewTests(unittest.TestCase):
         with open(planWorkspace, "w") as f:
             f.write("{}")
         with mock.patch.object(cli.config_mod, "load", return_value={**JIRA_ON, "workspaceDir": tmp}), mock.patch.object(
-            cli.reviews_mod, "requestRound", return_value=("r.md", "written")
+            cli.reviews_mod, "requestRound", return_value=("r.md", "written", "t1")
         ), mock.patch.object(term_mod, "openClaudeTab") as opened, contextlib.redirect_stdout(io.StringIO()):
             main(["review", "SK-0001"])
         self.assertEqual(opened.call_args.args[1], planWorkspace)

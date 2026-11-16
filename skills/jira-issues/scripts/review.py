@@ -2,6 +2,7 @@
 """Claude's review of a PR, kept in the issue's latest round folder, .tmp/<KEY>/rounds/<n>/, of its worktree.
 
     review.py request KEY [--restart | --if-due]             # write request.md for the next review
+    review.py withdraw KEY --token T                        # take back the request T names when its tab never opened
     review.py claim KEY                                     # record the reviewer's Claude in the unfinished round
     review.py finish KEY                                    # post review.next.json, then review.json
     review.py due KEY                                       # exit 0 when HEAD needs a review; 1, and why, when not
@@ -22,8 +23,8 @@ A review's files, in rounds/<n>/:
     review.json        the finished review (absent until `finish`)
     review.next.json   the review in progress, written by the reviewer, read by `finish`
     request.md         the prompt of the unfinished review; `finish` deletes it
-    request.json       {"round", "head", "pr", "range", "call", "reviewer"} of that request, "reviewer"
-                       ({"pid", "sessionId"}) added by `claim`; `finish` deletes it
+    request.json       {"round", "head", "pr", "range", "call", "token", "reviewer"} of that request,
+                       "reviewer" ({"pid", "sessionId"}) added by `claim`; `finish` deletes it
     posted.json        the ids `finish` has posted so far; `finish` deletes it when it is done
     review.log         what the review did, one line per step
 
@@ -63,7 +64,11 @@ restarts the review in its own folder at HEAD, unless the reviewer that `claim`e
 a session in `claude agents --json`, whatever its state: then it refuses, and so does it when that
 list can't be read. A round nobody claimed, or whose reviewer's pid is gone, restarts. With none, and nothing due, it says why and writes
 nothing. `finish` is safe to rerun: posted.json in the round's folder records each posted id as soon
-as its POST succeeds, and a rerun skips what it names. It survives `--restart`, so a restarted
+as its POST succeeds, and a rerun skips what it names. Before each POST it writes an "intent" (the
+keys about to be sent) to posted.json; a rerun that finds an intent with no outcome, because the POST
+failed or GitHub took it and the answer or the write was lost, looks for the review (this round, this
+head, carrying every key) or the file-level comment on the PR by its finding markers, records what is
+there and posts only what is missing. It survives `--restart`, so a restarted
 round never posts a finding twice, and posts its new findings in a further review, so it can always
 finish. `--if-due` (`pr`'s call) writes and reopens nothing when no review is due, which it checks
 inside the lock, so two overlapping runs open one tab. A rebase with nothing left to review
@@ -93,6 +98,7 @@ import re
 import shlex
 import subprocess
 import sys
+import uuid
 from collections import namedtuple
 from pathlib import Path
 
@@ -422,8 +428,16 @@ def placements(findings, shown):
     return placed
 
 
+MARKER = re.compile(r"<!-- review-finding: (.+?) -->")
+
+
 def marker(key):
     return f"<!-- review-finding: {key} -->"
+
+
+def marker_keys(text):
+    """The finding keys a posted body carries a marker for."""
+    return set(MARKER.findall(text or ""))
 
 
 def comment_body(finding):
@@ -660,6 +674,20 @@ class Sources:
             raise ReviewError(f"gh api {endpoint} gave no JSON: {error}") from error
 
 
+    def reviews(self, pull_request):
+        """Every review of the PR, all pages."""
+        return self.all_pages(f"repos/{{owner}}/{{repo}}/pulls/{pull_request}/reviews")
+
+    def pull_comments(self, pull_request):
+        """Every review comment of the PR, all pages."""
+        return self.all_pages(f"repos/{{owner}}/{{repo}}/pulls/{pull_request}/comments")
+
+    def all_pages(self, endpoint):
+        try:
+            return flatten_pages(json.loads(run(["gh", "api", "--paginate", "--slurp", endpoint])))
+        except ValueError as error:
+            raise ReviewError(f"gh api {endpoint} gave no JSON: {error}") from error
+
     def review_comments(self, pull_request, review_id):
         """Every comment of a review: gh api pages by 30 unless told to fetch them all."""
         endpoint = f"repos/{{owner}}/{{repo}}/pulls/{pull_request}/reviews/{review_id}/comments"
@@ -784,7 +812,8 @@ def review_lock(rounds, action):
 # --- request ---
 
 
-Outcome = namedtuple("Outcome", "path note")  # path is None when nothing was written
+# path is None when nothing was written; token names the request this call wrote (None for a reopened one)
+Outcome = namedtuple("Outcome", "path note token", defaults=(None,))
 
 
 def request(key, sources, restart=False, prompts=PROMPTS, if_due=False):
@@ -879,11 +908,34 @@ def write_request(key, root, rounds, sources, restart, prompts, if_due=False):
     }
     text = render((prompts / choose_prompt(record)).read_text(), values)
     folder.mkdir(parents=True, exist_ok=True)
-    stored = {"round": round_number, "head": head, "pr": number, "range": range_, "call": call}
+    token = uuid.uuid4().hex
+    stored = {"round": round_number, "head": head, "pr": number, "range": range_, "call": call, "token": token}
     write_atomically(folder / "request.json", json.dumps(stored) + "\n")
     write_atomically(folder / "request.md", text)
     append_log(folder, f"requested: reviewing {range_} at {head}")
-    return Outcome(folder / "request.md", f"round {round_number}'s request written")
+    return Outcome(folder / "request.md", f"round {round_number}'s request written", token)
+
+
+# --- withdraw ---
+
+
+def withdraw(key, sources, token):
+    """Takes back the request this token names, when its tab never opened, so the next `pr` writes
+    the round again. Under the lock, and only while request.json still carries the token and no
+    reviewer has claimed the round; a request since replaced or claimed is left alone. Returns what
+    it did, one line."""
+    rounds = rounds_folder(sources.root(), key)
+    with review_lock(rounds, "withdraw"):
+        unfinished = unfinished_round(rounds)
+        if not unfinished or unfinished.get("token") != token:
+            return "request left as it is: it is not the one this run wrote"
+        if unfinished.get("reviewer"):
+            return f"request left as it is: round {unfinished['round']}'s reviewer has claimed it"
+        folder = round_dir(rounds, unfinished["round"])
+        for name in ("request.json", "request.md"):
+            (folder / name).unlink(missing_ok=True)
+        append_log(folder, "withdrawn: its tab did not open")
+        return f"round {unfinished['round']}'s request withdrawn; the next review run writes it again"
 
 
 # --- claim ---
@@ -1014,7 +1066,7 @@ def is_due(key, sources):
 
 def read_posted(folder):
     """What earlier runs of `finish` for this round had posted: {"reviews": [{"id", "keys"}],
-    "comments": {key: comment id}, "bodies": {key: review id}}. A round restarted at a new head
+    "comments": {key: comment id}, "bodies": {key: review id}, "intent": the POST in flight or None}. A round restarted at a new head
     keeps it, so what was posted before isn't posted again."""
     try:
         posted = json.loads((folder / "posted.json").read_text())
@@ -1022,7 +1074,7 @@ def read_posted(folder):
         posted = {}
     except ValueError as error:
         raise ReviewError(f"{folder / 'posted.json'} is not valid JSON: {error}") from error
-    return {"comments": {}, "bodies": {}, "reviews": [], "missing": {}, **posted}
+    return {"comments": {}, "bodies": {}, "reviews": [], "missing": {}, "intent": None, **posted}
 
 
 def post_findings(record, round_number, folder, pull_request, sources):
@@ -1031,22 +1083,85 @@ def post_findings(record, round_number, folder, pull_request, sources):
     after a review was posted posts its new findings in a further review. pull_request() is the PR's
     number, fetched once."""
     posted = read_posted(folder)
+    settle_intent(posted, folder, round_number, record["head"], pull_request, sources)
     todo = findings_to_post(record, posted)
     placed = placements(todo, diff_lines(sources.pr_diff(record["base"], record["head"]))) if todo else None
     if placed and (placed["inline"] or placed["body"]):
+        inline_keys, body_keys = [f["key"] for f in placed["inline"]], [f["key"] for f in placed["body"]]
+        intend(posted, folder, {"kind": "review", "inline": inline_keys, "body": body_keys})
         review_id = post_review(record, round_number, placed, pull_request(), sources)
-        posted["reviews"].append({"id": review_id, "keys": [finding["key"] for finding in placed["inline"]]})
-        posted["bodies"].update({finding["key"]: review_id for finding in placed["body"]})
+        record_review(posted, review_id, inline_keys, body_keys)
         save_posted(folder, posted)
     collect_inline_comment_ids(posted, folder, pull_request, sources, {f["key"] for f in unsettled_findings(record)})
     try:
         for finding in placed["file"] if placed else []:
+            intend(posted, folder, {"kind": "file", "key": finding["key"]})
             posted["comments"][finding["key"]] = post_file_comment(record["head"], finding, pull_request(), sources)
+            posted["intent"] = None
             save_posted(folder, posted)
     except ReviewError as error:
         reviews = posted["reviews"]
         raise ReviewError(f"{error} (review {reviews[-1]['id']} had been posted)" if reviews else str(error)) from error
     return with_posted_ids(record, posted["comments"], posted["bodies"])
+
+
+def intend(posted, folder, intent):
+    """Writes what is about to be POSTed before it is sent, so a rerun after a POST whose outcome
+    is unknown can look for it on the PR instead of sending it again."""
+    posted["intent"] = intent
+    save_posted(folder, posted)
+
+
+def record_review(posted, review_id, inline_keys, body_keys):
+    posted["reviews"].append({"id": review_id, "keys": inline_keys})
+    posted["bodies"].update({key: review_id for key in body_keys})
+    posted["intent"] = None
+
+
+def settle_intent(posted, folder, round_number, head, pull_request, sources):
+    """An intent with no outcome is a POST whose result is unknown: it failed, or GitHub took it and
+    the answer or the journal write was lost. Looks for it on the PR by the finding markers, records
+    what is there, and clears the intent, so what is missing is posted and what is there is not."""
+    intent = posted.get("intent")
+    if not intent:
+        return
+    if intent["kind"] == "review":
+        review_id = remote_review_id(posted, intent, round_number, head, pull_request(), sources)
+        if review_id:
+            record_review(posted, review_id, intent["inline"], intent["body"])
+    else:
+        comment_id = remote_file_comment_id(posted, intent["key"], head, pull_request(), sources)
+        if comment_id:
+            posted["comments"][intent["key"]] = comment_id
+    posted["intent"] = None
+    save_posted(folder, posted)
+
+
+def remote_review_id(posted, intent, round_number, head, pull_request, sources):
+    """The id of an unrecorded review of this round and head on the PR that carries every key of
+    the intent, in its body or its comments; None when there is none."""
+    wanted = set(intent["inline"]) | set(intent["body"])
+    known = {review["id"] for review in posted["reviews"]} | set(posted["bodies"].values())
+    for candidate in sources.reviews(pull_request):
+        if candidate["id"] in known or candidate.get("commit_id") != head:
+            continue
+        if not (candidate.get("body") or "").startswith(f"Review round {round_number}:"):
+            continue
+        carried = marker_keys(candidate.get("body")) | {
+            key for comment in sources.review_comments(pull_request, candidate["id"]) for key in marker_keys(comment.get("body"))}
+        if wanted <= carried:
+            return candidate["id"]
+    return None
+
+
+def remote_file_comment_id(posted, key, head, pull_request, sources):
+    """The id of an unrecorded file-level comment for key on the PR at head; None when there is none."""
+    known = set(posted["comments"].values())
+    for comment in sources.pull_comments(pull_request):
+        if (comment["id"] not in known and comment.get("subject_type") == "file"
+                and comment.get("commit_id") == head and key in marker_keys(comment.get("body"))):
+            return comment["id"]
+    return None
 
 
 def save_posted(folder, posted):
@@ -1095,9 +1210,10 @@ def posted_id(posted):
 def main(argv=None, sources=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("request", "claim", "finish", "due"):
+    for name in ("request", "claim", "withdraw", "finish", "due"):
         command = commands.add_parser(name)
         command.add_argument("key")
+    commands.choices["withdraw"].add_argument("--token", required=True)
     commands.choices["request"].add_argument("--restart", action="store_true")
     commands.choices["request"].add_argument("--if-due", action="store_true")
     args = parser.parse_args(argv)
@@ -1107,7 +1223,9 @@ def main(argv=None, sources=None):
     try:
         if args.command == "request":
             outcome = request(args.key, sources, args.restart, if_due=args.if_due)
-            print(json.dumps({"path": str(outcome.path) if outcome.path else None, "note": outcome.note}))
+            print(json.dumps({"path": str(outcome.path) if outcome.path else None, "note": outcome.note, "token": outcome.token}))
+        elif args.command == "withdraw":
+            print(withdraw(args.key, sources, args.token))
         elif args.command == "claim":
             claim(args.key, sources)
             print("review: claimed by this Claude")

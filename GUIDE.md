@@ -544,7 +544,9 @@ review's head, or there is none, and no unfinished round was already requested f
 (`review.py due`, which exits 0 when due, 1 with the reason when not, and 2 on any failure). A
 round whose tab never opened, or was closed before Enter, stays unfinished: `plan review KEY`
 reopens it for the same HEAD, and `plan review KEY --restart` writes it again at HEAD when HEAD
-moved. A push made while a review runs leaves HEAD ahead of its head; the review finishes for the
+moved. When the tab fails to open, `plan review` withdraws the request it wrote, by the token stored in
+`request.json`, under `.review.lock` and only while no reviewer has claimed it; a reopened, claimed or
+replaced request is left as it is. A push made while a review runs leaves HEAD ahead of its head; the review finishes for the
 head it was requested for, and the next `pr` starts the follow-up review.
 
 **Orange.** The issue's item turns orange when the last review was of the worktree's current HEAD, has a
@@ -570,7 +572,10 @@ and tell the author, on a head mismatch as on a lock refusal.
 ran `claim` (a tab closed before its first step, say) restarts without a check, and a round stays
 unfinished until `finish` runs or it is restarted. `finish` is safe to rerun: it writes `posted.json` in the
 round's folder as each POST succeeds, and a rerun posts only what that file doesn't name, so a
-failure after a review was posted doesn't post it twice. A finding posted in one round and found
+failure after a review was posted doesn't post it twice. Before each POST it also writes an intent to
+`posted.json`; a rerun that finds one with no outcome (the POST failed, or GitHub took it and the
+answer was lost) looks for the review or file-level comment on the PR by round, head and finding
+markers, and posts only what is missing. A finding posted in one round and found
 again in a later round as New is posted again as a new comment; that is what New means.
 
 ### Review: co-signing and dispositions

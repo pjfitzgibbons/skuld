@@ -89,7 +89,8 @@ def reviewPrompt(key, requestPath):
 
 
 # Writes the next review round's request.md in the worktree (review.py request) and returns (the
-# path it wrote or reopened, or None, and a note saying what happened). restart restarts an
+# path it wrote or reopened, or None, a note saying what happened, and the token of the request it
+# wrote, None for one it reopened). restart restarts an
 # unfinished round for an older head in its own folder; without it the script refuses and says so.
 # ifDue (`pr`'s call) writes and reopens nothing when no review is due, checked under the script's lock.
 def requestRound(worktree, key, restart=False, ifDue=False):
@@ -98,13 +99,15 @@ def requestRound(worktree, key, restart=False, ifDue=False):
     if answer.returncode != 0:
         raise RuntimeError(answer.stderr.strip() or f"review.py request exited with code {answer.returncode}")
     outcome = json.loads(answer.stdout)
-    return outcome["path"], outcome["note"]
+    return outcome["path"], outcome["note"], outcome["token"]
 
 
-# Takes back a request whose tab never opened, so the round is no longer "requested for HEAD" and
-# the next `pr` writes it and opens its tab again. The round's folder and log stay, with a line saying so.
-def withdrawRequest(requestPath):
-    folder = pathlib.Path(requestPath).parent
-    for name in ("request.json", "request.md"):
-        (folder / name).unlink(missing_ok=True)
-    review().append_log(folder, "withdrawn: its tab did not open")
+# Takes back the request the token names, whose tab never opened, so the next `pr` writes the round
+# again, and returns what the script did. The script does it under its lock and only while request.json
+# still carries the token and no reviewer has claimed the round.
+def withdrawRequest(worktree, key, token):
+    command = [sys.executable, REVIEW_SCRIPT, "withdraw", key, "--token", token]
+    answer = subprocess.run(command, cwd=worktree, capture_output=True, text=True)
+    if answer.returncode != 0:
+        raise RuntimeError(answer.stderr.strip() or f"review.py withdraw exited with code {answer.returncode}")
+    return answer.stdout.strip()
