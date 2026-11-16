@@ -435,17 +435,38 @@ def planWindowLink(handler, params):
     return f"vscode://{PLAN_WINDOW_EXTENSION}/{handler}?{quote(query, safe='')}"
 
 
-# The commands that open url for key, as (command, args) pairs run without a shell: focus the plan
-# window when its workspace file is given, then send the link.
-def browseCommands(url, key=None, workspaceFile=None):
+# The commands that send link to the plan window, as (command, args) pairs run without a shell:
+# focus the plan window when its workspace file is given, then send the link.
+def linkCommands(link, workspaceFile=None):
     commands = [("code", [workspaceFile])] if workspaceFile else []
-    commands.append(sendLinkCommand(browseLink(url, key)))
+    commands.append(sendLinkCommand(link))
     return commands
 
 
 # The command that has VS Code hand a vscode:// link to its extension.
 def sendLinkCommand(link):
     return ("code", ["--open-url", link])
+
+
+# The commands that open url for key: linkCommands() with plan-window's /browse link.
+def browseCommands(url, key=None, workspaceFile=None):
+    return linkCommands(browseLink(url, key), workspaceFile)
+
+
+# The vscode:// link that has plan-window start Claude's review of key's PR in its Review terminal,
+# in key's worktree, encoded as browseLink() is. It names the round and its request's token, never a
+# path or a prompt: the window builds the round's request.md path from the worktree, starts nothing
+# unless request.json there carries the token, and builds the line it submits.
+def reviewLink(key, roundNumber, token):
+    return planWindowLink("review", {"key": key, "round": str(roundNumber), "token": token})
+
+
+# Starts the review in the plan window: focus the window first (the link goes to the focused
+# window), then send the link. A failed step raises: the round's request.md is written and nothing
+# else will start it.
+def startReview(key, roundNumber, token, workspaceFile=None):
+    for command, args in linkCommands(reviewLink(key, roundNumber, token), workspaceFile):
+        run(command, args, os.getcwd())
 
 
 # Prints url, then opens it in key's window. Every step after the print is best-effort: the printed

@@ -3,7 +3,7 @@
 # LaunchAgent runs `plan agents tick --watch` to keep each issue pulsed (architecture §6.3, §7.1).
 #
 # It reads `claude agents --json`, the issues file, git, the waiting markers Claude Code's hooks
-# keep (lib/waiting.py), once a minute each listed issue's PR (lib/reviews.py), and, for a
+# keep (lib/waiting.py), each listed issue's review rounds (lib/reviews.py), and, for a
 # listing's titles only, the store or Jira. It never writes to an issue or a session; its only
 # output is the pulses file and its listing.
 #
@@ -14,7 +14,6 @@ import json
 import os
 import re
 import sys
-import threading
 import time
 from dataclasses import asdict, dataclass
 
@@ -33,7 +32,7 @@ WORKTREE = re.compile(rf"^(?P<root>.*\.worktrees/(?P<key>{ISSUE_KEY_PATTERN}))(?
 # Most urgent first: the order of the listing, and which state an issue with two Claudes shows.
 URGENCY = ("waiting", "done", "busy", "blocked", "idle")
 PULSE_OF_STATE = {"waiting": "orange", "done": "green"}
-# A Copilot review waiting on an issue's PR asks for a person too, so it outranks done.
+# A review of Claude's waiting on an issue's PR asks for a person too, so it outranks done.
 PULSE_OF_REVIEW = "orange"
 SYMBOLS = {"waiting": "⏳", "done": "◆", "busy": "●", "blocked": "■", "idle": "○"}
 
@@ -112,7 +111,7 @@ def placeSessions(sessions, listedKeys, reportIsFresh, waitingIds=frozenset()):
 # --- colouring ---
 
 
-# The pulse every listed issue should show: orange when its PR has a Copilot review waiting
+# The pulse every listed issue should show: orange when its PR has a review of Claude's waiting
 # (reviewedKeys), else its most urgent Claude's colour, or off when none of its Claudes needs a
 # person, or it has no Claude at all.
 def wantedPulses(agents, listedKeys, reviewedKeys=frozenset()):
@@ -126,7 +125,7 @@ def wantedPulses(agents, listedKeys, reviewedKeys=frozenset()):
     return wanted
 
 
-# {KEY: worktree} for each listed issue with a Claude in its worktree: the PRs to check.
+# {KEY: worktree} for each listed issue with a Claude in its worktree: the reviews to check.
 def listedWorktrees(agents):
     return {agent.issue: agent.worktree for agent in agents if agent.issue != NO_ISSUE}
 
@@ -305,22 +304,24 @@ def sendPulses(sent, toSend, pulse):
 
 
 # One tick: read the sessions and the issues file, and write each issue whose colour changed since
-# `sent` to the pulses file. Reads no store or Jira, since it runs every few seconds. Returns (new
-# record, failure messages).
-def tick(sent, issuesFile=None, pulsesFile=None, claudeCommand=None, waitingDir=None, reviewedKeys=frozenset()):
+# `sent` to the pulses file. Reads no store or Jira, since it runs every few seconds; it reads each
+# listed issue's review rounds and HEAD from the worktree, with no `claude` or `gh` call beyond the
+# one for the sessions. Returns (new record, failure messages).
+def tick(sent, issuesFile=None, pulsesFile=None, claudeCommand=None, waitingDir=None, readState=reviews.readReviewState):
     listedKeys = term.issueKeys(issuesFile)
     try:
         agents = placeSessions(readSessions(claudeCommand), listedKeys, reportIsFresh, waiting.waitingSessions(waitingDir))
     except RuntimeError as error:
         return sent, [str(error)]
-    toSend = pulsesToSend(sent, wantedPulses(agents, listedKeys, reviewedKeys))
+    reviewed = reviews.reviewedKeys(listedWorktrees(agents), readState)
+    toSend = pulsesToSend(sent, wantedPulses(agents, listedKeys, reviewed))
     return sendPulses(sent, toSend, lambda key, color: pulses.setPulse(key, color, pulsesFile))
 
 
 # tick(), then saves the record when the tick changed what is stored. A save that fails is a
 # failure message, never a crash: the engine runs on, and the next tick that changes it saves again.
-def rememberingTick(sent, issuesFile=None, pulsesFile=None, claudeCommand=None, waitingDir=None, reviewedKeys=frozenset()):
-    record, failures = tick(sent, issuesFile, pulsesFile, claudeCommand, waitingDir, reviewedKeys)
+def rememberingTick(sent, issuesFile=None, pulsesFile=None, claudeCommand=None, waitingDir=None, readState=reviews.readReviewState):
+    record, failures = tick(sent, issuesFile, pulsesFile, claudeCommand, waitingDir, readState)
     if storable(record) == storable(sent):
         return record, failures
     try:
@@ -354,61 +355,17 @@ def sleepUntilMarkersChange(seconds, waitingDir=None):
             return
 
 
-# The keys whose PR has a Copilot review waiting, read afresh; `previous` when the sessions can't
-# be read, so a failing `claude` doesn't clear a review's colour.
-def checkReviews(previous, issuesFile=None, claudeCommand=None, readPr=reviews.readPr):
-    try:
-        agents = currentAgents(issuesFile, claudeCommand)
-    except RuntimeError:
-        return previous
-    return reviews.reviewedKeys(listedWorktrees(agents), readPr)
-
-
-def reviewLine(keys):
-    return "Copilot review waiting: " + ", ".join(sorted(keys))
-
-
-# checkReviews, logging each key whose review has just started waiting.
-def refreshReviews(reviewed, issuesFile=None, claudeCommand=None):
-    fresh = checkReviews(reviewed, issuesFile, claudeCommand)
-    if fresh - reviewed:
-        log(reviewLine(fresh - reviewed))
-    return fresh
-
-
-# The keys whose PR has a Copilot review waiting, as the last finished check found them. Its own
-# thread checks once a minute, so a slow or stalled `gh` or `claude` never holds up a tick.
-class ReviewSnapshot:
-    def __init__(self, issuesFile=None, claudeCommand=None):
-        self.issuesFile, self.claudeCommand = issuesFile, claudeCommand
-        self.keys = frozenset()
-
-    def refresh(self):
-        self.keys = refreshReviews(self.keys, self.issuesFile, self.claudeCommand)
-
-    def refreshForever(self, every=reviews.REVIEW_CHECK_SECONDS):
-        while True:
-            self.refresh()
-            time.sleep(every)
-
-    def startInBackground(self):
-        threading.Thread(target=self.refreshForever, name="reviews", daemon=True).start()
-        return self
-
-
-# The LaunchAgent's loop: a tick every few seconds, or as soon as a waiting marker changes, and a
-# look at each listed issue's PR once a minute on a thread of its own. Its log (stderr) gets a line when it starts, one
-# when a Copilot review starts waiting, one for each tick that sends a pulse, and a failure only
-# when it differs from the last one, so a quiet issue or a failure that persists adds nothing. It
-# starts from the sent record on disk over the pulses file's colours (loadSent), so a line left for
-# an issue no longer listed is removed and a colour a person cleared isn't written back.
+# The LaunchAgent's loop: a tick every few seconds, or as soon as a waiting marker changes. Its log
+# (stderr) gets a line when it starts, one for each tick that sends a pulse, and a failure only when
+# it differs from the last one, so a quiet issue or a failure that persists adds nothing. It starts
+# from the sent record on disk over the pulses file's colours (loadSent), so a line left for an issue
+# no longer listed is removed and a colour a person cleared isn't written back.
 def watch(issuesFile=None, pulsesFile=None, claudeCommand=None, every=TICK_SECONDS):
-    log(f"watching, a tick every {every}s, PRs every {reviews.REVIEW_CHECK_SECONDS}s")
+    log(f"watching, a tick every {every}s")
     sent, lastFailures = loadSent(pulsesFile), []
-    reviewed = ReviewSnapshot(issuesFile, claudeCommand).startInBackground()
     while True:
         before = sent
-        sent, failures = rememberingTick(sent, issuesFile, pulsesFile, claudeCommand, reviewedKeys=reviewed.keys)
+        sent, failures = rememberingTick(sent, issuesFile, pulsesFile, claudeCommand)
         written = pulsesSent(before, sent)
         if written:
             log(pulseLine(written))

@@ -497,6 +497,29 @@ def handlerQuery(link):
     return urllib.parse.unquote(urllib.parse.urlsplit(link).query)
 
 
+TOKEN = "0123456789abcdef0123456789abcdef"
+
+
+class ReviewLinkTests(unittest.TestCase):
+    def test_the_link_names_plan_windows_review_handler_the_key_the_round_and_the_token(self):
+        link = term.reviewLink("SK-9", 2, TOKEN)
+        self.assertTrue(link.startswith("vscode://skuld.plan-window/review?"))
+        self.assertEqual(urllib.parse.parse_qs(handlerQuery(link)), {"key": ["SK-9"], "round": ["2"], "token": [TOKEN]})
+
+    def test_the_link_carries_no_path(self):
+        self.assertNotIn("request", handlerQuery(term.reviewLink("SK-9", 2, TOKEN)))
+
+    def test_the_window_is_focused_then_sent_the_link_and_a_failure_is_raised(self):
+        calls = []
+        with mock.patch.object(term, "run", side_effect=lambda c, a, cwd: calls.append((c, a))):
+            term.startReview("SK-9", 2, TOKEN, "/ws/plan.code-workspace")
+        self.assertEqual(calls, term.linkCommands(term.reviewLink("SK-9", 2, TOKEN), "/ws/plan.code-workspace"))
+        self.assertEqual(calls[0], ("code", ["/ws/plan.code-workspace"]))
+        with mock.patch.object(term, "run", side_effect=RuntimeError("code: not found")):
+            with self.assertRaises(RuntimeError):
+                term.startReview("SK-9", 2, TOKEN)
+
+
 class BrowseTests(unittest.TestCase):
     def test_the_link_names_plan_windows_browse_handler_and_the_key(self):
         self.assertEqual(

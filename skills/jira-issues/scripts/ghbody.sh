@@ -1,14 +1,12 @@
 #!/bin/sh
 # Apply a drafted body from .tmp/ to the current branch's PR. Used by gh aliases:
 #
-#   gh pc [KEY]   pr create, title = the branch's first commit subject, body .tmp/KEY/pr-body.md;
-#                 then requests Copilot's review
+#   gh pc [KEY]   pr create, title = the branch's first commit subject, body .tmp/KEY/pr-body.md
 #   gh pb [KEY]   pr edit (this branch's PR) --body-file .tmp/KEY/pr-body.md
 #
 # KEY is a Jira issue key. It defaults to the one in the branch name: fix/CIAM-88-go-requests ->
 # CIAM-88.
-# GHBODY_DRY=1 prints the gh command instead of running it. GHBODY_NO_COPILOT=1 (pr --no-copilot)
-# leaves Copilot off a new PR.
+# GHBODY_DRY=1 prints the gh command instead of running it.
 set -eu
 
 kind=${1:?usage: ghbody.sh pr-create|pr-edit [KEY]}
@@ -70,12 +68,6 @@ case $kind in
         exit 2
       fi
       run gh pr create --title "$title" --body-file "$file"
-      # gh pc asks Copilot to review each new PR; pr.sh asks again each time it updates one,
-      # and gh documents @copilot for pr edit, not pr create. A failed request doesn't fail gh pc.
-      if [ "${GHBODY_NO_COPILOT:-}" != 1 ]; then
-        run gh pr edit --add-reviewer @copilot ||
-          echo "ghbody: Copilot's review was not requested; request it under Reviewers on the PR" >&2
-      fi
     else
       run gh pr edit --body-file "$file"
     fi ;;

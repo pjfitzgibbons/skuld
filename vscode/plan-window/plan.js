@@ -1,5 +1,6 @@
 // What the plan window needs, worked out with no VS Code calls, so the tests can check it.
 // extension.js carries it out.
+const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -107,6 +108,34 @@ function findShellTerminal(plan, terminals) {
   return terminals.find((terminal) => terminal.name === shellTerminalName(plan));
 }
 
+function reviewTerminalName(plan) {
+  return `Review ${plan.key}`;
+}
+
+// The line that starts a round of Claude's review of the issue's PR: the key, and the absolute
+// path of the round's request.md, which holds the rest. skills/jira-issues/SKILL.md describes it.
+function reviewPrompt(key, requestPath) {
+  return `${key} review: read ${requestPath} and do the review it describes.`;
+}
+
+// Claude's review of the issue's PR: a fresh Claude, not the issue's own conversation, started as
+// the issue's Claude terminal starts one, in the worktree, with the round's line submitted at once.
+// The round's prompt stops unless its working directory is the worktree.
+// CLAUDE_CODE_SKIP_PROMPT_HISTORY keeps the reviewer's transcript off disk, so the worktree's
+// conversations stay the author's: `claude --continue` in the issue's terminal never resumes a
+// reviewer, and a worktree reviewed before its first Claude still starts on Start's prompt. The
+// session still registers, so `claude agents` lists it for review.py claim.
+// https://code.claude.com/docs/en/env-vars#variables
+function reviewTerminalOptions(plan, requestPath, shell, inherited = {}) {
+  const reviewer = { ...plan, prompt: reviewPrompt(plan.key, requestPath) };
+  const options = claudeTerminalOptions(reviewer, shell, inherited);
+  return { ...options, name: reviewTerminalName(plan), env: { ...options.env, CLAUDE_CODE_SKIP_PROMPT_HISTORY: "1" } };
+}
+
+function findReviewTerminal(plan, terminals) {
+  return terminals.find((terminal) => terminal.name === reviewTerminalName(plan));
+}
+
 // The page to show for an issue with no ticket file, its Jira page, or null. A ticket file wins.
 function ticketPage(plan) {
   return plan.ticket === null ? plan.ticketUrl : null;
@@ -190,6 +219,121 @@ function openRequest(query) {
   if (!key) return { refusal: "/open needs ?key=" };
   if (!isIssueKey(key)) return { refusal: `/open needs an issue key, not ${key}` };
   return { key };
+}
+
+const ROUND_NUMBER = /^(0|[1-9][0-9]*)$/;
+const REQUEST_TOKEN = /^[0-9a-f]{32}$/;
+
+// What a /review?key=<KEY>&round=<n>&token=<token> link asks of this window: { key, round, token }
+// to review, or { refusal } saying why not. The link starts a Claude on a prompt it submits at once,
+// so it carries no prompt and no path: reviewRequestFile builds the round's request.md from the
+// issue's worktree, and starts the review only when request.json there carries the token.
+function reviewRequest(query) {
+  const params = new URLSearchParams(query);
+  const [key, round, token] = ["key", "round", "token"].map((name) => params.get(name));
+  if (!key || !round || !token) return { refusal: "/review needs ?key=, &round= and &token=" };
+  if (!isIssueKey(key)) return { refusal: `/review needs an issue key, not ${key}` };
+  if (!ROUND_NUMBER.test(round)) return { refusal: `/review needs a round number, not ${round}` };
+  if (!REQUEST_TOKEN.test(token)) return { refusal: "/review's token isn't a request token" };
+  return { key, round, token };
+}
+
+// The round's request.md: review.py's rounds_folder(), .tmp/<KEY>/rounds/<n>/ in the worktree.
+// The two layouts must stay equal.
+function roundRequestPath(worktree, key, round) {
+  return path.join(worktree, ".tmp", key, "rounds", round, "request.md");
+}
+
+// { request }, the real path of the round's request.md, or { refusal }. The file must exist at the
+// path built under the worktree's real path, with no symbolic link on the way, and its request.json
+// must name the round and carry the link's token, which only `review.py request` writes and
+// `plan review` sends. A round whose claimed reviewer is still running is refused, so a replayed
+// link can't close that reviewer's terminal mid-review; isRunning(pid) says whether a pid is alive.
+function reviewRequestFile(plan, link, isRunning = processRunning) {
+  const worktree = realPath(plan.worktree);
+  if (!worktree) return { refusal: `${plan.key}'s worktree ${plan.worktree} isn't there` };
+  const request = roundRequestPath(worktree, plan.key, link.round);
+  if (realPath(request) !== request) {
+    return { refusal: `${plan.key} has no request.md for round ${link.round} at ${request}` };
+  }
+  const stored = requestRecord(path.join(path.dirname(request), "request.json"));
+  if (!isRequestedBy(stored, link)) {
+    return { refusal: `round ${link.round} of ${plan.key} wasn't requested with this link's token` };
+  }
+  const reviewer = runningReviewer(stored, isRunning);
+  if (reviewer) {
+    return { refusal: `round ${link.round}'s reviewer (pid ${reviewer.pid}) is still running; close its ${reviewTerminalName(plan)} terminal first` };
+  }
+  return { request };
+}
+
+// The reviewer review.py claim recorded in request.json, while its pid is alive, else null.
+function runningReviewer(stored, isRunning) {
+  const reviewer = stored.reviewer;
+  return reviewer && Number.isInteger(reviewer.pid) && isRunning(reviewer.pid) ? reviewer : null;
+}
+
+// Whether a process with this pid exists: signal 0 checks without sending anything. EPERM means it
+// exists under another user.
+function processRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
+// What a review link does in the window: { refusal }, which closes nothing, or { close, options }:
+// the Review terminal left from an earlier round (or null), closed only now that the link's request
+// is found, and the new Review terminal's options on that request's real path.
+function reviewStart(plan, link, terminals, shell, inherited = {}, isRunning = processRunning) {
+  const found = reviewRequestFile(plan, link, isRunning);
+  if (found.refusal) return { refusal: found.refusal };
+  return {
+    close: findReviewTerminal(plan, terminals) || null,
+    options: reviewTerminalOptions(plan, found.request, shell, inherited),
+  };
+}
+
+// Whether request.json, read as stored (or null), is the request the link names.
+function isRequestedBy(stored, link) {
+  return stored !== null && String(stored.round) === link.round && sameToken(stored.token, link.token);
+}
+
+function realPath(file) {
+  try {
+    return fs.realpathSync(file);
+  } catch {
+    return null;
+  }
+}
+
+// request.json's record, or null when it is missing, isn't JSON, or is reached through a symbolic
+// link: the record is read only at the path built under the worktree.
+function requestRecord(file) {
+  try {
+    if (realPath(file) !== file) return null;
+    const record = JSON.parse(fs.readFileSync(file, "utf8"));
+    return record && typeof record === "object" ? record : null;
+  } catch {
+    return null;
+  }
+}
+
+// The token compared in constant time, so a link's guesses learn nothing from how long a refusal takes.
+// A stored token that isn't a request token is no match: timingSafeEqual needs equal byte lengths.
+function sameToken(stored, given) {
+  if (typeof stored !== "string" || !REQUEST_TOKEN.test(stored)) return false;
+  return crypto.timingSafeEqual(Buffer.from(stored), Buffer.from(given));
+}
+
+// The line the output channel logs for a link: its route, and its key and round when it has them.
+// Nothing else from the query is logged, so a review link's token never reaches the log.
+function linkLogLine(route, query) {
+  const params = new URLSearchParams(query);
+  const named = ["key", "round"].filter((name) => params.has(name)).map((name) => `${name}=${params.get(name)}`);
+  return `starting link ${[route, ...named].join(" ")}`;
 }
 
 // The Issues view in the Explorer: one item per issue in the issues file, in its order, coloured
@@ -292,11 +436,17 @@ function isPlanWindow(workspaceFile, workspaceDir, home = os.homedir()) {
 }
 
 module.exports = {
+  processRunning,
   ISSUE_KEY_PATTERN,
   hasPulse,
   isPlanWindow,
   browseRequest,
   openRequest,
+  reviewRequest,
+  reviewRequestFile,
+  reviewStart,
+  linkLogLine,
+  roundRequestPath,
   readPlan,
   issueRecord,
   unsetClaudeVariables,
@@ -305,6 +455,9 @@ module.exports = {
   findClaudeTerminal,
   shellTerminalOptions,
   findShellTerminal,
+  reviewPrompt,
+  reviewTerminalOptions,
+  findReviewTerminal,
   ticketPage,
   ticketPageOptions,
   keysWithClaude,

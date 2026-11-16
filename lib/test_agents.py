@@ -185,31 +185,9 @@ class ReviewColouringTests(unittest.TestCase):
     def test_a_review_for_an_unlisted_key_pulses_nothing(self):
         self.assertEqual(agents.wantedPulses([], LISTED, frozenset({"SK-0099"})), {"SK-0041": "off", "CIAM-12": "off"})
 
-    def test_only_listed_issues_with_a_claude_have_their_prs_checked(self):
+    def test_only_listed_issues_with_a_claude_have_their_reviews_checked(self):
         found = place(session("/p/a.worktrees/SK-0041/lib"), session("/p/a.worktrees/SK-0099"), session("/p/x"))
         self.assertEqual(agents.listedWorktrees(found), {"SK-0041": "/p/a.worktrees/SK-0041"})
-
-    def test_reviews_are_read_from_each_listed_worktree(self):
-        reviewed = {"/p/a.worktrees/SK-0041": {"state": "OPEN", "headRefOid": "b",
-                    "reviews": [{"author": {"login": "copilot-pull-request-reviewer"}, "commit": {"oid": "b"}}]}}
-        sessions = [session("/p/a.worktrees/SK-0041"), session("/p/a.worktrees/CIAM-12")]
-        with mock.patch.object(agents, "currentAgents", return_value=place(*sessions)):
-            keys = agents.checkReviews(frozenset(), readPr=reviewed.get)
-        self.assertEqual(keys, frozenset({"SK-0041"}))
-
-    def test_a_failing_claude_keeps_the_reviews_last_read(self):
-        with mock.patch.object(agents, "currentAgents", side_effect=RuntimeError("claude: not found")):
-            self.assertEqual(agents.checkReviews(frozenset({"SK-0041"})), frozenset({"SK-0041"}))
-
-    def test_a_tick_reads_the_last_finished_check_while_the_next_runs_on_its_own(self):
-        snapshot = agents.ReviewSnapshot()
-        self.assertEqual(snapshot.keys, frozenset())
-        with mock.patch.object(agents, "checkReviews", return_value=frozenset({"SK-0041"})):
-            snapshot.refresh()
-        self.assertEqual(snapshot.keys, frozenset({"SK-0041"}))
-
-    def test_the_log_names_each_review_that_started_waiting(self):
-        self.assertEqual(agents.reviewLine({"SK-0041", "CIAM-12"}), "Copilot review waiting: CIAM-12, SK-0041")
 
 
 class PulseOnChangeTests(unittest.TestCase):
@@ -283,6 +261,22 @@ class TickTests(unittest.TestCase):
         self.sessions = [session("/p/a.worktrees/SK-0041", "busy")]
         self.tick(sent)
         self.assertEqual(self.colours(), {})
+
+    def test_a_tick_colours_an_issue_orange_for_a_waiting_review_from_the_sessions_it_already_read(self):
+        self.sessions = [session("/p/a.worktrees/CIAM-12", "idle")]
+        asked = []
+
+        def readState(worktree, key):
+            asked.append((worktree, key))
+            return "waiting-state"
+
+        with mock.patch.object(agents, "readSessions", return_value=self.sessions) as read, mock.patch.object(
+            agents.reviews, "reviewWaiting", side_effect=lambda state: state == "waiting-state"
+        ):
+            agents.tick({}, self.issuesFile, self.pulsesFile, waitingDir=self.waitingDir, readState=readState)
+        self.assertEqual(asked, [("/p/a.worktrees/CIAM-12", "CIAM-12")])
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(self.colours(), {"CIAM-12": "orange"})
 
     def test_a_key_that_leaves_the_issues_file_loses_its_colour(self):
         sent, _ = self.tick({})

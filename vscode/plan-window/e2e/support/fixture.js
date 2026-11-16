@@ -210,7 +210,7 @@ class Fixture {
   }
 
   // The fake Claude's starts: its issue, its arguments each in brackets ("[--continue]"), its
-  // CLAUDE_CONFIG_DIR, and the names of the other CLAUDE* variables it had, or "none".
+  // working directory, its CLAUDE_CONFIG_DIR, and the names of the other CLAUDE* variables it had, or "none".
   claudeStarts() {
     return readLines(this.paths.claudeLog).map(parseClaudeStart);
   }
@@ -225,6 +225,7 @@ function parseClaudeStart(line) {
   return {
     key: field("key"),
     args: field("args"),
+    cwd: field("cwd"),
     configDir: field("config_dir"),
     otherClaudeVariables: field("other_claude_variables"),
   };
