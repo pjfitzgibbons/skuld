@@ -173,6 +173,63 @@ test("an open link names an issue key, or is refused", () => {
   assert.match(windowPlan.openRequest("key=sk-9").refusal, /an issue key, not sk-9/);
 });
 
+test("a review link names an issue key and a request path, or is refused", () => {
+  const query = new URLSearchParams({ key: "SK-9", request: "/work/repo.worktrees/SK-9/.tmp/SK-9/rounds/1/request.md" });
+  assert.deepEqual(windowPlan.reviewRequest(query.toString()), {
+    key: "SK-9",
+    request: "/work/repo.worktrees/SK-9/.tmp/SK-9/rounds/1/request.md",
+  });
+  assert.match(windowPlan.reviewRequest("key=SK-9").refusal, /needs \?key= and &request=/);
+  assert.match(windowPlan.reviewRequest("request=%2Fr.md").refusal, /needs \?key= and &request=/);
+  assert.match(windowPlan.reviewRequest("key=sk-9&request=%2Fr.md").refusal, /an issue key, not sk-9/);
+});
+
+test("a review's request must be a request.md inside the issue's worktree", () => {
+  const inWorktree = "/work/repo.worktrees/SK-9/.tmp/SK-9/rounds/1/request.md";
+  assert.equal(windowPlan.reviewRefusal(plan, inWorktree), null);
+  assert.match(windowPlan.reviewRefusal(plan, "/work/repo.worktrees/SK-10/request.md"), /isn't in SK-9's worktree/);
+  assert.match(windowPlan.reviewRefusal(plan, "/work/repo.worktrees/SK-9/../SK-10/request.md"), /isn't in SK-9's worktree/);
+  assert.match(windowPlan.reviewRefusal(plan, "/work/repo.worktrees/SK-9/notes.md"), /absolute path of a request\.md/);
+  assert.match(windowPlan.reviewRefusal(plan, ".tmp/SK-9/rounds/1/request.md"), /absolute path of a request\.md/);
+});
+
+test("a review's request is found inside a worktree named through a symbolic link", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "plan-review-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const worktree = path.join(dir, "SK-9");
+  const request = path.join(worktree, ".tmp", "SK-9", "rounds", "1", "request.md");
+  fs.mkdirSync(path.dirname(request), { recursive: true });
+  fs.writeFileSync(request, "");
+  fs.symlinkSync(worktree, path.join(dir, "linked"));
+  const linked = { ...plan, worktree: path.join(dir, "linked") };
+  assert.equal(windowPlan.reviewRefusal(linked, fs.realpathSync(request)), null);
+});
+
+test("the review terminal is a fresh Claude in the worktree, submitting the round's line at once", () => {
+  const inherited = { CLAUDE_PID: "4242", HOME: "/Users/p" };
+  const options = windowPlan.reviewTerminalOptions(plan, "/w/request.md", "/bin/bash", inherited);
+  assert.equal(options.name, "Review SK-9");
+  assert.equal(options.cwd, plan.worktree);
+  assert.deepEqual(options.shellArgs, ["-l", "-c", 'claude "$PLAN_PROMPT"; exec "/bin/bash" -l']);
+  assert.deepEqual(options.env, {
+    CLAUDE_PID: null,
+    PLAN_KEY: "SK-9",
+    PLAN_PROMPT: "SK-9 review: read /w/request.md and do the review it describes.",
+  });
+  assert.equal(options.isTransient, true);
+});
+
+test("an existing review terminal is found by name, apart from the issue's Claude", () => {
+  const terminals = [{ name: "Claude SK-9" }, { name: "Review SK-9" }];
+  assert.equal(windowPlan.findReviewTerminal(plan, terminals), terminals[1]);
+  assert.equal(windowPlan.findClaudeTerminal(plan, terminals), terminals[0]);
+  assert.equal(windowPlan.findReviewTerminal(plan, [{ name: "Review SK-10" }]), undefined);
+});
+
+test("a review terminal doesn't mark its issue open", () => {
+  assert.deepEqual(windowPlan.keysWithClaude([{ name: "Review SK-9" }]), []);
+});
+
 test("Claude continues the worktree's last conversation when it has one, and starts on the prompt otherwise", () => {
   assert.deepEqual(windowPlan.claudeTerminalOptions(plan, "/bin/bash", {}, true).shellArgs, [
     "-l",

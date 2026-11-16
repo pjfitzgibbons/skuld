@@ -334,6 +334,16 @@ session reads it. The window never closes an issue's terminals. When a key
 leaves the issues file, the issue leaves the Issues view, and its `Claude <KEY>` and `Shell <KEY>`
 terminals stay until the human closes them, since `plan done` is often run in one of them.
 
+**Claude's review of an issue's PR runs in its own terminal.** `plan review KEY` sends the link
+`vscode://skuld.plan-window/review?key=<KEY>&request=<path>`, where the path is the absolute path of
+the review round's `request.md` in the worktree. `plan-window` reads the issue workspace file and
+refuses a request that isn't a `request.md` inside the issue's worktree. Otherwise it closes any
+`Review <KEY>` terminal and creates a new one in the worktree, which starts Claude the way the
+issue's Claude terminal does, with `PLAN_KEY` set and the inherited `CLAUDE*` session variables
+unset. The prompt names the request and is submitted at once. Each round gets a fresh conversation
+apart from the author's. The link carries no prompt, so it can only start the review of a request
+already written in the worktree.
+
 **Each issue's item in the Issues view shows its Claude's state.** The status engine, `lib/agents.py`, places
 each session from `claude agents --json` by its cwd: a cwd in `<repo>.worktrees/<KEY>` gives the
 key, and the key counts only while it is in the issues file. A key is an `ISSUE_KEY_PATTERN` key (§5), the

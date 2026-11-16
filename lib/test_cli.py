@@ -431,7 +431,7 @@ class CmdBrowseTests(unittest.TestCase):
             self.browse()
 
 
-# `plan review KEY`: whether a request goes out. reviews.requestRound and term.openClaudeTab are
+# `plan review KEY`: whether a request goes out. reviews.requestRound and term.startReview are
 # stubbed; what they run is their own tests'.
 class CmdReviewTests(unittest.TestCase):
     def setUp(self):
@@ -448,21 +448,21 @@ class CmdReviewTests(unittest.TestCase):
         out = io.StringIO()
         with mock.patch.object(cli.config_mod, "load", return_value=JIRA_ON), mock.patch.object(
             cli.reviews_mod, "requestRound", return_value=outcome
-        ) as self.request, mock.patch.object(term_mod, "openClaudeTab") as self.open, contextlib.redirect_stdout(out):
+        ) as self.request, mock.patch.object(term_mod, "startReview") as self.open, contextlib.redirect_stdout(out):
             main(["review", *args])
         return out.getvalue()
 
-    def test_the_tab_opens_with_the_prompt_and_the_line_says_to_press_enter(self):
+    def test_the_review_starts_on_the_rounds_request_and_the_line_names_its_terminal(self):
         said = self.review("SK-0001")
         self.assertEqual(self.request.call_args.args[1:], ("SK-0001", False, False))
-        self.assertEqual(self.open.call_args.args[0], reviews_prompt("SK-0001", ".tmp/SK-0001/rounds/1/request.md"))
-        self.assertEqual(said, "review ready in a new Claude tab in the plan window; press Enter to start\n")
+        self.assertEqual(self.open.call_args.args[:2], ("SK-0001", ".tmp/SK-0001/rounds/1/request.md"))
+        self.assertEqual(said, "review started in the Review SK-0001 terminal of the plan window\n")
 
     def test_restart_is_passed_to_the_request(self):
         self.review("SK-0001", "--restart")
         self.assertEqual(self.request.call_args.args[1:], ("SK-0001", True, False))
 
-    def test_if_due_is_passed_to_the_request_and_a_note_with_no_path_opens_no_tab(self):
+    def test_if_due_is_passed_to_the_request_and_a_note_with_no_path_starts_no_review(self):
         said = self.review("SK-0001", "--if-due", outcome=(None, "round 1 was requested for HEAD abc and hasn't finished", None))
         self.assertEqual(self.request.call_args.args[1:], ("SK-0001", False, True))
         self.open.assert_not_called()
@@ -472,32 +472,32 @@ class CmdReviewTests(unittest.TestCase):
         with mock.patch.object(cli.agents_mod, "currentAgents", side_effect=AssertionError("no lookup")):
             self.review("SK-0001")
 
-    def test_a_round_the_script_refuses_opens_no_tab(self):
+    def test_a_round_the_script_refuses_starts_no_review(self):
         with mock.patch.object(cli.config_mod, "load", return_value=JIRA_ON), mock.patch.object(
             cli.reviews_mod, "requestRound", side_effect=RuntimeError("run plan review SK-0001 --restart")
-        ), mock.patch.object(term_mod, "openClaudeTab") as opened:
+        ), mock.patch.object(term_mod, "startReview") as opened:
             with self.assertRaisesRegex(RuntimeError, "--restart"):
                 main(["review", "SK-0001"])
         opened.assert_not_called()
 
-    def failing_tab(self, outcome):
+    def failing_link(self, outcome):
         err = io.StringIO()
         with mock.patch.object(cli.config_mod, "load", return_value=JIRA_ON), mock.patch.object(
             cli.reviews_mod, "requestRound", return_value=outcome
         ), mock.patch.object(cli.reviews_mod, "withdrawRequest", return_value="withdrawn it") as withdrawn, mock.patch.object(
-            term_mod, "openClaudeTab", side_effect=RuntimeError("code is not on PATH")
+            term_mod, "startReview", side_effect=RuntimeError("code is not on PATH")
         ), contextlib.redirect_stderr(err):
             with self.assertRaisesRegex(RuntimeError, "code is not on PATH"):
                 main(["review", "SK-0001", "--if-due"])
         return withdrawn, err.getvalue()
 
-    def test_a_tab_that_fails_to_open_withdraws_the_request_this_run_wrote_by_its_token(self):
-        withdrawn, said = self.failing_tab((".tmp/SK-0001/rounds/1/request.md", "written", "t1"))
+    def test_a_link_that_cant_be_sent_withdraws_the_request_this_run_wrote_by_its_token(self):
+        withdrawn, said = self.failing_link((".tmp/SK-0001/rounds/1/request.md", "written", "t1"))
         self.assertEqual(withdrawn.call_args.args[1:], ("SK-0001", "t1"))
         self.assertEqual(said, "withdrawn it\n")
 
-    def test_a_tab_that_fails_to_open_for_a_reopened_request_withdraws_nothing(self):
-        withdrawn, said = self.failing_tab((".tmp/SK-0001/rounds/1/request.md", "reopened", None))
+    def test_a_link_that_cant_be_sent_for_a_reopened_request_withdraws_nothing(self):
+        withdrawn, said = self.failing_link((".tmp/SK-0001/rounds/1/request.md", "reopened", None))
         withdrawn.assert_not_called()
         self.assertIn("left as it is", said)
 
@@ -514,7 +514,7 @@ class CmdReviewTests(unittest.TestCase):
     def test_a_worktree_on_another_issues_branch_is_refused_before_anything_is_written(self):
         with mock.patch.object(cli.config_mod, "load", return_value=JIRA_ON), mock.patch.object(
             cli.reviews_mod, "requestRound"
-        ) as request, mock.patch.object(term_mod, "openClaudeTab") as opened:
+        ) as request, mock.patch.object(term_mod, "startReview") as opened:
             with self.assertRaisesRegex(RuntimeError, "branch is feat/SK-0001-the-slug, not SK-0002's"):
                 main(["review", "SK-0002"])
         request.assert_not_called()
@@ -525,7 +525,7 @@ class CmdReviewTests(unittest.TestCase):
         self.assertEqual(cli.branchKey("CIAM-9-x"), "CIAM-9")
         self.assertIsNone(cli.branchKey("main"))
 
-    def test_the_tab_goes_to_the_plan_window_when_its_workspace_exists(self):
+    def test_the_link_goes_to_the_plan_window_when_its_workspace_exists(self):
         tmp = tempfile.mkdtemp(prefix="skuld-review-")
         self.addCleanup(shutil.rmtree, tmp)
         planWorkspace = os.path.join(tmp, "plan.code-workspace")
@@ -533,13 +533,9 @@ class CmdReviewTests(unittest.TestCase):
             f.write("{}")
         with mock.patch.object(cli.config_mod, "load", return_value={**JIRA_ON, "workspaceDir": tmp}), mock.patch.object(
             cli.reviews_mod, "requestRound", return_value=("r.md", "written", "t1")
-        ), mock.patch.object(term_mod, "openClaudeTab") as opened, contextlib.redirect_stdout(io.StringIO()):
+        ), mock.patch.object(term_mod, "startReview") as opened, contextlib.redirect_stdout(io.StringIO()):
             main(["review", "SK-0001"])
-        self.assertEqual(opened.call_args.args[1], planWorkspace)
-
-
-def reviews_prompt(key, path):
-    return cli.reviews_mod.reviewPrompt(key, path)
+        self.assertEqual(opened.call_args.args[2], planWorkspace)
 
 
 # `plan agents`' enter: raise the plan window and bring the session's issue forward.

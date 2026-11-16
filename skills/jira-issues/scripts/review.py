@@ -2,13 +2,13 @@
 """Claude's review of a PR, kept in the issue's latest round folder, .tmp/<KEY>/rounds/<n>/, of its worktree.
 
     review.py request KEY [--restart | --if-due]             # write request.md for the next review
-    review.py withdraw KEY --token T                        # take back the request T names when its tab never opened
+    review.py withdraw KEY --token T                        # take back the request T names when its review never started
     review.py claim KEY                                     # record the reviewer's Claude in the unfinished round
     review.py finish KEY                                    # post review.next.json, then review.json
     review.py due KEY                                       # exit 0 when HEAD needs a review; 1, and why, when not
 
-`pr` runs `plan review KEY`, which runs `request` and opens a Claude Code tab with the line that
-starts the review. The Claude reads request.md, runs `claim`, reviews, appends progress to the round's log, writes
+`pr` runs `plan review KEY`, which runs `request` and starts a fresh Claude on the line that starts
+the review, in the plan window's "Review KEY" terminal in the worktree. The Claude reads request.md, runs `claim`, reviews, appends progress to the round's log, writes
 review.next.json and runs `finish` as its last step.
 
 Rounds are numbered from 0, one folder each, the highest the latest. Round 0 is the author's change,
@@ -71,7 +71,7 @@ head, carrying every key) or the file-level comment on the PR by its finding mar
 there and posts only what is missing. It survives `--restart`, so a restarted
 round never posts a finding twice, and posts its new findings in a further review, so it can always
 finish. `--if-due` (`pr`'s call) writes and reopens nothing when no review is due, which it checks
-inside the lock, so two overlapping runs open one tab. A rebase with nothing left to review
+inside the lock, so two overlapping runs start one review. A rebase with nothing left to review
 completes an unfinished restarted round, so none stays unfinished.
 
 Every range, the call, the blob lookups and the diff the findings are placed against use the commit
@@ -310,7 +310,7 @@ def not_due_reason(key, record, record_round, head, unfinished):
     is waiting to finish."""
     if unfinished and unfinished.get("head") == head:
         return (f"round {unfinished['round']} was requested for HEAD {head[:8]} and hasn't finished; "
-                f"press Enter in its Claude tab, or run plan review {key} to open it again")
+                f"it runs in the Review {key} terminal of the plan window, or run plan review {key} to start it again")
     return f"HEAD {head[:8]} was reviewed in round {record_round}"
 
 
@@ -835,7 +835,7 @@ def live_sessions_by_pid(sources):
 
 def refuse_while_reviewer_runs(unfinished, key, sources):
     """A restart rewrites the request a claimed reviewer is working from, so it waits for that
-    reviewer's tab to close. A reviewer that never claimed, or whose pid is gone, doesn't hold it."""
+    reviewer's terminal to close. A reviewer that never claimed, or whose pid is gone, doesn't hold it."""
     reviewer = unfinished.get("reviewer")
     if not reviewer:
         return
@@ -846,7 +846,7 @@ def refuse_while_reviewer_runs(unfinished, key, sources):
                           f"is still running: {error}; run plan review {key} --restart again when it works") from error
     if live:
         raise ReviewError(f"round {unfinished['round']}'s reviewer (pid {reviewer['pid']}) is still running; "
-                          f"close its Claude tab, then run plan review {key} --restart")
+                          f"close its Review {key} terminal, then run plan review {key} --restart")
 
 
 def write_request(key, root, rounds, sources, restart, prompts, if_due=False):
@@ -920,7 +920,7 @@ def write_request(key, root, rounds, sources, restart, prompts, if_due=False):
 
 
 def withdraw(key, sources, token):
-    """Takes back the request this token names, when its tab never opened, so the next `pr` writes
+    """Takes back the request this token names, when its review never started, so the next `pr` writes
     the round again. Under the lock, and only while request.json still carries the token and no
     reviewer has claimed the round; a request since replaced or claimed is left alone. Returns what
     it did, one line."""
@@ -934,7 +934,7 @@ def withdraw(key, sources, token):
         folder = round_dir(rounds, unfinished["round"])
         for name in ("request.json", "request.md"):
             (folder / name).unlink(missing_ok=True)
-        append_log(folder, "withdrawn: its tab did not open")
+        append_log(folder, "withdrawn: its review did not start")
         return f"round {unfinished['round']}'s request withdrawn; the next review run writes it again"
 
 
@@ -950,7 +950,7 @@ def claude_ancestor(sources):
         pid = sources.parent_pid(pid)
         if pid in sessions:
             return sessions[pid]
-    raise ReviewError("no Claude session is an ancestor of this process; run it from the review tab's Claude")
+    raise ReviewError("no Claude session is an ancestor of this process; run it from the Claude in the review's terminal")
 
 
 def claim(key, sources):

@@ -320,12 +320,13 @@ def branchKey(branch):
     return found.group(1) if found else None
 
 
-# Opens the round's tab. When that fails, a request this run wrote (it has a token) is withdrawn, so
-# the next `pr` starts the round again; the script withdraws it only if it is still this run's and no
-# reviewer has claimed it. A reopened request is left as it is.
-def openReviewTab(cfg, worktree, key, request, token):
+# Starts the round's review in the plan window. When the link can't be sent, a request this run
+# wrote (it has a token) is withdrawn, so the next `pr` starts the round again; the script withdraws
+# it only if it is still this run's and no reviewer has claimed it. A reopened request is left as it
+# is.
+def startReview(cfg, worktree, key, request, token):
     try:
-        term_mod.openClaudeTab(reviews_mod.reviewPrompt(key, request), existingPlanWorkspace(cfg))
+        term_mod.startReview(key, request, existingPlanWorkspace(cfg))
     except (RuntimeError, OSError):
         print(reviews_mod.withdrawRequest(worktree, key, token) if token else "request left as it is: it was reopened", file=sys.stderr)
         raise
@@ -333,12 +334,12 @@ def openReviewTab(cfg, worktree, key, request, token):
 
 # `plan review KEY [--restart]`, run in KEY's worktree (or a folder of it) by `pr`: writes the next
 # review round's request (review.py request), focuses the plan window when its workspace exists and
-# opens a new Claude Code tab there with the line that starts the round in its prompt box, not
-# submitted: Peter presses Enter. The tab is a fresh conversation, so the round's prompt guards that
-# its working directory is the worktree. An unfinished round for this HEAD is reopened as it is; one
-# for an older head is refused unless --restart, which the script refuses while the round's claimed
-# reviewer still runs; with nothing due, it says why and opens nothing. --if-due (`pr`'s call) also
-# opens nothing for a round already requested for this HEAD, so two `pr` runs open one tab. It
+# sends it the review link, which starts a fresh Claude on the round's line in the window's
+# "Review KEY" terminal, in the worktree; the round's prompt still stops unless its working
+# directory is the worktree. An unfinished round for this HEAD is reopened as it is; one for an
+# older head is refused unless --restart, which the script refuses while the round's claimed
+# reviewer still runs; with nothing due, it says why and starts nothing. --if-due (`pr`'s call) also
+# starts nothing for a round already requested for this HEAD, so two `pr` runs start one review. It
 # refuses a worktree whose branch isn't KEY's, since it writes there and posts to that branch's PR.
 def cmdReview(cfg, key, restart=False, ifDue=False):
     if not key:
@@ -351,8 +352,8 @@ def cmdReview(cfg, key, restart=False, ifDue=False):
     if not request:
         print(note)
         return
-    openReviewTab(cfg, worktree, key, request, token)
-    print("review ready in a new Claude tab in the plan window; press Enter to start")
+    startReview(cfg, worktree, key, request, token)
+    print(f"review started in the Review {key} terminal of the plan window")
 
 
 PR_TARGET_RE = re.compile(r"^pr#(\d+)$")

@@ -8,7 +8,9 @@
 // since `plan done` or its Claude may be running in them.
 //
 // The window also handles vscode://skuld.plan-window/browse?url=<url>[&key=<KEY>], which `plan
-// browse` sends: it opens the page in the window's integrated browser.
+// browse` sends: it opens the page in the window's integrated browser; and
+// vscode://skuld.plan-window/review?key=<KEY>&request=<path>, which `plan review` sends: it starts
+// Claude's review of the issue's PR in a "Review <KEY>" terminal in the issue's worktree.
 const { execFile } = require("child_process");
 const path = require("path");
 const vscode = require("vscode");
@@ -45,6 +47,7 @@ async function handleUri(uri) {
   }
   if (uri.path === "/browse") return openBrowseLink(uri.query);
   if (uri.path === "/open") return openOpenLink(uri.query);
+  if (uri.path === "/review") return openReviewLink(uri.query);
   vscode.window.showErrorMessage(`plan window: unknown link ${uri.path}`);
 }
 
@@ -70,6 +73,37 @@ async function openOpenLink(query) {
     return;
   }
   await openIssue(request.key);
+}
+
+async function openReviewLink(query) {
+  const request = windowPlan.reviewRequest(query);
+  if (request.refusal) {
+    vscode.window.showErrorMessage(`plan window: ${request.refusal}`);
+    return;
+  }
+  try {
+    startReview(readIssueRecord(request.key), request.request);
+  } catch (error) {
+    vscode.window.showErrorMessage(`plan window: ${error.message}`);
+  }
+}
+
+// Each round is reviewed by a fresh Claude on that round's line, so a Review terminal left from an
+// earlier round is closed and a new one started; focusing it would leave the new round unstarted.
+// review.py starts a new round only once the last one finished or its reviewer is gone, so the
+// closed terminal holds no reviewer still at work, except when `plan review KEY` reopens an
+// unfinished round, where the round is started again in the new terminal.
+function startReview(plan, requestPath) {
+  const refusal = windowPlan.reviewRefusal(plan, requestPath);
+  if (refusal) throw new Error(refusal);
+  const earlier = windowPlan.findReviewTerminal(plan, vscode.window.terminals);
+  if (earlier) earlier.dispose();
+  planLog.info(`starting review of ${plan.key} on ${requestPath}`);
+  const terminal = vscode.window.createTerminal({
+    ...windowPlan.reviewTerminalOptions(plan, requestPath, userShell(), process.env),
+    location: { viewColumn: vscode.ViewColumn.Two },
+  });
+  terminal.show(false);
 }
 
 // What choosing an issue does: bring up its ticket (a store issue's file, or a Jira issue's page),

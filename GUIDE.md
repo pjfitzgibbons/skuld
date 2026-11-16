@@ -261,7 +261,7 @@ decides the repo (§4).
 | `plan archive` | Move closed tickets past `archiveAfterDays` to `archive/` |
 | `plan init-store` | Make an empty store's folders |
 | `pr [done] [KEY]` | Send a round (§5) |
-| `plan review KEY` | Write the next review round's request and open a new Claude Code tab in the plan window with its first line typed in; `pr` runs it when a review is due (§5), and it is how to start one by hand |
+| `plan review KEY` | Write the next review round's request and start Claude's review on it in the plan window's `Review KEY` terminal; `pr` runs it when a review is due (§5), and it is how to start one by hand |
 | `issue-check [PATH…]` | Check ticket files, or the whole store; exits non-zero naming file, line and rule |
 | `issue-watch` | The store's watcher; launchd runs it |
 | `jira-get <path>` | One read-only Jira GET with `~/.netrc` auth, so an agent can read Jira without seeing the token |
@@ -394,15 +394,15 @@ runs only when it has something to do, so `pr` is safe to repeat:
 | push | always | `GIT_TERMINAL_PROMPT=0 git push -u origin HEAD` |
 | PR | always | `gh pc` with no PR, else `gh pb` |
 | hand-off | always | records the PR on the branch's git config and prints its URL |
-| review | HEAD isn't the head of the last review's record, or there is no record, and no round is unfinished for HEAD (`review.py due`) | `plan review KEY`, which opens a new Claude Code tab in the plan window with the review's first line typed in, and returns without waiting; Peter presses Enter |
+| review | HEAD isn't the head of the last review's record, or there is no record, and no round is unfinished for HEAD (`review.py due`) | `plan review KEY`, which starts Claude's review in the plan window's `Review KEY` terminal and returns without waiting |
 | round | `replies/` or `issue.md` exist | `pr_threads.py --post`, then `checklist.py`, after the push |
 
 `pr done` runs the merged-PR step and refuses an unmerged PR. The review is due from the record, not from what this push moved, so a `pr` that stopped after its
 push, before the review step, reviews those commits on its next run. A `pr` with no commits since
 the last review prints "pr: no review: HEAD <short> was reviewed in round <n>" and sends nothing.
 When a round requested for HEAD hasn't finished, it prints "pr: no review: round <n> was requested
-for HEAD <short> and hasn't finished; press Enter in its Claude tab, or run plan review KEY to open
-it again". `plan review KEY` reopens that round's tab on its existing request. When the round was requested
+for HEAD <short> and hasn't finished; it runs in the Review KEY terminal of the plan window, or run
+plan review KEY to start it again". `plan review KEY` starts that round again on its existing request. When the round was requested
 for an older HEAD, `plan review KEY` refuses and names `plan review KEY --restart`, which writes the
 round again in its own folder at HEAD; `pr` prints that refusal. A review that can't start prints
 why and the command to start it by hand; the review never fails `pr`. The review starts straight after
@@ -413,8 +413,8 @@ review: not Copilot, and `gh pc` and `gh pb` don't either.
 
 ### Claude's review: how it runs and what it keeps
 
-**It runs in a new Claude Code tab of the plan window**, not in a `claude -p` process and not in
-the author's own conversation. A new tab is a fresh conversation: the reviewer has the worktree, the
+**It runs in the plan window's `Review KEY` terminal**, not in a `claude -p` process and not in
+the author's own conversation. The terminal's Claude is a fresh conversation: the reviewer has the worktree, the
 repo's rules and the `code-review` skill, and none of the author's context, which keeps the review
 independent. `plan review KEY` (`lib/cli.py`, `cmdReview`):
 
@@ -429,17 +429,20 @@ independent. `plan review KEY` (`lib/cli.py`, `cmdReview`):
    older head it refuses and names `--restart`, which writes the round again in its own folder at
    HEAD unless the round's reviewer is still running (see Restart below). With none unfinished and no review due, it prints "HEAD <short> was reviewed in round <n>"
    and opens nothing;
-4. focuses the plan window, the way `plan browse` does, then opens
-   `vscode://anthropic.claude-code/open?prompt=<url-encoded line>`. The Claude Code extension
-   registers that link; its `prompt` is pre-filled in a new tab and not submitted, and the link opens
-   in whichever window is focused
-   ([docs](https://code.claude.com/docs/en/vs-code.md#launch-a-vs-code-tab-from-other-tools)). The
-   line is `<KEY> review: read <absolute path of request.md> and do the review it describes.`
+4. focuses the plan window, the way `plan browse` does, then sends it
+   `vscode://skuld.plan-window/review?key=<KEY>&request=<absolute path of request.md>`.
+   `plan-window` reads the issue's worktree from its `<KEY>.code-workspace`, refuses a request that
+   isn't a `request.md` inside that worktree, closes a `Review <KEY>` terminal left from an earlier
+   round, and opens a new one in the worktree. It starts Claude there the way it starts the issue's
+   own Claude: a login shell running `claude "$PLAN_PROMPT"`, with `PLAN_KEY` set and the window's
+   `CLAUDE*` session variables unset. The prompt is
+   `<KEY> review: read <absolute path of request.md> and do the review it describes.`, and it is
+   submitted at once.
 
-**Peter presses Enter** in the new tab to start the review; the command prints "review ready in a
-new Claude tab in the plan window; press Enter to start", and `pr` shows it. The prompt opens by
-stopping if the tab's working directory isn't the worktree root, which guards against the link
-opening in another window.
+The command prints "review started in the Review KEY terminal of the plan window", and `pr` shows
+it. The link carries no prompt, so a link from anywhere else can only start the review of a
+request already written in the issue's worktree. The prompt opens by stopping if Claude's working
+directory isn't the worktree root.
 
 The reviewer's first step is `review.py claim KEY`, which finds the Claude it runs under (the nearest
 ancestor process that `claude agents --json` lists) and records its pid and session id as `reviewer`
@@ -534,17 +537,19 @@ of three. One whose pid is alive refuses at once and names the file, and doesn't
 pid can't be read refuses too: when no run is active, delete the file the refusal names. `request`
 reads the state and checks that a review is due inside the lock, so overlapping runs don't choose
 the same round or overwrite each other's request. `pr` calls
-`plan review KEY --if-due`, which writes and reopens nothing, and so opens no tab, when no review is
-due, an unfinished round already requested for this HEAD included; two overlapping `pr` runs open
-one tab. A manual `plan review KEY` still reopens that round's tab. The reviewing Claude never
+`plan review KEY --if-due`, which writes and reopens nothing, and so starts no review, when no
+review is due, an unfinished round already requested for this HEAD included; two overlapping `pr`
+runs start one review. A manual `plan review KEY` still starts that round again: the plan window
+closes the `Review KEY` terminal it had, which stops a reviewer still at work there, and the new
+reviewer claims the round. The reviewing Claude never
 deletes `.review.lock`: on a lock refusal it stops and says so.
 
 **An unfinished round, and which one is due.** A review is due when HEAD differs from the last
 review's head, or there is none, and no unfinished round was already requested for this HEAD
 (`review.py due`, which exits 0 when due, 1 with the reason when not, and 2 on any failure). A
-round whose tab never opened, or was closed before Enter, stays unfinished: `plan review KEY`
-reopens it for the same HEAD, and `plan review KEY --restart` writes it again at HEAD when HEAD
-moved. When the tab fails to open, `plan review` withdraws the request it wrote, by the token stored in
+round whose review never started, or whose terminal was closed before it finished, stays
+unfinished: `plan review KEY` starts it again for the same HEAD, and `plan review KEY --restart`
+writes it again at HEAD when HEAD moved. When the review link can't be sent, `plan review` withdraws the request it wrote, by the token stored in
 `request.json`, under `.review.lock` and only while no reviewer has claimed it; a reopened, claimed or
 replaced request is left as it is. A push made while a review runs leaves HEAD ahead of its head; the review finishes for the
 head it was requested for, and the next `pr` starts the follow-up review.
@@ -563,13 +568,13 @@ finish. When a rebase leaves nothing to review, a restarted round is completed w
 at the new head, and the findings the round had posted join it with their ids, so it doesn't stay
 unfinished and loses nothing posted. `--restart` is refused while the round's claimed reviewer is still a session in `claude agents
 --json`, whatever its state (a Claude waiting at a prompt is running), and when that list can't be
-read; the message says to close that tab and run `plan review KEY --restart` again. A round nobody
+read; the message says to close its `Review KEY` terminal and run `plan review KEY --restart` again. A round nobody
 claimed, or whose reviewer's pid is gone, restarts. A reviewer that does reach `finish` after a
 restart gets a refusal that says the round was restarted: the prompts tell it to stop, edit nothing
 and tell the author, on a head mismatch as on a lock refusal.
 
 **Limits.** A reviewer is known to `--restart` only through its `claim`: a round whose reviewer never
-ran `claim` (a tab closed before its first step, say) restarts without a check, and a round stays
+ran `claim` (a terminal closed before its first step, say) restarts without a check, and a round stays
 unfinished until `finish` runs or it is restarted. `finish` is safe to rerun: it writes `posted.json` in the
 round's folder as each POST succeeds, and a rerun posts only what that file doesn't name, so a
 failure after a review was posted doesn't post it twice. Before each POST it also writes an intent to

@@ -115,14 +115,6 @@ class ReadReviewStateTests(unittest.TestCase):
             self.assertIsNone(reviews.headOf("/w"))
 
 
-class ReviewPromptTests(unittest.TestCase):
-    def test_the_line_names_the_key_and_the_absolute_request_path(self):
-        self.assertEqual(
-            reviews.reviewPrompt("SK-0062", "/w/SK-0062/.tmp/SK-0062/review/request.md"),
-            "SK-0062 review: read /w/SK-0062/.tmp/SK-0062/review/request.md and do the review it describes.",
-        )
-
-
 class RequestRoundTests(unittest.TestCase):
     def test_the_script_runs_in_the_worktree_and_its_refusal_is_raised(self):
         from subprocess import CompletedProcess

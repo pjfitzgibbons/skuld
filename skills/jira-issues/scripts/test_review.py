@@ -954,7 +954,7 @@ class Finish(InRounds):
         self.assertEqual(
             review.due("SK-9", FakeSources(head=HEAD)),
             f"round 1 was requested for HEAD {HEAD[:8]} and hasn't finished; "
-            "press Enter in its Claude tab, or run plan review SK-9 to open it again",
+            "it runs in the Review SK-9 terminal of the plan window, or run plan review SK-9 to start it again",
         )
 
     def test_a_due_review_gives_no_reason(self):
@@ -1060,26 +1060,26 @@ class Claim(InRounds):
         sources.parents = {500: 400, 400: 300, 300: 1} if parents is None else parents
         return sources
 
-    def reviewer_in_a_tab(self, state="busy", pid=300):
+    def reviewer_in_a_terminal(self, state="busy", pid=300):
         return {"pid": pid, "sessionId": f"s{pid}", "status": state}
 
     def claimed_round(self, pid=300):
         ask(FakeSources(head=OLD))
-        review.claim("SK-9", self.sources([self.reviewer_in_a_tab(pid=pid)]))
+        review.claim("SK-9", self.sources([self.reviewer_in_a_terminal(pid=pid)]))
 
     def stored(self):
         return json.loads((self.folder(1) / "request.json").read_text())
 
     def test_claim_records_the_pid_and_session_of_the_claude_ancestor(self):
         ask(FakeSources(head=HEAD))
-        review.claim("SK-9", self.sources([self.reviewer_in_a_tab()]))
+        review.claim("SK-9", self.sources([self.reviewer_in_a_terminal()]))
         self.assertEqual(self.stored()["reviewer"], {"pid": 300, "sessionId": "s300"})
         self.assertIn("claimed by pid 300", self.log(1))
 
     def test_claim_fails_when_no_ancestor_is_a_claude_session(self):
         ask(FakeSources(head=HEAD))
         with self.assertRaisesRegex(review.ReviewError, "no Claude session is an ancestor"):
-            review.claim("SK-9", self.sources([self.reviewer_in_a_tab(pid=999)]))
+            review.claim("SK-9", self.sources([self.reviewer_in_a_terminal(pid=999)]))
         self.assertNotIn("reviewer", self.stored())
 
     def test_claim_from_the_command_line_exits_2_without_a_claude_ancestor(self):
@@ -1091,19 +1091,19 @@ class Claim(InRounds):
     def test_a_second_claim_by_the_same_pid_changes_nothing(self):
         self.claimed_round()
         before = (self.folder(1) / "request.json").read_text()
-        review.claim("SK-9", self.sources([self.reviewer_in_a_tab()]))
+        review.claim("SK-9", self.sources([self.reviewer_in_a_terminal()]))
         self.assertEqual((self.folder(1) / "request.json").read_text(), before)
 
     def test_a_claim_by_a_different_pid_is_refused_while_the_first_is_live(self):
         self.claimed_round(pid=300)
-        other = self.sources([self.reviewer_in_a_tab(pid=300), self.reviewer_in_a_tab(pid=400)])
+        other = self.sources([self.reviewer_in_a_terminal(pid=300), self.reviewer_in_a_terminal(pid=400)])
         with self.assertRaisesRegex(review.ReviewError, "claimed by the reviewer with pid 300"):
             review.claim("SK-9", other)
         self.assertEqual(self.stored()["reviewer"]["pid"], 300)
 
     def test_a_claim_replaces_one_whose_pid_is_gone(self):
         self.claimed_round(pid=300)
-        review.claim("SK-9", self.sources([self.reviewer_in_a_tab(pid=400)]))
+        review.claim("SK-9", self.sources([self.reviewer_in_a_terminal(pid=400)]))
         self.assertEqual(self.stored()["reviewer"]["pid"], 400)
 
     def test_restart_is_refused_while_the_claimed_reviewer_is_live_in_any_state(self):
@@ -1111,8 +1111,8 @@ class Claim(InRounds):
             with self.subTest(state=state):
                 self.claimed_round()
                 before = (self.folder(1) / "request.md").read_text()
-                with self.assertRaisesRegex(review.ReviewError, "close its Claude tab, then run plan review SK-9 --restart"):
-                    ask(self.sources([self.reviewer_in_a_tab(state)]), restart=True)
+                with self.assertRaisesRegex(review.ReviewError, "close its Review SK-9 terminal, then run plan review SK-9 --restart"):
+                    ask(self.sources([self.reviewer_in_a_terminal(state)]), restart=True)
                 self.assertEqual((self.folder(1) / "request.md").read_text(), before)
 
     def test_restart_proceeds_when_the_claimed_pid_is_gone(self):
@@ -1134,7 +1134,7 @@ class Claim(InRounds):
 
 
 class Withdraw(Claim):
-    """Taking back a request whose tab never opened: only the one this run wrote, only while it is
+    """Taking back a request whose review never started: only the one this run wrote, only while it is
     still the request and nobody has claimed it."""
 
     def written(self, head=HEAD):
@@ -1156,7 +1156,7 @@ class Withdraw(Claim):
 
     def test_a_claimed_request_is_not_withdrawn(self):
         outcome = self.written()
-        review.claim("SK-9", self.sources([self.reviewer_in_a_tab()]))
+        review.claim("SK-9", self.sources([self.reviewer_in_a_terminal()]))
         self.assertIn("claimed it", review.withdraw("SK-9", FakeSources(), outcome.token))
         self.assertTrue((self.folder(1) / "request.json").exists())
 

@@ -497,24 +497,24 @@ def handlerQuery(link):
     return urllib.parse.unquote(urllib.parse.urlsplit(link).query)
 
 
-class ClaudeTabTests(unittest.TestCase):
-    def test_the_link_opens_a_claude_code_tab_with_the_prompt_url_encoded(self):
-        link = term.claudeTabLink("SK-9 review: read /w/.tmp/SK-9/review/request.md & go")
+class ReviewLinkTests(unittest.TestCase):
+    def test_the_link_names_plan_windows_review_handler_the_key_and_the_request(self):
+        link = term.reviewLink("SK-9", "/w/a b&c/.tmp/SK-9/rounds/1/request.md")
+        self.assertTrue(link.startswith("vscode://skuld.plan-window/review?"))
         self.assertEqual(
-            link,
-            "vscode://anthropic.claude-code/open?prompt=SK-9%20review%3A%20read%20%2Fw%2F.tmp%2FSK-9%2Freview%2Frequest.md%20%26%20go",
+            urllib.parse.parse_qs(handlerQuery(link)),
+            {"key": ["SK-9"], "request": ["/w/a b&c/.tmp/SK-9/rounds/1/request.md"]},
         )
-        self.assertEqual(urllib.parse.parse_qs(urllib.parse.urlsplit(link).query), {"prompt": ["SK-9 review: read /w/.tmp/SK-9/review/request.md & go"]})
 
     def test_the_window_is_focused_then_sent_the_link_and_a_failure_is_raised(self):
         calls = []
         with mock.patch.object(term, "run", side_effect=lambda c, a, cwd: calls.append((c, a))):
-            term.openClaudeTab("p", "/ws/SK-9.code-workspace")
-        self.assertEqual(calls, term.linkCommands(term.claudeTabLink("p"), "/ws/SK-9.code-workspace"))
-        self.assertEqual(calls[0], ("code", ["/ws/SK-9.code-workspace"]))
+            term.startReview("SK-9", "/w/request.md", "/ws/plan.code-workspace")
+        self.assertEqual(calls, term.linkCommands(term.reviewLink("SK-9", "/w/request.md"), "/ws/plan.code-workspace"))
+        self.assertEqual(calls[0], ("code", ["/ws/plan.code-workspace"]))
         with mock.patch.object(term, "run", side_effect=RuntimeError("code: not found")):
             with self.assertRaises(RuntimeError):
-                term.openClaudeTab("p")
+                term.startReview("SK-9", "/w/request.md")
 
 
 class BrowseTests(unittest.TestCase):

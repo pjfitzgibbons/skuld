@@ -107,6 +107,28 @@ function findShellTerminal(plan, terminals) {
   return terminals.find((terminal) => terminal.name === shellTerminalName(plan));
 }
 
+function reviewTerminalName(plan) {
+  return `Review ${plan.key}`;
+}
+
+// The line that starts a round of Claude's review of the issue's PR: the key, and the absolute
+// path of the round's request.md, which holds the rest. skills/jira-issues/SKILL.md describes it.
+function reviewPrompt(key, requestPath) {
+  return `${key} review: read ${requestPath} and do the review it describes.`;
+}
+
+// Claude's review of the issue's PR: a fresh Claude, not the issue's own conversation, started as
+// the issue's Claude terminal starts one, in the worktree, with the round's line submitted at once.
+// The round's prompt stops unless its working directory is the worktree.
+function reviewTerminalOptions(plan, requestPath, shell, inherited = {}) {
+  const reviewer = { ...plan, prompt: reviewPrompt(plan.key, requestPath) };
+  return { ...claudeTerminalOptions(reviewer, shell, inherited), name: reviewTerminalName(plan) };
+}
+
+function findReviewTerminal(plan, terminals) {
+  return terminals.find((terminal) => terminal.name === reviewTerminalName(plan));
+}
+
 // The page to show for an issue with no ticket file, its Jira page, or null. A ticket file wins.
 function ticketPage(plan) {
   return plan.ticket === null ? plan.ticketUrl : null;
@@ -190,6 +212,45 @@ function openRequest(query) {
   if (!key) return { refusal: "/open needs ?key=" };
   if (!isIssueKey(key)) return { refusal: `/open needs an issue key, not ${key}` };
   return { key };
+}
+
+// What a /review?key=<KEY>&request=<path> link asks of this window: { key, request } to review, or
+// { refusal } saying why not. The link starts a Claude on a prompt it submits, so it carries no
+// prompt: only the path of a round's request.md, which reviewRefusal checks against the issue's
+// worktree once its record is read.
+function reviewRequest(query) {
+  const params = new URLSearchParams(query);
+  const key = params.get("key");
+  const request = params.get("request");
+  if (!key || !request) return { refusal: "/review needs ?key= and &request=" };
+  if (!isIssueKey(key)) return { refusal: `/review needs an issue key, not ${key}` };
+  return { key, request };
+}
+
+// Why the issue can't be reviewed from requestPath, or null: the path must be a request.md inside
+// the issue's worktree, written there by review.py. Both are compared with symbolic links resolved,
+// since `plan review` names the request from git's top level and Start names the worktree as given.
+function reviewRefusal(plan, requestPath) {
+  if (!path.isAbsolute(requestPath) || path.basename(requestPath) !== "request.md") {
+    return `/review needs the absolute path of a request.md, not ${requestPath}`;
+  }
+  if (!isInside(requestPath, plan.worktree)) return `/review's ${requestPath} isn't in ${plan.key}'s worktree ${plan.worktree}`;
+  return null;
+}
+
+function isInside(file, folder) {
+  const relative = path.relative(realPathOrAsGiven(folder), realPathOrAsGiven(file));
+  const outside = relative === ".." || relative.startsWith(`..${path.sep}`);
+  return relative !== "" && !outside && !path.isAbsolute(relative);
+}
+
+// A path that doesn't exist is compared as written.
+function realPathOrAsGiven(file) {
+  try {
+    return fs.realpathSync(file);
+  } catch {
+    return path.resolve(file);
+  }
 }
 
 // The Issues view in the Explorer: one item per issue in the issues file, in its order, coloured
@@ -297,6 +358,8 @@ module.exports = {
   isPlanWindow,
   browseRequest,
   openRequest,
+  reviewRequest,
+  reviewRefusal,
   readPlan,
   issueRecord,
   unsetClaudeVariables,
@@ -305,6 +368,9 @@ module.exports = {
   findClaudeTerminal,
   shellTerminalOptions,
   findShellTerminal,
+  reviewPrompt,
+  reviewTerminalOptions,
+  findReviewTerminal,
   ticketPage,
   ticketPageOptions,
   keysWithClaude,

@@ -83,11 +83,6 @@ def waitingOrNot(readState, worktree, key):
         return False
 
 
-# The line pre-filled in the new Claude tab: the key, and the absolute path of the round's request.
-def reviewPrompt(key, requestPath):
-    return f"{key} review: read {requestPath} and do the review it describes."
-
-
 # Writes the next review round's request.md in the worktree (review.py request) and returns (the
 # path it wrote or reopened, or None, a note saying what happened, and the token of the request it
 # wrote, None for one it reopened). restart restarts an

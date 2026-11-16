@@ -453,23 +453,18 @@ def browseCommands(url, key=None, workspaceFile=None):
     return linkCommands(browseLink(url, key), workspaceFile)
 
 
-# The link that opens a new Claude Code tab with prompt pre-filled, not submitted: the Claude Code
-# extension (anthropic.claude-code) registers vscode://anthropic.claude-code/open, whose optional
-# `prompt` query is "Text to pre-fill in the prompt box. Must be URL-encoded. The prompt is pre-filled
-# but not submitted automatically." It opens in whichever VS Code window is focused.
-# https://code.claude.com/docs/en/vs-code.md#launch-a-vs-code-tab-from-other-tools
-CLAUDE_CODE_EXTENSION = "anthropic.claude-code"
+# The vscode:// link that has plan-window start Claude's review of key's PR in its Review terminal,
+# in key's worktree, on the round's request.md, encoded as browseLink() is. The link names the
+# request, never a prompt: the window builds the line it submits.
+def reviewLink(key, requestPath):
+    return planWindowLink("review", {"key": key, "request": requestPath})
 
 
-def claudeTabLink(prompt):
-    return f"vscode://{CLAUDE_CODE_EXTENSION}/open?prompt={quote(prompt, safe='')}"
-
-
-# Opens a new Claude Code tab in the plan window with prompt in its box: focus the window first (the
-# link goes to the focused window), then send the link. A failed step raises: the round's
-# request.md is written and nothing else will start it.
-def openClaudeTab(prompt, workspaceFile=None):
-    for command, args in linkCommands(claudeTabLink(prompt), workspaceFile):
+# Starts the review in the plan window: focus the window first (the link goes to the focused
+# window), then send the link. A failed step raises: the round's request.md is written and nothing
+# else will start it.
+def startReview(key, requestPath, workspaceFile=None):
+    for command, args in linkCommands(reviewLink(key, requestPath), workspaceFile):
         run(command, args, os.getcwd())
 
 

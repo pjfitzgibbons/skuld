@@ -27,7 +27,7 @@ An issue is a Jira issue, `<KEY>` (e.g. `CIAM-123`), its description in the issu
 |---|---|
 | `gh pc [KEY]` | `gh pr create`, titled with the branch's first commit subject, body `.tmp/<KEY>/pr-body.md` |
 | `gh pb [KEY]` | `gh pr edit` on this branch's PR with `.tmp/<KEY>/pr-body.md` |
-| `pr [KEY]` | What Ship runs: commits with `.tmp/<KEY>/commit.txt`, pushes, opens or updates the PR, prints its URL, sends the replies and ticks, then, when the push added commits, opens a new Claude Code tab with Claude's review of the PR (`plan review <KEY>`), which Peter starts with Enter (`plan review <KEY> --restart` writes an unfinished round for an older HEAD again, once its reviewer's tab is closed) |
+| `pr [KEY]` | What Ship runs: commits with `.tmp/<KEY>/commit.txt`, pushes, opens or updates the PR, prints its URL, sends the replies and ticks, then, when the push added commits, starts Claude's review of the PR in the plan window's `Review <KEY>` terminal (`plan review <KEY>`) (`plan review <KEY> --restart` writes an unfinished round for an older HEAD again, once its reviewer's terminal is closed) |
 | `pr done [KEY]` | After the merge: sends any replies and ticks left, then says to press Done in `plan`, which cleans up and tells you to close the issue in Jira. Bare `pr` does the same once the PR has merged |
 
 `gh pc` and `gh pb` refuse a body containing `Assisted-by` or `Co-authored-by`. `GHBODY_DRY=1` prints the command instead.

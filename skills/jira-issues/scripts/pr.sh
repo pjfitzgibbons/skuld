@@ -10,9 +10,9 @@
 #   URL     prints the PR's URL
 #   review  straight after the PR and its URL, when HEAD isn't the head of the last review's
 #           record, or there is none, and no round is unfinished for it (review.py due):
-#           opens a new Claude Code tab in the plan window with the review's first line typed in
-#           (plan review: review.py request, then the tab); Peter presses Enter. It returns
-#           without waiting. It runs before the
+#           starts Claude's review in the plan window's "Review KEY" terminal, a fresh Claude
+#           in the worktree given the review's first line (plan review: review.py request, then
+#           the review link). It returns without waiting. It runs before the
 #           replies and ticks, so a failed send can't skip it. A review that can't start prints why
 #           and how to start it; the review never fails pr. Its record is .tmp/KEY/rounds/<n>/review.json
 #           (review.py). A pr
@@ -183,7 +183,7 @@ url=$(gh pr view "$branch" --json url --jq .url)
 echo "$url"
 
 # After the URL, so it shows at once, and before the replies and ticks, so a failed send can't skip
-# it. The review runs in a new Claude Code tab of the plan window and takes minutes; pr doesn't wait for it,
+# it. The review runs in the plan window's Review KEY terminal and takes minutes; pr doesn't wait for it,
 # and a review that can't start never fails pr. It runs the repo's own bin/plan, the version of the
 # CLI that goes with this script (the plan on PATH can be another checkout's); PATH's plan is used
 # only when that file is missing.

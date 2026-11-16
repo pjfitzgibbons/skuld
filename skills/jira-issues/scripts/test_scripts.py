@@ -1343,7 +1343,7 @@ class PrReview(unittest.TestCase):
         result, calls = self.run_pr(reviewed=False, unfinished=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("pr: no review: round 1 was requested for HEAD ", result.stdout)
-        self.assertIn("hasn't finished; press Enter in its Claude tab, or run plan review CIAM-9", result.stdout)
+        self.assertIn("hasn't finished; it runs in the Review CIAM-9 terminal of the plan window, or run plan review CIAM-9", result.stdout)
         self.assertEqual(calls, "")
 
     def test_a_review_that_cannot_start_says_why_and_does_not_fail_pr(self):
