@@ -66,16 +66,27 @@ class RobustnessTests(unittest.TestCase):
             self.assertEqual(reviews.readReviewState("/w", "SK-1"), (None, None, False))
 
     def test_review_py_is_loaded_on_first_use_and_once(self):
-        reviews.review.cache_clear()
-        self.addCleanup(reviews.review.cache_clear)
+        reviews.loadedReviewScript.cache_clear()
+        self.addCleanup(reviews.loadedReviewScript.cache_clear)
         with mock.patch.object(reviews, "loadReviewScript", return_value=object()) as load:
             first, second = reviews.review(), reviews.review()
         self.assertIs(first, second)
         load.assert_called_once()
 
+    def test_review_py_is_loaded_again_when_it_changes(self):
+        reviews.loadedReviewScript.cache_clear()
+        self.addCleanup(reviews.loadedReviewScript.cache_clear)
+        with tempfile.NamedTemporaryFile(suffix=".py") as script, mock.patch.object(reviews, "REVIEW_SCRIPT", script.name), \
+                mock.patch.object(reviews, "loadReviewScript", side_effect=lambda path: object()) as load:
+            first = reviews.review()
+            os.utime(script.name, ns=(1, os.stat(script.name).st_mtime_ns + 1_000_000_000))
+            second = reviews.review()
+        self.assertIsNot(first, second)
+        self.assertEqual(load.call_count, 2)
+
     def test_a_missing_review_py_fails_only_the_review_features(self):
-        reviews.review.cache_clear()
-        self.addCleanup(reviews.review.cache_clear)
+        reviews.loadedReviewScript.cache_clear()
+        self.addCleanup(reviews.loadedReviewScript.cache_clear)
         with mock.patch.object(reviews, "REVIEW_SCRIPT", "/nonexistent/review.py"):
             with mock.patch.object(reviews, "loadReviewScript", side_effect=FileNotFoundError):
                 self.assertEqual(reviews.reviewedKeys({"SK-1": "/w"}, lambda w, k: (record(), HEAD, False)), frozenset())
@@ -92,11 +103,22 @@ class ReadReviewStateTests(unittest.TestCase):
                 file.write(text)
         return outer.name
 
-    def test_the_last_review_and_an_unfinished_one_are_read_from_the_rounds(self):
+    def test_the_last_review_and_an_unfinished_one_are_read_from_the_rounds_with_no_git(self):
         worktree = self.worktree({"1/review.json": json.dumps(record()), "2/request.json": "{}"})
-        with mock.patch.object(reviews, "git", return_value=HEAD + "\n"):
+        with mock.patch.object(reviews, "git", side_effect=AssertionError("no git")):
             state = reviews.readReviewState(worktree, "SK-1")
-        self.assertEqual(state, (record(), HEAD, True))
+        self.assertEqual(state, (record(), None, True))
+
+    def test_head_is_read_only_for_a_finished_review_with_unsettled_findings(self):
+        worktree = self.worktree({"1/review.json": json.dumps(record())})
+        with mock.patch.object(reviews, "git", return_value=HEAD + "\n") as git:
+            self.assertEqual(reviews.readReviewState(worktree, "SK-1"), (record(), HEAD, False))
+        git.assert_called_once()
+        settled = self.worktree({"1/review.json": json.dumps(record(states=("Fixed",)))})
+        with mock.patch.object(reviews, "git", side_effect=AssertionError("no git")):
+            self.assertEqual(reviews.readReviewState(settled, "SK-1"), (record(states=("Fixed",)), None, False))
+        with mock.patch.object(reviews, "git", side_effect=AssertionError("no git")):
+            self.assertEqual(reviews.readReviewState(self.worktree({}), "SK-1"), (None, None, False))
 
     def test_round_zeros_review_without_a_head_is_not_a_review_of_the_pr(self):
         worktree = self.worktree({"0/review.json": json.dumps({"findings": [{"disposition": "open"}]})})
@@ -129,29 +151,33 @@ class RequestRoundTests(unittest.TestCase):
     def test_restart_is_passed_on_and_the_outcome_read(self):
         from subprocess import CompletedProcess
 
-        answer = CompletedProcess("x", 0, stdout='{"path": "/w/r.md", "note": "written", "token": "t1"}\n', stderr="")
+        answer = CompletedProcess("x", 0, stdout='{"path": "/w/r.md", "note": "written", "token": "t1", "round": 2, "written": true}\n', stderr="")
         with mock.patch.object(reviews.subprocess, "run", return_value=answer) as run:
-            self.assertEqual(reviews.requestRound("/w", "SK-1", restart=True), ("/w/r.md", "written", "t1"))
+            self.assertEqual(reviews.requestRound("/w", "SK-1", restart=True), ("/w/r.md", "written", "t1", 2, True))
         self.assertEqual(run.call_args.args[0][-3:], ["request", "SK-1", "--restart"])
 
     def test_if_due_is_passed_on(self):
         from subprocess import CompletedProcess
 
-        answer = CompletedProcess("x", 0, stdout='{"path": null, "note": "n", "token": null}', stderr="")
+        answer = CompletedProcess("x", 0, stdout='{"path": null, "note": "n", "token": null, "round": null, "written": false}', stderr="")
         with mock.patch.object(reviews.subprocess, "run", return_value=answer) as run:
             reviews.requestRound("/w", "SK-1", ifDue=True)
         self.assertEqual(run.call_args.args[0][-3:], ["request", "SK-1", "--if-due"])
 
+    def test_the_ticket_is_passed_on(self):
+        from subprocess import CompletedProcess
+
+        answer = CompletedProcess("x", 0, stdout='{"path": null, "note": "n", "token": null, "round": null, "written": false}', stderr="")
+        with mock.patch.object(reviews.subprocess, "run", return_value=answer) as run:
+            reviews.requestRound("/w", "SK-1", ticket="/store/SK-1-x.md")
+        self.assertEqual(run.call_args.args[0][-4:], ["request", "SK-1", "--ticket", "/store/SK-1-x.md"])
+
     def test_nothing_written_comes_back_as_no_path(self):
         from subprocess import CompletedProcess
 
-        answer = CompletedProcess("x", 0, stdout='{"path": null, "note": "HEAD abc was reviewed in round 1", "token": null}', stderr="")
+        answer = CompletedProcess("x", 0, stdout='{"path": null, "note": "HEAD abc was reviewed in round 1", "token": null, "round": null, "written": false}', stderr="")
         with mock.patch.object(reviews.subprocess, "run", return_value=answer):
-            self.assertEqual(reviews.requestRound("/w", "SK-1"), (None, "HEAD abc was reviewed in round 1", None))
-
-
-if __name__ == "__main__":
-    unittest.main()
+            self.assertEqual(reviews.requestRound("/w", "SK-1"), (None, "HEAD abc was reviewed in round 1", None, None, False))
 
     def test_withdraw_runs_the_script_in_the_worktree_with_the_token_and_returns_what_it_did(self):
         from subprocess import CompletedProcess
@@ -161,3 +187,18 @@ if __name__ == "__main__":
             self.assertEqual(reviews.withdrawRequest("/w", "SK-1", "t1"), "round 1's request withdrawn")
         self.assertEqual(run.call_args.kwargs["cwd"], "/w")
         self.assertEqual(run.call_args.args[0][-4:], ["withdraw", "SK-1", "--token", "t1"])
+
+
+    def test_a_script_run_past_the_timeout_is_stopped_and_raised(self):
+        from subprocess import TimeoutExpired
+
+        with mock.patch.object(reviews.subprocess, "run", side_effect=TimeoutExpired("x", reviews.REVIEW_SCRIPT_TIMEOUT)) as run:
+            with self.assertRaisesRegex(RuntimeError, "review.py request took longer than"):
+                reviews.requestRound("/w", "SK-1")
+            with self.assertRaisesRegex(RuntimeError, "review.py withdraw took longer than"):
+                reviews.withdrawRequest("/w", "SK-1", "t1")
+        self.assertEqual(run.call_args.kwargs["timeout"], reviews.REVIEW_SCRIPT_TIMEOUT)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -81,10 +81,16 @@ def resolveDir(cfg, jira, key):
 # Pulls a Jira key out of a branch name built by branchName() (<type>/<KEY>-<slug>) or a bare
 # <KEY>-<slug>; raises if the branch doesn't carry one, since ship/go without a key need one.
 def keyFromBranch(branch):
-    match = re.search(rf"(?:^|/)({ISSUE_KEY_PATTERN})-", branch)
-    if not match:
+    key = branchKey(branch)
+    if not key:
         raise RuntimeError(f'current branch "{branch}" doesn\'t carry a Jira key; pass one: plan ship CIAM-123')
-    return match.group(1)
+    return key
+
+
+# The issue key a branch name carries, or None: the key before a slug, after any <prefix>/.
+def branchKey(branch):
+    match = re.search(rf"(?:^|/)({ISSUE_KEY_PATTERN})-", branch)
+    return match.group(1) if match else None
 
 
 # A minimal ADF document -> plain text renderer, for plan view's description/comments. Only the
@@ -311,49 +317,89 @@ def cmdBrowse(cfg, target, windowKey):
     term_mod.showUrl(url, key, existingPlanWorkspace(cfg))
 
 
-# A branch's issue key: pr.sh's rule, the key after an optional <prefix>/ and before the slug.
-BRANCH_KEY_RE = re.compile(r"^(?:[^/]+/)?([A-Z][A-Z0-9]*-[0-9]+)-")
-
-
-def branchKey(branch):
-    found = BRANCH_KEY_RE.match(branch)
-    return found.group(1) if found else None
-
-
 # Starts the round's review in the plan window. When the link can't be sent, a request this run
-# wrote (it has a token) is withdrawn, so the next `pr` starts the round again; the script withdraws
-# it only if it is still this run's and no reviewer has claimed it. A reopened request is left as it
-# is.
-def startReview(cfg, worktree, key, request, token):
+# wrote is withdrawn, so the next `pr` starts the round again; the script withdraws it only if it is
+# still this run's and no reviewer has claimed it. A reopened request carries its stored token for
+# the link but is left as it is, since another run wrote it. One with no token (written before
+# requests had one) can't be linked to, so it is refused with the restart that writes it again.
+def startReview(cfg, worktree, key, requested):
+    if not requested.token:
+        raise RuntimeError(f"round {requested.round}'s request has no token for the review link; run plan review {key} --restart")
     try:
-        term_mod.startReview(key, request, existingPlanWorkspace(cfg))
+        term_mod.startReview(key, requested.round, requested.token, reviewWindowWorkspace(cfg, key))
     except (RuntimeError, OSError):
-        print(reviews_mod.withdrawRequest(worktree, key, token) if token else "request left as it is: it was reopened", file=sys.stderr)
+        print(withdrawUnstarted(worktree, key, requested), file=sys.stderr)
         raise
 
 
+# The plan window's workspace file, which the review link needs: without it the link goes to
+# whichever window has focus, which has no Review terminal and refuses it.
+def reviewWindowWorkspace(cfg, key):
+    path = existingPlanWorkspace(cfg)
+    if not path:
+        raise RuntimeError(f"the plan window's workspace {planWorkspaceFrom(cfg)} doesn't exist, so no window would start the review; plan open {key} writes it")
+    return path
+
+
+# What became of the request whose link wasn't sent, one line. A failure to withdraw it is reported
+# here, so the error the caller raises stays the link's, the reason the review didn't start.
+def withdrawUnstarted(worktree, key, requested):
+    if not requested.written:
+        return "request left as it is: it was reopened"
+    try:
+        return reviews_mod.withdrawRequest(worktree, key, requested.token)
+    except (RuntimeError, OSError) as error:
+        return f"request not withdrawn ({error}); plan review {key} --restart writes it again"
+
+
 # `plan review KEY [--restart]`, run in KEY's worktree (or a folder of it) by `pr`: writes the next
-# review round's request (review.py request), focuses the plan window when its workspace exists and
+# review round's request (review.py request) with the issue's ticket, focuses the plan window when its workspace exists and
 # sends it the review link, which starts a fresh Claude on the round's line in the window's
 # "Review KEY" terminal, in the worktree; the round's prompt still stops unless its working
 # directory is the worktree. An unfinished round for this HEAD is reopened as it is; one for an
 # older head is refused unless --restart, which the script refuses while the round's claimed
 # reviewer still runs; with nothing due, it says why and starts nothing. --if-due (`pr`'s call) also
 # starts nothing for a round already requested for this HEAD, so two `pr` runs start one review. It
-# refuses a worktree whose branch isn't KEY's, since it writes there and posts to that branch's PR.
+# refuses a worktree whose branch names another issue, since it writes there and posts to that
+# branch's PR; a branch that names no issue is taken as KEY's, as `pr KEY` takes it.
 def cmdReview(cfg, key, restart=False, ifDue=False):
     if not key:
-        raise RuntimeError("usage: plan review KEY [--restart | --if-due]")
+        raise RuntimeError(REVIEW_USAGE)
     worktree = startLib.git(os.getcwd(), "rev-parse", "--show-toplevel").strip()
     branch = startLib.git(worktree, "branch", "--show-current").strip()
-    if branchKey(branch) != key:
+    if branchKey(branch) not in (None, key):
         raise RuntimeError(f"this worktree's branch is {branch or '(detached)'}, not {key}'s; run plan review {key} in {key}'s worktree")
-    request, note, token = reviews_mod.requestRound(worktree, key, restart, ifDue)
-    if not request:
-        print(note)
+    requested = reviews_mod.requestRound(worktree, key, restart, ifDue, issueTicket(cfg, key))
+    if not requested.path:
+        print(requested.note)
         return
-    startReview(cfg, worktree, key, request, token)
+    startReview(cfg, worktree, key, requested)
     print(f"review started in the Review {key} terminal of the plan window")
+
+
+REVIEW_USAGE = "usage: plan review KEY [--restart | --if-due]"
+REVIEW_FLAGS = ("--restart", "--if-due")
+
+
+# (key, restart, ifDue) of `plan review`'s arguments; a flag it doesn't know, a second word, or
+# --restart with --if-due is refused.
+def reviewArguments(args):
+    flags = [arg for arg in args if arg.startswith("--")]
+    words = [arg for arg in args if not arg.startswith("--")]
+    unknown = [flag for flag in flags if flag not in REVIEW_FLAGS]
+    if unknown or len(words) > 1 or set(REVIEW_FLAGS) <= set(flags):
+        raise RuntimeError(f"{REVIEW_USAGE} (given: {' '.join(args)})")
+    return (words[0] if words else None), "--restart" in flags, "--if-due" in flags
+
+
+# Where the review reads the issue's lenses: a store issue's ticket file, a Jira issue's page. None
+# when this Mac can't name it (no store, or a project with no "jira" entry); the review then uses
+# every lens.
+def issueTicket(cfg, key):
+    try:
+        return jiraFrom(cfg, key).browseUrl(key)
+    except RuntimeError:
+        return None
 
 
 PR_TARGET_RE = re.compile(r"^pr#(\d+)$")
@@ -590,8 +636,7 @@ def main(argv=None):
     if cmd == "browse":
         return cmdBrowse(cfg, rest[0] if rest else None, rest[1] if len(rest) > 1 else None)
     if cmd == "review":
-        words = [arg for arg in rest if not arg.startswith("--")]
-        return cmdReview(cfg, words[0] if words else None, "--restart" in rest, "--if-due" in rest)
+        return cmdReview(cfg, *reviewArguments(rest))
     if cmd == "ship":
         return cmdShip(cfg, rest[0] if rest else None)
     if cmd == "done":

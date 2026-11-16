@@ -454,17 +454,18 @@ def browseCommands(url, key=None, workspaceFile=None):
 
 
 # The vscode:// link that has plan-window start Claude's review of key's PR in its Review terminal,
-# in key's worktree, on the round's request.md, encoded as browseLink() is. The link names the
-# request, never a prompt: the window builds the line it submits.
-def reviewLink(key, requestPath):
-    return planWindowLink("review", {"key": key, "request": requestPath})
+# in key's worktree, encoded as browseLink() is. It names the round and its request's token, never a
+# path or a prompt: the window builds the round's request.md path from the worktree, starts nothing
+# unless request.json there carries the token, and builds the line it submits.
+def reviewLink(key, roundNumber, token):
+    return planWindowLink("review", {"key": key, "round": str(roundNumber), "token": token})
 
 
 # Starts the review in the plan window: focus the window first (the link goes to the focused
 # window), then send the link. A failed step raises: the round's request.md is written and nothing
 # else will start it.
-def startReview(key, requestPath, workspaceFile=None):
-    for command, args in linkCommands(reviewLink(key, requestPath), workspaceFile):
+def startReview(key, roundNumber, token, workspaceFile=None):
+    for command, args in linkCommands(reviewLink(key, roundNumber, token), workspaceFile):
         run(command, args, os.getcwd())
 
 

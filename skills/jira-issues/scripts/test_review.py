@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import shlex
 import os
 import subprocess
 import tempfile
@@ -17,7 +18,13 @@ OLD = "a" * 40
 
 
 def finding(key="f.py:3-5:crash", state="open", **more):
-    return {"key": key, "summary": "x crashes when y", "disposition": state, **more}
+    return {"key": key, "summary": "x crashes when y", "why": "y is the common case",
+            "fixShows": "x survives y", "disposition": state, **more}
+
+
+def without_reasoning(entry):
+    """A finding as a record written before why and fixShows existed holds it."""
+    return {name: value for name, value in entry.items() if name not in ("why", "fixShows")}
 
 
 def record(head=OLD, round_number=1, findings=(), dispositions=()):
@@ -39,7 +46,7 @@ class Rules(unittest.TestCase):
         self.assertEqual(review.diff_range("main", record(), HEAD), f"{OLD}..{HEAD}")
 
     def test_a_recorded_head_no_longer_in_history_reviews_the_whole_pr(self):
-        self.assertEqual(review.diff_range("main", record(), HEAD, head_reachable=False), f"origin/main...{HEAD}")
+        self.assertEqual(review.diff_range("main", record(), HEAD, bounded=False), f"origin/main...{HEAD}")
 
     def test_an_ok_file_with_an_unchanged_blob_is_not_read_again(self):
         last = record(dispositions=[entry("a.py", "1"), entry("b.py", "2"), entry("c.py", "3", ["c.py:1:crash"])])
@@ -65,7 +72,7 @@ class Rules(unittest.TestCase):
     def test_the_rebase_call_names_the_whole_range_and_the_files_not_settled(self):
         self.assertEqual(
             review.review_call("origin/main...HEAD", ["a.py", "my file.py"]),
-            "/code-review high --max-findings all origin/main...HEAD -- a.py 'my file.py'",
+            "/code-review medium --max-findings all origin/main...HEAD -- a.py 'my file.py'",
         )
         last = record(findings=[finding("gone.py:1:x")], dispositions=[entry("ok.py", "1"), entry("b.py", "2", ["b.py:1:x"])])
         self.assertEqual(review.rebased_files(last, {"ok.py": "1", "b.py": "9", "n.py": "3"}), ["b.py", "gone.py", "n.py"])
@@ -99,8 +106,8 @@ class Rules(unittest.TestCase):
         self.assertEqual([f["key"] for f in review.findings_to_post(last)], ["f.py:3-5:crash"])
 
     def test_the_call_always_names_the_range_and_max_findings_all(self):
-        self.assertEqual(review.review_call("origin/main...HEAD"), "/code-review high --max-findings all origin/main...HEAD")
-        self.assertEqual(review.review_call(f"{OLD}..HEAD"), f"/code-review high --max-findings all {OLD}..HEAD")
+        self.assertEqual(review.review_call("origin/main...HEAD"), "/code-review medium --max-findings all origin/main...HEAD")
+        self.assertEqual(review.review_call(f"{OLD}..HEAD"), f"/code-review medium --max-findings all {OLD}..HEAD")
 
     def test_diff_lines_come_from_the_hunk_headers_and_skip_deleted_files(self):
         diff = DIFF + "@@ -30 +40,2 @@\n+x\ndiff --git a/g.py b/g.py\n--- a/g.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n"
@@ -154,9 +161,39 @@ class Rules(unittest.TestCase):
         posted = {"comments": {"a.py:1:x": 5}, "bodies": {"b.py:1:x": 9}}
         self.assertEqual([f["key"] for f in review.findings_to_post(last, posted)], ["c.py:1:x"])
 
-    def test_a_finding_line_names_key_disposition_summary_and_fix(self):
-        self.assertEqual(review.finding_line(finding(fix="use y")), "- f.py:3-5:crash [open]: x crashes when y Recommended fix: use y")
+    def test_a_finding_line_names_key_disposition_summary_reasoning_and_fix(self):
+        self.assertEqual(review.finding_line(finding(fix="use y")),
+                         "- f.py:3-5:crash [open]: x crashes when y\n  Why it matters: y is the common case"
+                         "\n  Recommended fix: use y\n  A correct fix shows: x survives y")
         self.assertEqual(review.finding_lines([]), "(none)")
+
+    def test_a_finding_line_from_a_record_without_reasoning_is_its_summary(self):
+        self.assertEqual(review.finding_line(without_reasoning(finding())), "- f.py:3-5:crash [open]: x crashes when y")
+
+    def test_a_finding_to_be_posted_needs_why_and_fix_shows(self):
+        problems = review.finding_problems(without_reasoning(finding(state="New")))
+        self.assertEqual(problems, ["finding f.py:3-5:crash: why (why it matters) is missing",
+                                    "finding f.py:3-5:crash: fixShows (what a correct fix must show) is missing"])
+
+    def test_a_finding_already_posted_or_settled_may_lack_reasoning(self):
+        for posted in (finding(commentId=7), finding(reviewId=8), finding(state="Fixed")):
+            self.assertEqual(review.finding_problems(without_reasoning(posted)), [])
+
+    def test_reasoning_that_is_there_must_be_text(self):
+        problems = review.finding_problems(finding(commentId=7, why=3, fixShows="  "))
+        self.assertEqual(problems, ["finding f.py:3-5:crash: why is not text", "finding f.py:3-5:crash: fixShows is not text"])
+
+    def test_a_record_written_before_reasoning_still_passes(self):
+        old = {**record(head=HEAD, round_number=2, findings=[without_reasoning(finding(commentId=7))]),
+               "dispositions": []}
+        self.assertEqual(review.record_problems(old, 2, HEAD), [])
+
+    def test_the_round_prompt_carries_each_unsettled_finding_s_reasoning(self):
+        last = record(findings=[finding(commentId=7), finding("g.py:1:loss", "Fixed", commentId=8)])
+        lines = review.finding_lines(review.unsettled_findings(last))
+        self.assertIn("Why it matters: y is the common case", lines)
+        self.assertIn("A correct fix shows: x survives y", lines)
+        self.assertNotIn("g.py", lines)
 
     def test_the_files_of_unsettled_findings_leave_out_fixed_ones(self):
         last = record(findings=[finding("a.py:1:x"), finding("b.py:2:y", "New"), finding("c.py:3:z", "Fixed")])
@@ -187,6 +224,8 @@ class Rules(unittest.TestCase):
         ranged = review.inline_comment(finding("f.py:3-5:crash", fix="use y"))
         self.assertEqual((ranged["path"], ranged["start_line"], ranged["line"]), ("f.py", 3, 5))
         self.assertIn("Recommended fix: use y", ranged["body"])
+        self.assertIn("Why it matters: y is the common case", ranged["body"])
+        self.assertIn("A correct fix shows: x survives y", ranged["body"])
         single = review.inline_comment(finding("f.py:4:crash"))
         self.assertEqual(single["line"], 4)
         self.assertNotIn("start_line", single)
@@ -195,6 +234,33 @@ class Rules(unittest.TestCase):
         body = review.comment_body(finding())
         self.assertEqual(review.comment_ids([{"id": 9, "body": body}, {"id": 10, "body": "other"}]), {"f.py:3-5:crash": 9})
 
+
+    def test_comment_ids_read_the_marker_marker_writes(self):
+        with mock.patch.object(review, "MARKER", __import__("re").compile(r"<!-- moved: (.+?) -->")), mock.patch.object(
+                review, "marker", lambda key: f"<!-- moved: {key} -->"):
+            self.assertEqual(review.comment_ids([{"id": 9, "body": review.comment_body(finding())}]), {"f.py:3-5:crash": 9})
+
+    def test_a_comment_with_no_body_carries_no_finding(self):
+        self.assertEqual(review.comment_ids([{"id": 9, "body": None}]), {})
+
+    def test_the_key_rule_is_lib_issuekeys_one(self):
+        canonical = (Path(__file__).resolve().parents[3] / "lib" / "issuekeys.py").read_text()
+        self.assertIn(f'ISSUE_KEY_PATTERN = r"{review.KEY_PATTERN.pattern[1:-1]}"', canonical)
+        self.assertTrue(review.KEY_PATTERN.match("X-1"))
+        self.assertFalse(review.KEY_PATTERN.match("AB2-5"))
+
+
+class PullRequestDiff(unittest.TestCase):
+    def test_the_diff_is_uncoloured_so_its_headers_and_hunks_are_read(self):
+        with mock.patch.object(review, "git", return_value="") as git:
+            review.Sources().pr_diff("main", HEAD)
+        self.assertIn("--no-color", git.call_args.args)
+
+    def test_review_comments_come_from_every_page(self):
+        sources = review.Sources()
+        with mock.patch.object(sources, "all_pages", return_value=[{"id": 1}]) as pages:
+            self.assertEqual(sources.review_comments(7, 55), [{"id": 1}])
+        self.assertEqual(pages.call_args.args, ("repos/{owner}/{repo}/pulls/7/reviews/55/comments",))
 
 DIFF = """diff --git a/f.py b/f.py
 --- a/f.py
@@ -260,6 +326,9 @@ class FakeSources:
 
     def reachable(self, sha, head):
         return self.is_reachable
+
+    def merges_since(self, sha, head):
+        return getattr(self, "merged", False)
 
     def changed(self, range_, head):
         self.ranges.append(range_)
@@ -348,7 +417,7 @@ class Request(InRounds):
         self.assertEqual(path, self.folder(1) / "request.md")
         self.assertIn("First review of SK-9's PR #7 (round 1)", text)
         self.assertIn(f"git diff origin/main...{HEAD}", text)
-        self.assertIn(f"`/code-review high --max-findings all origin/main...{HEAD}`", text)
+        self.assertIn(f"`/code-review medium --max-findings all origin/main...{HEAD}`", text)
         self.assertIn("- f.py", text)
         self.assertNotIn("{{", text)
         self.assertIn("requested", self.log(1))
@@ -369,11 +438,24 @@ class Request(InRounds):
         self.assertEqual(path, self.folder(2) / "request.md")
         self.assertEqual(sources.ranges, [f"{OLD}..{HEAD}"])
         self.assertIn("Review round 2", text)
-        self.assertIn(f"`/code-review high --max-findings all {OLD}..{HEAD}`", text)
+        self.assertIn(f"`/code-review medium --max-findings all {OLD}..{HEAD}`", text)
         self.assertIn("- f.py:3-5:crash [open]: x crashes when y", text)
         self.assertIn("- ok.py " + "1", text)
         self.assertIn(str(self.folder(1) / "review.json"), text)
         self.assertNotIn("{{", text)
+
+    def test_the_prompt_s_commands_quote_a_path_with_a_space(self):
+        spaced = Path.cwd() / "a checkout"
+        spaced.mkdir()
+        sources = FakeSources()
+        sources.root = lambda: spaced
+        text = ask(sources).read_text()
+        for name in ("first-review.md", "review-round.md"):
+            self.assertNotIn("{{SCRIPTS}}", (review.PROMPTS / name).read_text())
+        claim = next(line for line in text.splitlines() if "review.py claim" in line).split("`")[1]
+        self.assertEqual(shlex.split(claim)[1:], [str(Path(review.__file__).resolve()), "claim", "SK-9"])
+        log = next(line for line in text.splitlines() if 'echo "..." >>' in line).split("`")[-2]
+        self.assertEqual(shlex.split(log)[-1], str(review.log_path(review.round_dir(review.rounds_folder(spaced, "SK-9"), 1))))
 
     def test_the_prompt_names_absolute_paths_and_the_request_stores_its_head_range_and_call(self):
         text = ask(FakeSources()).read_text()
@@ -384,7 +466,7 @@ class Request(InRounds):
         stored = json.loads((self.folder(1) / "request.json").read_text())
         self.assertRegex(stored.pop("token"), "^[0-9a-f]{32}$")
         self.assertEqual(stored, {"round": 1, "head": HEAD, "pr": 7, "range": f"origin/main...{HEAD}",
-                                  "call": f"/code-review high --max-findings all origin/main...{HEAD}"})
+                                  "call": f"/code-review medium --max-findings all origin/main...{HEAD}"})
 
     def test_an_unfinished_review_for_this_head_is_reopened_without_rewriting_its_files(self):
         path = ask(FakeSources(head=HEAD))
@@ -428,9 +510,24 @@ class Request(InRounds):
         sources = FakeSources(reachable=False, blobs={"ok.py": "1", "f.py": "3", "new.py": "4"})
         text = ask(sources).read_text()
         self.assertEqual(sources.ranges, [f"origin/main...{HEAD}"])
-        self.assertIn(f"`/code-review high --max-findings all origin/main...{HEAD} -- f.py new.py`", text)
-        self.assertIn("no longer in this branch's history", text)
+        self.assertIn(f"`/code-review medium --max-findings all origin/main...{HEAD} -- f.py new.py`", text)
+        self.assertIn("can't start this round's range (a rebase, or a merge since)", text)
         self.assertNotIn("- ok.py\n", text.split("## Files to read")[1].split("## Files marked OK")[0])
+
+    def test_after_a_merge_the_round_reviews_the_pr_s_range_not_the_base_s_changes(self):
+        self.write(1, "review.json", record(dispositions=[entry("ok.py", "1"), entry("f.py", "2", ["f.py:3-5:crash"])], findings=[finding()]))
+        sources = FakeSources(blobs={"ok.py": "1", "f.py": "3"})
+        sources.merged = True
+        text = ask(sources).read_text()
+        self.assertEqual(sources.ranges, [f"origin/main...{HEAD}"])
+        self.assertIn(f"`/code-review medium --max-findings all origin/main...{HEAD} -- f.py`", text)
+
+    def test_a_merge_is_found_among_the_commits_since_the_last_head(self):
+        with mock.patch.object(review, "git", return_value="") as git:
+            self.assertFalse(review.Sources().merges_since(OLD, HEAD))
+        self.assertEqual(git.call_args.args, ("rev-list", "--merges", "-n", "1", f"{OLD}..{HEAD}"))
+        with mock.patch.object(review, "git", return_value="c" * 40):
+            self.assertTrue(review.Sources().merges_since(OLD, HEAD))
 
     def test_after_a_rebase_with_nothing_left_to_review_the_record_moves_to_head_and_no_call_is_made(self):
         self.write(1, "review.json", record(dispositions=[entry("ok.py", "1")]))
@@ -452,7 +549,7 @@ class Pinned(InRounds):
         text = path.read_text()
         self.assertEqual(sources.ranges, [f"origin/main...{HEAD}"])
         self.assertEqual(sources.blob_heads, [HEAD])
-        self.assertIn(f"`/code-review high --max-findings all origin/main...{HEAD}`", text)
+        self.assertIn(f"`/code-review medium --max-findings all origin/main...{HEAD}`", text)
         self.assertNotIn("...HEAD", text)
         self.assertNotIn("c" * 40, text)
         self.assertEqual(json.loads((self.folder(1) / "request.json").read_text())["head"], HEAD)
@@ -551,6 +648,24 @@ class PromptTests(unittest.TestCase):
             self.assertIn("stop: edit nothing, never delete `.review.lock`", text)
 
 
+    def test_the_first_review_writes_each_finding_s_reasoning_for_a_reader_who_never_saw_it(self):
+        text = (review.PROMPTS / "first-review.md").read_text()
+        self.assertIn("- `why`: why it matters", text)
+        self.assertIn("- `fixShows`: what a correct fix must show", text)
+        self.assertIn('"why": "...", "fixShows": "..."', text)
+        self.assertIn("The next round's reviewer is a new conversation", text)
+
+    def test_the_round_judges_each_fix_against_its_reasoning_reply_and_diff_and_carries_the_reasoning(self):
+        text = (review.PROMPTS / "review-round.md").read_text()
+        self.assertIn("its reasoning above (`why`, `fixShows`), the\n   author's reply in its review thread", text)
+        self.assertIn('Mark it `"Fixed"` when the fix shows what `fixShows` asks', text)
+        self.assertIn("Copy each earlier finding's\n   `why` and `fixShows`", text)
+
+    def test_the_round_prompt_keeps_gh_api_s_own_placeholders(self):
+        text = review.render((review.PROMPTS / "review-round.md").read_text(), {"PR": 21})
+        self.assertIn("gh api repos/{owner}/{repo}/pulls/21/comments", text)
+
+
 class Deletions(InRounds):
     def last(self, *dispositions, findings=()):
         self.write(1, "review.json", record(dispositions=list(dispositions), findings=list(findings)))
@@ -561,7 +676,7 @@ class Deletions(InRounds):
         path = ask(sources)
         self.assertIsNotNone(path)
         text = path.read_text()
-        self.assertIn(f"`/code-review high --max-findings all origin/main...{HEAD} -- gone.py`", text)
+        self.assertIn(f"`/code-review medium --max-findings all origin/main...{HEAD} -- gone.py`", text)
         self.assertIn('- gone.py (deleted, or no longer in the PR; its disposition\'s blob is "absent")', text)
         self.assertEqual(self.saved(1)["head"], OLD)
 
@@ -844,7 +959,7 @@ class Finish(InRounds):
         self.assertEqual(saved["findings"][0]["commentId"], 100)
         self.assertEqual((saved["findings"][0]["file"], saved["findings"][0]["line"]), ("f.py", "3-5"))
         self.assertEqual(saved["range"], f"origin/main...{HEAD}")
-        self.assertTrue(saved["call"].startswith("/code-review high"))
+        self.assertTrue(saved["call"].startswith("/code-review medium"))
         for name in ("request.md", "request.json", "review.next.json"):
             self.assertFalse((self.folder(n) / name).exists())
         self.assertIn("finished", self.log(n))
@@ -901,7 +1016,7 @@ class Finish(InRounds):
         self.assertEqual(later.posts[0]["commit_id"], HEAD)
         self.assertEqual(later.diffed, ("main", HEAD))
         self.assertEqual(self.saved(n)["head"], HEAD)
-        self.assertTrue(review.is_due("SK-9", later))
+        self.assertTrue(not review.due("SK-9", later))
 
     def test_more_than_thirty_inline_findings_all_get_their_ids(self):
         n = self.start_review()
@@ -940,10 +1055,10 @@ class Finish(InRounds):
 
     def test_a_review_is_due_from_the_files_alone(self):
         sources = FakeSources(head=HEAD)
-        self.assertTrue(review.is_due("SK-9", sources))
+        self.assertEqual(review.due("SK-9", sources), "")
         self.write(1, "review.json", record(head=HEAD))
-        self.assertFalse(review.is_due("SK-9", sources))
-        self.assertTrue(review.is_due("SK-9", FakeSources(head="c" * 40)))
+        self.assertNotEqual(review.due("SK-9", sources), "")
+        self.assertEqual(review.due("SK-9", FakeSources(head="c" * 40)), "")
 
     def test_a_head_already_reviewed_says_so(self):
         self.write(3, "review.json", record(head=HEAD, round_number=3))
@@ -1063,9 +1178,9 @@ class Claim(InRounds):
     def reviewer_in_a_terminal(self, state="busy", pid=300):
         return {"pid": pid, "sessionId": f"s{pid}", "status": state}
 
-    def claimed_round(self, pid=300):
-        ask(FakeSources(head=OLD))
-        review.claim("SK-9", self.sources([self.reviewer_in_a_terminal(pid=pid)]))
+    def claimed_round(self, pid=300, head=OLD):
+        ask(FakeSources(head=head))
+        review.claim("SK-9", self.sources([self.reviewer_in_a_terminal(pid=pid)], head=head))
 
     def stored(self):
         return json.loads((self.folder(1) / "request.json").read_text())
@@ -1115,6 +1230,17 @@ class Claim(InRounds):
                     ask(self.sources([self.reviewer_in_a_terminal(state)]), restart=True)
                 self.assertEqual((self.folder(1) / "request.md").read_text(), before)
 
+    def test_a_reopen_is_refused_while_the_claimed_reviewer_is_live(self):
+        self.claimed_round(head=HEAD)
+        with self.assertRaisesRegex(review.ReviewError, "still running; close its Review SK-9 terminal, then run plan review SK-9$"):
+            ask(self.sources([self.reviewer_in_a_terminal()]))
+        self.assertNotIn("reopened", self.log(1))
+
+    def test_a_reopen_proceeds_when_the_claimed_pid_is_gone(self):
+        self.claimed_round(head=HEAD)
+        self.assertEqual(ask(self.sources([])), self.folder(1) / "request.md")
+        self.assertIn("reopened", self.log(1))
+
     def test_restart_proceeds_when_the_claimed_pid_is_gone(self):
         self.claimed_round()
         path = ask(self.sources([]), restart=True)
@@ -1149,10 +1275,24 @@ class Withdraw(Claim):
         self.assertIn("withdrawn", self.log(1))
         self.assertIsNotNone(self.written().path)
 
-    def test_a_reopened_request_has_no_token_to_withdraw_it_by(self):
-        self.written()
-        self.assertIsNone(review.request("SK-9", FakeSources(head=HEAD)).token)
+    def test_a_written_request_names_its_round_and_says_it_was_written(self):
+        outcome = self.written()
+        self.assertEqual((outcome.round, outcome.written), (1, True))
+        self.assertEqual(self.stored()["token"], outcome.token)
+
+    def test_a_reopened_request_carries_its_stored_token_for_the_link_but_was_not_written(self):
+        first = self.written()
+        reopened = review.request("SK-9", FakeSources(head=HEAD))
+        self.assertEqual((reopened.token, reopened.round, reopened.written), (first.token, 1, False))
+        self.assertEqual(self.stored()["token"], first.token)
         self.assertTrue((self.folder(1) / "request.json").exists())
+
+    def test_the_request_command_prints_the_round_and_whether_it_was_written(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            review.main(["request", "SK-9"], sources=FakeSources())
+        printed = json.loads(out.getvalue())
+        self.assertEqual((printed["round"], printed["written"], printed["token"]), (1, True, self.stored()["token"]))
 
     def test_a_claimed_request_is_not_withdrawn(self):
         outcome = self.written()
@@ -1166,6 +1306,23 @@ class Withdraw(Claim):
         self.assertIn("not the one this run wrote", review.withdraw("SK-9", FakeSources(), old.token))
         self.assertEqual(self.stored()["token"], replacement.token)
         self.assertTrue((self.folder(1) / "request.md").exists())
+
+    def test_a_withdrawn_restart_is_written_again_in_its_own_round_and_keeps_what_it_posted(self):
+        self.write(1, "review.json", record(head=OLD))
+        old = review.request("SK-9", FakeSources(head="c" * 40))
+        posted = {"reviews": [{"id": 45, "keys": ["f.py:3:crash"]}], "comments": {"f.py:3:crash": 9}}
+        self.write(old.round, "posted.json", posted)
+        restarted = review.request("SK-9", FakeSources(head=HEAD), restart=True)
+        review.withdraw("SK-9", FakeSources(), restarted.token)
+        again = review.request("SK-9", FakeSources(head=HEAD), if_due=True)
+        self.assertEqual((again.round, again.written), (restarted.round, True))
+        self.assertEqual(json.loads((self.folder(again.round) / "posted.json").read_text())["comments"], {"f.py:3:crash": 9})
+        self.assertFalse(self.folder(again.round + 1).exists())
+        self.assertIn("rewritten", self.log(again.round))
+
+    def test_a_withdrawn_first_request_is_written_again_as_the_same_round(self):
+        review.withdraw("SK-9", FakeSources(), self.written().token)
+        self.assertEqual(self.written().round, 1)
 
     def test_withdraw_takes_the_review_lock(self):
         outcome = self.written()
@@ -1264,6 +1421,160 @@ class LostAnswers(InRounds):
         sources.post_error = None
         review.finish("SK-9", sources)
         self.assertEqual(len(sources.posts), 2)
+
+
+WRITER = """| Lens | Question |
+|---|---|
+| L1 Security | What input is untrusted? |
+| L3 Reliability and failure | What happens on partial failure? |
+| L8 Testability | Can it be tested without the network? |
+"""
+REPO_WRITER = "| L3 Reliability | The repo's own question. |\n| L11 Store | Does the store stay consistent? |\n"
+TICKET = """# SK-9 Thing
+
+## Task
+Do it.
+
+## Lenses
+- [x] L1 Security: the link carries no prompt
+- [ ] L2 Privacy and data
+- [x] L3 Reliability and failure: a rerun posts nothing twice
+
+## Done
+- [ ] L1: checked
+"""
+
+
+class Lenses(unittest.TestCase):
+    def test_a_ticket_file_gives_its_selected_lenses_with_what_each_asks(self):
+        brief = review.lens_brief("/store/SK-9.md", TICKET, [WRITER])
+        self.assertIn("- [x] L1 Security: the link carries no prompt\n- [x] L3 Reliability and failure: a rerun", brief)
+        self.assertNotIn("L2 Privacy", brief)
+        self.assertIn("| L1 Security | What input is untrusted? |", brief)
+        self.assertNotIn("L8 Testability", brief)
+
+    def test_the_repo_s_lens_table_adds_lenses_and_overrides_the_global_rows(self):
+        rows = review.lens_rows([WRITER, REPO_WRITER])
+        self.assertEqual(rows["L3"], "| L3 Reliability | The repo's own question. |")
+        self.assertEqual(sorted(rows, key=lambda lens: int(lens[1:])), ["L1", "L3", "L8", "L11"])
+
+    def test_a_jira_issue_names_its_page_and_lists_every_lens(self):
+        brief = review.lens_brief("https://jira.example/browse/CIAM-1", None, [WRITER])
+        self.assertIn("https://jira.example/browse/CIAM-1", brief)
+        self.assertIn("`## Lenses`", brief)
+        self.assertIn("| L8 Testability |", brief)
+
+    def test_no_ticket_or_an_unreadable_one_falls_back_to_every_lens(self):
+        self.assertIn("No ticket was named, so review against every lens", review.lens_brief(None, None, [WRITER]))
+        unreadable = review.lens_brief("/gone.md", None, [WRITER])
+        self.assertIn("The ticket `/gone.md` can't be read", unreadable)
+        self.assertIn("| L1 Security |", unreadable)
+
+    def test_a_ticket_selecting_no_lens_says_the_fan_out_has_no_lens_legs(self):
+        self.assertIn("selects no lens", review.lens_brief("/t.md", "## Lenses\n- [ ] L1 Security\n", [WRITER]))
+
+
+class LensesInTheRequest(InRounds):
+    def test_the_request_carries_the_ticket_s_lenses_on_both_prompts(self):
+        writer = Path.cwd() / "writer.md"
+        writer.write_text(WRITER)
+        ticket = Path.cwd() / "SK-9-thing.md"
+        ticket.write_text(TICKET)
+        with mock.patch.object(review, "GLOBAL_WRITER", writer):
+            first = review.request("SK-9", FakeSources(), ticket=str(ticket)).path.read_text()
+            self.assertIn("- [x] L3 Reliability and failure: a rerun posts nothing twice", first)
+            self.assertIn("| L3 Reliability and failure |", first)
+            self.assertNotIn("{{", first)
+            self.write(1, "review.json", record(head=OLD, round_number=1))
+            (self.folder(1) / "request.json").unlink()
+            (self.folder(1) / "request.md").unlink()
+            later = review.request("SK-9", FakeSources(), ticket=str(ticket)).path.read_text()
+        self.assertIn("- [x] L1 Security: the link carries no prompt", later)
+        self.assertNotIn("{{", later)
+
+    def test_the_request_command_takes_the_ticket(self):
+        with mock.patch.object(review, "request", return_value=review.Outcome(None, "n", None)) as asked, \
+                contextlib.redirect_stdout(io.StringIO()):
+            review.main(["request", "SK-9", "--ticket", "/store/SK-9.md"], sources=FakeSources())
+        self.assertEqual(asked.call_args.kwargs["ticket"], "/store/SK-9.md")
+
+
+def advisory(lens="L11 Retries", seen=("a.py:1", "b.py:2", "c.py:3")):
+    return {"concern": "a failed call is retried without a limit", "lens": f"{lens}: how often is a call retried?",
+            "seen": list(seen)}
+
+
+class Advisories(InRounds):
+    def start(self, findings=(), advisories=()):
+        ask(FakeSources())
+        self.write(1, "review.next.json", {**record(head=HEAD, findings=list(findings)), "advisories": list(advisories)})
+
+    def test_an_advisory_needs_a_concern_a_lens_and_three_places(self):
+        self.assertEqual(review.advisory_problems(advisory()), [])
+        self.assertIn("seen lists the 3 or more places", review.advisory_problems(advisory(seen=("a.py:1", "b.py:2")))[0])
+        self.assertIn("needs concern and lens", review.advisory_problems({"seen": ["a", "b", "c"]})[0])
+        self.assertIn("advisories is not a list",
+                      review.record_problems({**record(head=HEAD), "advisories": {}}, 1, HEAD))
+
+    def test_the_advisory_is_in_the_body_of_the_review_with_the_findings(self):
+        self.start([finding("f.py:3:crash")], [advisory()])
+        sources = FakeSources()
+        review.finish("SK-9", sources)
+        body = sources.posts[0]["body"]
+        self.assertIn("Advisory: concerns found more than twice, which could become lenses", body)
+        self.assertIn("- **L11 Retries: how often is a call retried?**: a failed call is retried without a limit "
+                      "(seen 3 times: a.py:1, b.py:2, c.py:3)", body)
+        self.assertEqual(self.saved(1)["advisories"], [advisory()])
+
+    def test_an_advisory_with_no_finding_to_post_is_still_posted_as_a_review(self):
+        self.start([], [advisory()])
+        sources = FakeSources()
+        review.finish("SK-9", sources)
+        self.assertEqual(len(sources.posts), 1)
+        self.assertEqual(sources.posts[0]["comments"], [])
+        self.assertIn(review.ADVISORY_MARKER, sources.posts[0]["body"])
+
+    def test_a_rerun_after_a_lost_answer_does_not_post_the_advisory_twice(self):
+        self.start([], [advisory()])
+
+        class Lost(FakeSources):
+            armed = True
+
+            def gh_api(self, endpoint, payload=None):
+                answer = super().gh_api(endpoint, payload)
+                if self.armed:
+                    self.armed = False
+                    raise review.ReviewError("connection lost after the POST")
+                return answer
+
+        sources = Lost()
+        with self.assertRaises(review.ReviewError):
+            review.finish("SK-9", sources)
+        review.finish("SK-9", sources)
+        self.assertEqual(len(sources.posts), 1)
+
+    def test_a_round_that_already_carried_its_advisory_does_not_post_it_again(self):
+        self.start([finding("f.py:3:crash")], [advisory()])
+        self.write(1, "posted.json", {"advised": True})
+        sources = FakeSources()
+        review.finish("SK-9", sources)
+        self.assertNotIn(review.ADVISORY_MARKER, sources.posts[0]["body"])
+
+
+class FanOutPrompts(unittest.TestCase):
+    def test_both_prompts_fan_out_to_sonnet_on_the_lenses_and_keep_the_owner_off_the_code(self):
+        for name in ("first-review.md", "review-round.md"):
+            text = (review.PROMPTS / name).read_text()
+            self.assertIn("{{LENSES}}", text)
+            self.assertIn('Sonnet subagents (`model: "sonnet"`)', text)
+            self.assertIn("**One per selected lens.**", text)
+            self.assertIn("not permission to change it", text)
+            self.assertIn("`advisories`", text)
+
+    def test_the_round_prompt_reviews_only_the_round_s_changes(self):
+        text = (review.PROMPTS / "review-round.md").read_text()
+        self.assertIn("This is not a review of the whole PR again.", text)
+        self.assertIn("whether it fixes that finding", text)
 
 
 if __name__ == "__main__":

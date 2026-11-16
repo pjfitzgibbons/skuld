@@ -9,8 +9,9 @@
 //
 // The window also handles vscode://skuld.plan-window/browse?url=<url>[&key=<KEY>], which `plan
 // browse` sends: it opens the page in the window's integrated browser; and
-// vscode://skuld.plan-window/review?key=<KEY>&request=<path>, which `plan review` sends: it starts
-// Claude's review of the issue's PR in a "Review <KEY>" terminal in the issue's worktree.
+// vscode://skuld.plan-window/review?key=<KEY>&round=<n>&token=<token>, which `plan review` sends: it
+// starts Claude's review of the issue's PR in a "Review <KEY>" terminal in the issue's worktree, on
+// the round's request.md, once request.json there carries the token.
 const { execFile } = require("child_process");
 const path = require("path");
 const vscode = require("vscode");
@@ -40,7 +41,7 @@ function isPlanWindow() {
 }
 
 async function handleUri(uri) {
-  planLog.info(`starting link ${uri.path}?${uri.query}`);
+  planLog.info(windowPlan.linkLogLine(uri.path, uri.query));
   if (!isPlanWindow()) {
     vscode.window.showInformationMessage("plan window: this link is for the plan window.");
     return;
@@ -76,13 +77,13 @@ async function openOpenLink(query) {
 }
 
 async function openReviewLink(query) {
-  const request = windowPlan.reviewRequest(query);
-  if (request.refusal) {
-    vscode.window.showErrorMessage(`plan window: ${request.refusal}`);
+  const link = windowPlan.reviewRequest(query);
+  if (link.refusal) {
+    vscode.window.showErrorMessage(`plan window: ${link.refusal}`);
     return;
   }
   try {
-    startReview(readIssueRecord(request.key), request.request);
+    startReview(readIssueRecord(link.key), link);
   } catch (error) {
     vscode.window.showErrorMessage(`plan window: ${error.message}`);
   }
@@ -90,19 +91,16 @@ async function openReviewLink(query) {
 
 // Each round is reviewed by a fresh Claude on that round's line, so a Review terminal left from an
 // earlier round is closed and a new one started; focusing it would leave the new round unstarted.
-// review.py starts a new round only once the last one finished or its reviewer is gone, so the
-// closed terminal holds no reviewer still at work, except when `plan review KEY` reopens an
-// unfinished round, where the round is started again in the new terminal.
-function startReview(plan, requestPath) {
-  const refusal = windowPlan.reviewRefusal(plan, requestPath);
-  if (refusal) throw new Error(refusal);
-  const earlier = windowPlan.findReviewTerminal(plan, vscode.window.terminals);
-  if (earlier) earlier.dispose();
-  planLog.info(`starting review of ${plan.key} on ${requestPath}`);
-  const terminal = vscode.window.createTerminal({
-    ...windowPlan.reviewTerminalOptions(plan, requestPath, userShell(), process.env),
-    location: { viewColumn: vscode.ViewColumn.Two },
-  });
+// review.py starts, restarts or reopens a round only once the last one finished or its claimed
+// reviewer is gone, and the link itself is refused while the round's claimed reviewer is running, so
+// a replayed link can't close a reviewer at work. A link whose request isn't found, or whose token
+// isn't the round's, is refused too, and a refused link closes nothing.
+function startReview(plan, link) {
+  const start = windowPlan.reviewStart(plan, link, vscode.window.terminals, userShell(), process.env);
+  if (start.refusal) throw new Error(start.refusal);
+  if (start.close) start.close.dispose();
+  planLog.info(`starting review of ${plan.key} round ${link.round}`);
+  const terminal = vscode.window.createTerminal({ ...start.options, location: { viewColumn: vscode.ViewColumn.Two } });
   terminal.show(false);
 }
 

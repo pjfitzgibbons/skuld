@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Claude's review of a PR, kept in the issue's latest round folder, .tmp/<KEY>/rounds/<n>/, of its worktree.
 
-    review.py request KEY [--restart | --if-due]             # write request.md for the next review
+    review.py request KEY [--restart | --if-due] [--ticket T] # write request.md for the next review
     review.py withdraw KEY --token T                        # take back the request T names when its review never started
     review.py claim KEY                                     # record the reviewer's Claude in the unfinished round
     review.py finish KEY                                    # post review.next.json, then review.json
@@ -16,7 +16,8 @@ reviewed with `/code-review medium`; each later round answers a review of the PR
 push opens the next round: n is the latest round plus one, and at least 1. The author then answers
 it in the same folder (report.md, replies/, commit.txt), which this script never writes. The
 folder's location is rounds_folder(); the rounds move to the store with the rest of an issue's
-files, and that function is the one place the path is written.
+files, and that function is the one place the path is written, but for the plan window's copy
+(vscode/plan-window/plan.js roundRequestPath()), which its test checks against it.
 
 A review's files, in rounds/<n>/:
 
@@ -34,14 +35,26 @@ call, which `finish` adds):
     {"head": "<sha reviewed>", "base": "main", "round": 2, "range": "<rev range>", "call": "<the call>",
      "findings": [{"file": "<path>", "line": "12-20", "key": "<file>:<lines>:<classification>",
                    "summary": "what fails, and when", "fix": "recommended fix (optional)",
+                   "why": "why it matters", "fixShows": "what a correct fix must show",
                    "disposition": "open" | "Fixed" | "New", "commentId": 123, "reviewId": 45}],
      "dispositions": [{"path": "<path>", "blob": "<blob sha at head>", "passes": ["callers", "docs"],
                        "verdict": "OK" | ["<finding key>", ...]}],
-     "checks": [{"script": "<path>", "output": "what it printed"}]}
+     "checks": [{"script": "<path>", "output": "what it printed"}],
+     "advisories": [{"concern": "what recurs", "lens": "the lens it suggests, and its question",
+                     "seen": ["<finding key or file:lines>", ...]}]}
+
+advisories (optional) are concerns found more than twice, three or more places in "seen", that could
+become lenses; `finish` puts them in the body of the review it posts, once per round.
 
 findings and dispositions are the lists the local server's review page reads; the rest is extra. A
 review's findings include every earlier unsettled finding with its new disposition, so the latest
 review is complete on its own.
+
+why and fixShows are the reviewer's reasoning, passed on through the record because each round's
+reviewer is a fresh conversation: a finding about to be posted (unsettled, with no commentId or
+reviewId) needs both, and later rounds copy them with the rest of the finding and judge its fix
+against fixShows. A record written before they existed loads as it is; a finding that carries one
+needs it to be text.
 
 The last review is the highest round whose review.json has a head, which only a finished review
 after a push writes: round 0's review.json, from `/code-review medium`, has none, so the first
@@ -110,8 +123,18 @@ UNSETTLED = ("open", "New")
 STATES = ("open", "Fixed", "New")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 ROUND_NAME = re.compile(r"^(0|[1-9][0-9]*)$")
-KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9]+-[0-9]+$")
+# lib/issuekeys.py's ISSUE_KEY_PATTERN, the one issue-key rule, which this script can't import; test_review.py
+# checks the two strings agree.
+KEY_PATTERN = re.compile(r"^[A-Z]+-[0-9]+$")
 LINES = re.compile(r"^(\d+)(?:-(\d+))?$")
+
+# The lens table is outline.py's: the global outline's, plus the repo's docs/agents/technical-writer.md.
+GLOBAL_WRITER = Path.home() / ".claude/agents/technical-writer.md"
+REPO_WRITER = Path("docs/agents/technical-writer.md")
+LENS_ROW = re.compile(r"^\|\s*(L\d+)\s[^|\n]*\|[^\n]*$", re.M)
+SELECTED_LENS = re.compile(r"^- \[x\] (L\d+)\b")
+MIN_RECURRENCE = 3  # a concern found more than twice is an advisory for a new lens
+ADVISORY_MARKER = "<!-- review-advisory -->"
 
 
 class ReviewError(Exception):
@@ -126,20 +149,25 @@ def choose_prompt(record):
     return FIRST_PROMPT if record is None else ROUND_PROMPT
 
 
-def diff_range(base, record, head, head_reachable=True):
+def diff_range(base, record, head, bounded=True):
     """What to review, as of the commit head: the PR against its base, or what changed since the
     last reviewed head.
 
-    A recorded head that is no longer in head's history (a rebase or force-push) can't bound a
-    range, so the whole PR is reviewed again, minus the OK files whose blob is unchanged.
+    A recorded head that doesn't bound a range (last_head_bounds_range: a rebase, a force-push, or a
+    merge since) gets the whole PR reviewed again, minus the OK files whose blob is unchanged.
     """
-    if record is None or not head_reachable:
+    if record is None or not bounded:
         return f"origin/{base}...{head}"
     return f"{record['head']}..{head}"
 
 
 def review_call(range_, files=None):
     """The exact review call: always an explicit range and --max-findings all.
+
+    The call is the general-correctness leg of the reviewer's fan-out; the PR's lenses have legs of
+    their own. It runs at medium, the overall review: high would need an instruction that the lenses
+    are reviewed elsewhere, and without ultra the text after the level and flags is all review
+    target (https://code.claude.com/docs/en/code-review-local.md#text-after-the-effort-level-and-flags).
 
     After a rebase the recorded head can't bound a range, and the call is the PR's whole range
     followed by `-- <files>`, the files not settled. The docs don't describe a range combined with
@@ -150,8 +178,17 @@ def review_call(range_, files=None):
     With no target the review reads only the commits ahead of the upstream, which the push has just
     moved to HEAD, and a value passed in one run isn't remembered by the next.
     """
-    call = f"/code-review high --max-findings all {range_}"
+    call = f"/code-review medium --max-findings all {range_}"
     return f"{call} -- {' '.join(shlex.quote(path) for path in files)}" if files else call
+
+
+def last_head_bounds_range(record, head, sources):
+    """Whether the last review's head can start this round's range: it is in head's history (no
+    rebase or force-push since) and no merge commit has come in since. A merge of the base would put
+    every change the base made into `<last-head>..<head>`; the PR's three-dot range leaves them out."""
+    if record is None:
+        return True
+    return sources.reachable(record["head"], head) and not sources.merges_since(record["head"], head)
 
 
 def rebased_files(record, blobs):
@@ -242,7 +279,26 @@ def record_problems(record, round_number, head):
         findings = []
     for finding in findings:
         problems += finding_problems(finding)
+    advisories = record.get("advisories", [])
+    if not isinstance(advisories, list):
+        problems.append("advisories is not a list")
+        advisories = []
+    for advisory in advisories:
+        problems += advisory_problems(advisory)
     return problems
+
+
+def advisory_problems(advisory):
+    if not isinstance(advisory, dict):
+        return ["an advisory is not an object"]
+    name = advisory.get("lens", "?")
+    if not (isinstance(advisory.get("concern"), str) and advisory["concern"]
+            and isinstance(advisory.get("lens"), str) and advisory["lens"]):
+        return [f"advisory {name!r}: needs concern and lens"]
+    seen = advisory.get("seen")
+    if not (isinstance(seen, list) and all(isinstance(place, str) for place in seen) and len(seen) >= MIN_RECURRENCE):
+        return [f"advisory {name!r}: seen lists the {MIN_RECURRENCE} or more places the concern was found"]
+    return []
 
 
 def disposition_problems(entry):
@@ -271,7 +327,30 @@ def finding_problems(finding):
         problems.append(f"finding {name}: disposition is open, Fixed or New")
     if "commentId" in finding and not isinstance(finding["commentId"], int):
         problems.append(f"finding {name}: commentId is not a number")
+    return problems + reasoning_problems(finding, name)
+
+
+REASONING_FIELDS = {"why": "why it matters", "fixShows": "what a correct fix must show"}
+
+
+def reasoning_problems(finding, name):
+    """why and fixShows: required on a finding about to be posted, and text wherever they appear."""
+    problems = []
+    for field, meaning in REASONING_FIELDS.items():
+        if field in finding and not is_text(finding[field]):
+            problems.append(f"finding {name}: {field} is not text")
+        elif field not in finding and is_to_be_posted(finding):
+            problems.append(f"finding {name}: {field} ({meaning}) is missing")
     return problems
+
+
+def is_text(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
+def is_to_be_posted(finding):
+    """An unsettled finding with no comment and no body line on the PR yet."""
+    return finding.get("disposition") in UNSETTLED and "commentId" not in finding and "reviewId" not in finding
 
 
 def with_locations(record, range_, call):
@@ -442,8 +521,12 @@ def marker_keys(text):
 
 def comment_body(finding):
     parts = [f"**{finding['key']}**", finding["summary"]]
+    if finding.get("why"):
+        parts.append(f"Why it matters: {finding['why']}")
     if finding.get("fix"):
         parts.append(f"Recommended fix: {finding['fix']}")
+    if finding.get("fixShows"):
+        parts.append(f"A correct fix shows: {finding['fixShows']}")
     parts.append(marker(finding["key"]))
     return "\n\n".join(parts)
 
@@ -469,14 +552,24 @@ def body_line(finding):
     return f"- **{finding['key']}** (its file isn't in the PR): {finding['summary']} {marker(finding['key'])}"
 
 
-def review_payload(round_number, head, inline, in_body):
+def advisory_lines(advisories):
+    """The body's advisory: each recurring concern and the lens it suggests."""
+    if not advisories:
+        return []
+    heading = f"Advisory: concerns found more than twice, which could become lenses {ADVISORY_MARKER}"
+    return ["", heading] + [
+        f"- **{advisory['lens']}**: {advisory['concern']} (seen {len(advisory['seen'])} times: {', '.join(advisory['seen'])})"
+        for advisory in advisories]
+
+
+def review_payload(round_number, head, inline, in_body, advisories=()):
     """One review: the inline findings as comments, the findings whose file isn't in the PR as
-    lines of its body."""
+    lines of its body, then the advisory."""
     lines = [f"Review round {round_number}: {len(inline) + len(in_body)} finding(s) in this review."]
     return {
         "commit_id": head,
         "event": "COMMENT",
-        "body": "\n".join(lines + [body_line(finding) for finding in in_body]),
+        "body": "\n".join(lines + [body_line(finding) for finding in in_body] + advisory_lines(advisories)),
         "comments": [inline_comment(finding) for finding in inline],
     }
 
@@ -485,7 +578,7 @@ def comment_ids(posted_comments):
     """{finding key: comment id} from the comments GitHub holds for the review."""
     ids = {}
     for comment in posted_comments:
-        found = re.search(r"<!-- review-finding: (.+?) -->", comment.get("body", ""))
+        found = MARKER.search(comment.get("body") or "")
         if found:
             ids[found.group(1)] = comment["id"]
     return ids
@@ -517,9 +610,60 @@ def render(template, values):
 def rebase_scope(files):
     if not files:
         return ""
-    return ("The last reviewed head is no longer in this branch's history (a rebase), so the call names "
+    return ("The last reviewed head can't start this round's range (a rebase, or a merge since), so the call names "
             "the whole PR followed by the files not settled. Review only those files; nothing else is "
             "in this round.\n\n")
+
+
+def markdown_section(text, name):
+    """The body of the `## name` section of a Markdown text, up to the next `## `; "" when absent."""
+    found = re.search(rf"^## {re.escape(name)}\s*$(.*?)(?=^## |\Z)", text or "", re.M | re.S)
+    return found.group(1).strip() if found else ""
+
+
+def selected_lenses(ticket_text):
+    """The [x] lines of the ticket's `## Lenses`, each with its note."""
+    return [line.strip() for line in markdown_section(ticket_text, "Lenses").splitlines()
+            if SELECTED_LENS.match(line.strip())]
+
+
+def lens_rows(writer_texts):
+    """{lens id: its row of the lens table}, the later text's row winning: the repo's
+    docs/agents/technical-writer.md adds lenses to the global outline's, or overrides them."""
+    rows = {}
+    for text in writer_texts:
+        rows.update({found.group(1): found.group(0).strip() for found in LENS_ROW.finditer(text or "")})
+    return rows
+
+
+def lens_table(rows, ids):
+    if not ids:
+        return "(no lens table found)"
+    return "\n".join(["| Lens | Question |", "|---|---|"] + [rows[lens] for lens in ids if lens in rows])
+
+
+def lens_brief(ticket, ticket_text, writer_texts):
+    """What request.md says about the PR's lenses: the ticket's selected lenses with what each asks,
+    or, when they can't be read here, where to find them and every lens to fall back on."""
+    rows = lens_rows(writer_texts)
+    every = sorted(rows, key=lambda lens: int(lens[1:]))
+    if ticket and is_web_url(ticket):
+        return (f"The issue is in Jira, {ticket}. Its selected lenses are the `[x]` lines of its description's "
+                "`## Lenses` section; read them there. If you can't, review against every lens below and say so "
+                f"in the log.\n\n{lens_table(rows, every)}")
+    if ticket_text is None:
+        where = f"The ticket `{ticket}` can't be read" if ticket else "No ticket was named"
+        return f"{where}, so review against every lens below, and say so in the log.\n\n{lens_table(rows, every)}"
+    selected = selected_lenses(ticket_text)
+    if not selected:
+        return f"The ticket `{ticket}` selects no lens: the fan-out has no lens legs."
+    ids = [SELECTED_LENS.match(line).group(1) for line in selected]
+    return (f"The ticket `{ticket}` selects these, each with what it requires of the work:\n\n"
+            + "\n".join(selected) + f"\n\nWhat each asks:\n\n{lens_table(rows, ids)}")
+
+
+def is_web_url(text):
+    return text.startswith(("http://", "https://"))
 
 
 def file_lines(paths, current):
@@ -530,8 +674,13 @@ def file_lines(paths, current):
 
 
 def finding_line(finding):
-    line = f"- {finding['key']} [{finding['disposition']}]: {finding['summary']}"
-    return f"{line} Recommended fix: {finding['fix']}" if finding.get("fix") else line
+    """One unsettled finding for the round's prompt: its summary, then each part of its reasoning it
+    carries (a record written before why and fixShows has neither)."""
+    parts = [f"- {finding['key']} [{finding['disposition']}]: {finding['summary']}"]
+    for label, field in (("Why it matters", "why"), ("Recommended fix", "fix"), ("A correct fix shows", "fixShows")):
+        if finding.get(field):
+            parts.append(f"{label}: {finding[field]}")
+    return "\n  ".join(parts)
 
 
 def finding_lines(findings):
@@ -547,7 +696,8 @@ def ok_lines(record):
 
 
 def rounds_folder(root, key):
-    """Where an issue's rounds are. The one place this path is written."""
+    """Where an issue's rounds are. The one place this path is written, but for the plan window's
+    roundRequestPath() (vscode/plan-window/plan.js), whose test checks the two agree."""
     return Path(root) / ".tmp" / key / "rounds"
 
 
@@ -582,6 +732,20 @@ def last_record(rounds):
         if isinstance(record, dict) and record.get("head"):
             return number, record
     return None, None
+
+
+def withdrawn_round(rounds):
+    """{"round"} of the highest round when its folder holds neither a request.json nor a review.json:
+    its request was withdrawn because its review never started. The next request writes that round
+    again in its own folder, so a restarted round keeps what it had posted (posted.json) and the round
+    numbers don't skip. Round 0 is the author's and is never one."""
+    numbers = round_numbers(rounds)
+    if not numbers or numbers[-1] == 0:
+        return None
+    folder = round_dir(rounds, numbers[-1])
+    if (folder / "request.json").exists() or (folder / "review.json").exists():
+        return None
+    return {"round": numbers[-1]}
 
 
 def unfinished_round(rounds):
@@ -633,6 +797,10 @@ class Sources:
     def reachable(self, sha, head):
         return subprocess.run(["git", "merge-base", "--is-ancestor", sha, head], capture_output=True).returncode == 0
 
+    def merges_since(self, sha, head):
+        """Whether a merge commit is among the commits head has and sha hasn't."""
+        return bool(git("rev-list", "--merges", "-n", "1", f"{sha}..{head}"))
+
     def changed(self, range_, head):
         """({path: blob sha at head}, [deleted paths]) of the files the range changes. One diff for
         the names (NUL-separated, never quoted) and one ls-tree for the blobs."""
@@ -663,7 +831,7 @@ class Sources:
 
     def pr_diff(self, base, head):
         """The PR's unified diff as of head, the one GitHub comments against."""
-        return git("-c", "core.quotePath=false", "diff", "--no-ext-diff", f"origin/{base}...{head}")
+        return git("-c", "core.quotePath=false", "diff", "--no-ext-diff", "--no-color", f"origin/{base}...{head}")
 
     def gh_api(self, endpoint, payload=None):
         """The parsed JSON of a gh api call; payload, when given, is POSTed as the body."""
@@ -690,11 +858,7 @@ class Sources:
 
     def review_comments(self, pull_request, review_id):
         """Every comment of a review: gh api pages by 30 unless told to fetch them all."""
-        endpoint = f"repos/{{owner}}/{{repo}}/pulls/{pull_request}/reviews/{review_id}/comments"
-        try:
-            return flatten_pages(json.loads(run(["gh", "api", "--paginate", "--slurp", endpoint])))
-        except ValueError as error:
-            raise ReviewError(f"gh api {endpoint} gave no JSON: {error}") from error
+        return self.all_pages(f"repos/{{owner}}/{{repo}}/pulls/{pull_request}/reviews/{review_id}/comments")
 
 
 def split_nul(output):
@@ -812,30 +976,47 @@ def review_lock(rounds, action):
 # --- request ---
 
 
-# path is None when nothing was written; token names the request this call wrote (None for a reopened one)
-Outcome = namedtuple("Outcome", "path note token", defaults=(None,))
+# path is None when there is no request to review. token and round name the request at path, which
+# the plan window's review link carries; written says this call wrote it, so only it may withdraw it
+# (a reopened request is someone else's).
+Outcome = namedtuple("Outcome", "path note token round written", defaults=(None, None, False))
 
 
-def request(key, sources, restart=False, prompts=PROMPTS, if_due=False):
+def request(key, sources, restart=False, prompts=PROMPTS, if_due=False, ticket=None):
     """Writes request.md for the next review, or says why it needs none.
 
     An unfinished review for this HEAD is reopened as it is, its files untouched. One for another
     head is refused unless restart, which writes it again in its own folder at HEAD. With none
     unfinished and no review due, nothing is written. After a rebase with nothing left to review,
-    the last record moves to HEAD and nothing is written."""
+    the last record moves to HEAD and nothing is written. ticket is where the issue's lenses are:
+    a store issue's ticket file, a Jira issue's page, or None."""
     root = sources.root()
     rounds = rounds_folder(root, key)
+    lenses = lens_brief(ticket, ticket_text(ticket), [read_or_none(GLOBAL_WRITER), read_or_none(root / REPO_WRITER)])
     with review_lock(rounds, "request"):
-        return write_request(key, root, rounds, sources, restart, prompts, if_due)
+        return write_request(key, root, rounds, sources, restart, prompts, if_due, lenses)
+
+
+def ticket_text(ticket):
+    """A ticket file's text; None for a Jira page, no ticket, or a file that can't be read."""
+    return None if not ticket or is_web_url(ticket) else read_or_none(Path(ticket))
+
+
+def read_or_none(path):
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def live_sessions_by_pid(sources):
     return {session["pid"]: session for session in sources.claude_sessions() if "pid" in session}
 
 
-def refuse_while_reviewer_runs(unfinished, key, sources):
-    """A restart rewrites the request a claimed reviewer is working from, so it waits for that
-    reviewer's terminal to close. A reviewer that never claimed, or whose pid is gone, doesn't hold it."""
+def refuse_while_reviewer_runs(unfinished, key, sources, command):
+    """A restart rewrites the request a claimed reviewer is working from, and a reopen's link closes
+    that reviewer's terminal, so both wait for it to close; command is the one to run again then. A
+    reviewer that never claimed, or whose pid is gone, doesn't hold the round."""
     reviewer = unfinished.get("reviewer")
     if not reviewer:
         return
@@ -843,13 +1024,13 @@ def refuse_while_reviewer_runs(unfinished, key, sources):
         live = reviewer["pid"] in live_sessions_by_pid(sources)
     except ReviewError as error:
         raise ReviewError(f"can't tell whether round {unfinished['round']}'s reviewer (pid {reviewer['pid']}) "
-                          f"is still running: {error}; run plan review {key} --restart again when it works") from error
+                          f"is still running: {error}; run {command} again when it works") from error
     if live:
         raise ReviewError(f"round {unfinished['round']}'s reviewer (pid {reviewer['pid']}) is still running; "
-                          f"close its Review {key} terminal, then run plan review {key} --restart")
+                          f"close its Review {key} terminal, then run {command}")
 
 
-def write_request(key, root, rounds, sources, restart, prompts, if_due=False):
+def write_request(key, root, rounds, sources, restart, prompts, if_due=False, lenses=""):
     """request's work, under the lock: the state is read, and due checked, with no other run able
     to change it. With if_due (`pr`'s call), a review that isn't due, an unfinished round for this
     HEAD included, writes and reopens nothing and says why."""
@@ -862,29 +1043,34 @@ def write_request(key, root, rounds, sources, restart, prompts, if_due=False):
         folder = round_dir(rounds, unfinished["round"])
         same_head = unfinished.get("head") == head
         if same_head and not restart and (folder / "request.md").exists():
+            refuse_while_reviewer_runs(unfinished, key, sources, f"plan review {key}")
             append_log(folder, f"reopened: the request for {head} is unchanged")
-            return Outcome(folder / "request.md", f"round {unfinished['round']}'s request reopened")
+            return Outcome(folder / "request.md", f"round {unfinished['round']}'s request reopened",
+                           unfinished.get("token"), unfinished["round"])
         if not same_head and not restart:
             raise ReviewError(
                 f"round {unfinished['round']}'s review was requested for HEAD {str(unfinished.get('head'))[:8]}, "
                 f"and HEAD is {head[:8]}; run plan review {key} --restart to restart it in its own folder")
-        refuse_while_reviewer_runs(unfinished, key, sources)
+        refuse_while_reviewer_runs(unfinished, key, sources, f"plan review {key} --restart")
         append_log(folder, f"restarted: its request is written again at {head}")
     elif not review_due(record, head):
         return Outcome(None, not_due_reason(key, record, last_number, head, None))
-    round_number = review_round(round_numbers(rounds), unfinished)
+    reopened = unfinished or withdrawn_round(rounds)
+    if reopened and not unfinished:
+        append_log(round_dir(rounds, reopened["round"]), f"rewritten: its withdrawn request is written again at {head}")
+    round_number = review_round(round_numbers(rounds), reopened)
     folder = round_dir(rounds, round_number)
     number, base = sources.pull_request()
-    reachable = record is None or sources.reachable(record["head"], head)
-    range_ = diff_range(base, record, head, reachable)
+    bounded = last_head_bounds_range(record, head, sources)
+    range_ = diff_range(base, record, head, bounded)
     blobs, deleted = sources.changed(range_, head)
     current = current_state(blobs, deleted)
-    rebased = record is not None and not reachable
+    rebased = record is not None and not bounded
     if rebased:
         current.update({path: ABSENT for path in absent_paths(record, current)})
     only_files = rebased_files(record, current) if rebased else None
     if rebased and not only_files:
-        settle_without_review(rounds, last_number, record, unfinished, head)
+        settle_without_review(rounds, last_number, record, reopened, head)
         return Outcome(None, "nothing to review: every file is OK at an unchanged blob; the last review's head now names HEAD")
     call = review_call(range_, only_files)
     values = {
@@ -901,10 +1087,12 @@ def write_request(key, root, rounds, sources, restart, prompts, if_due=False):
         "LOG": log_path(folder),
         "RECORD": folder / "review.next.json",
         "LAST_RECORD": round_dir(rounds, last_number) / "review.json" if record else "(none)",
-        "SCRIPTS": Path(__file__).resolve().parent,
+        "REVIEW_SCRIPT": shlex.quote(str(Path(__file__).resolve())),
+        "LOG_ARG": shlex.quote(str(log_path(folder))),
         "FILES": file_lines(only_files or files_to_read(record, current), current),
         "UNSETTLED": finding_lines(unsettled_findings(record)),
         "OK_FILES": ok_lines(record),
+        "LENSES": lenses,
     }
     text = render((prompts / choose_prompt(record)).read_text(), values)
     folder.mkdir(parents=True, exist_ok=True)
@@ -913,7 +1101,7 @@ def write_request(key, root, rounds, sources, restart, prompts, if_due=False):
     write_atomically(folder / "request.json", json.dumps(stored) + "\n")
     write_atomically(folder / "request.md", text)
     append_log(folder, f"requested: reviewing {range_} at {head}")
-    return Outcome(folder / "request.md", f"round {round_number}'s request written", token)
+    return Outcome(folder / "request.md", f"round {round_number}'s request written", token, round_number, written=True)
 
 
 # --- withdraw ---
@@ -1060,13 +1248,10 @@ def due(key, sources):
     return not_due_reason(key, record, record_round, head, unfinished)
 
 
-def is_due(key, sources):
-    return not due(key, sources)
-
-
 def read_posted(folder):
     """What earlier runs of `finish` for this round had posted: {"reviews": [{"id", "keys"}],
-    "comments": {key: comment id}, "bodies": {key: review id}, "intent": the POST in flight or None}. A round restarted at a new head
+    "comments": {key: comment id}, "bodies": {key: review id}, "intent": the POST in flight or None,
+    "advised": whether a review carried the round's advisory}. A round restarted at a new head
     keeps it, so what was posted before isn't posted again."""
     try:
         posted = json.loads((folder / "posted.json").read_text())
@@ -1074,7 +1259,7 @@ def read_posted(folder):
         posted = {}
     except ValueError as error:
         raise ReviewError(f"{folder / 'posted.json'} is not valid JSON: {error}") from error
-    return {"comments": {}, "bodies": {}, "reviews": [], "missing": {}, "intent": None, **posted}
+    return {"comments": {}, "bodies": {}, "reviews": [], "missing": {}, "intent": None, "advised": False, **posted}
 
 
 def post_findings(record, round_number, folder, pull_request, sources):
@@ -1085,16 +1270,17 @@ def post_findings(record, round_number, folder, pull_request, sources):
     posted = read_posted(folder)
     settle_intent(posted, folder, round_number, record["head"], pull_request, sources)
     todo = findings_to_post(record, posted)
-    placed = placements(todo, diff_lines(sources.pr_diff(record["base"], record["head"]))) if todo else None
-    if placed and (placed["inline"] or placed["body"]):
+    placed = placements(todo, diff_lines(sources.pr_diff(record["base"], record["head"]))) if todo else placements([], {})
+    advisories = advisories_to_post(record, posted)
+    if placed["inline"] or placed["body"] or advisories:
         inline_keys, body_keys = [f["key"] for f in placed["inline"]], [f["key"] for f in placed["body"]]
-        intend(posted, folder, {"kind": "review", "inline": inline_keys, "body": body_keys})
-        review_id = post_review(record, round_number, placed, pull_request(), sources)
-        record_review(posted, review_id, inline_keys, body_keys)
+        intend(posted, folder, {"kind": "review", "inline": inline_keys, "body": body_keys, "advisory": bool(advisories)})
+        review_id = post_review(record, round_number, placed, advisories, pull_request(), sources)
+        record_review(posted, review_id, inline_keys, body_keys, bool(advisories))
         save_posted(folder, posted)
     collect_inline_comment_ids(posted, folder, pull_request, sources, {f["key"] for f in unsettled_findings(record)})
     try:
-        for finding in placed["file"] if placed else []:
+        for finding in placed["file"]:
             intend(posted, folder, {"kind": "file", "key": finding["key"]})
             posted["comments"][finding["key"]] = post_file_comment(record["head"], finding, pull_request(), sources)
             posted["intent"] = None
@@ -1105,6 +1291,11 @@ def post_findings(record, round_number, folder, pull_request, sources):
     return with_posted_ids(record, posted["comments"], posted["bodies"])
 
 
+def advisories_to_post(record, posted):
+    """The record's advisories, unless a review of this round already carried them."""
+    return [] if posted["advised"] else record.get("advisories", [])
+
+
 def intend(posted, folder, intent):
     """Writes what is about to be POSTed before it is sent, so a rerun after a POST whose outcome
     is unknown can look for it on the PR instead of sending it again."""
@@ -1112,9 +1303,10 @@ def intend(posted, folder, intent):
     save_posted(folder, posted)
 
 
-def record_review(posted, review_id, inline_keys, body_keys):
+def record_review(posted, review_id, inline_keys, body_keys, advised=False):
     posted["reviews"].append({"id": review_id, "keys": inline_keys})
     posted["bodies"].update({key: review_id for key in body_keys})
+    posted["advised"] = posted["advised"] or advised
     posted["intent"] = None
 
 
@@ -1128,7 +1320,7 @@ def settle_intent(posted, folder, round_number, head, pull_request, sources):
     if intent["kind"] == "review":
         review_id = remote_review_id(posted, intent, round_number, head, pull_request(), sources)
         if review_id:
-            record_review(posted, review_id, intent["inline"], intent["body"])
+            record_review(posted, review_id, intent["inline"], intent["body"], intent.get("advisory", False))
     else:
         comment_id = remote_file_comment_id(posted, intent["key"], head, pull_request(), sources)
         if comment_id:
@@ -1139,7 +1331,8 @@ def settle_intent(posted, folder, round_number, head, pull_request, sources):
 
 def remote_review_id(posted, intent, round_number, head, pull_request, sources):
     """The id of an unrecorded review of this round and head on the PR that carries every key of
-    the intent, in its body or its comments; None when there is none."""
+    the intent, in its body or its comments, and the advisory when the intent had one; None when
+    there is none."""
     wanted = set(intent["inline"]) | set(intent["body"])
     known = {review["id"] for review in posted["reviews"]} | set(posted["bodies"].values())
     for candidate in sources.reviews(pull_request):
@@ -1149,7 +1342,7 @@ def remote_review_id(posted, intent, round_number, head, pull_request, sources):
             continue
         carried = marker_keys(candidate.get("body")) | {
             key for comment in sources.review_comments(pull_request, candidate["id"]) for key in marker_keys(comment.get("body"))}
-        if wanted <= carried:
+        if wanted <= carried and (ADVISORY_MARKER in (candidate.get("body") or "") or not intent.get("advisory")):
             return candidate["id"]
     return None
 
@@ -1187,10 +1380,11 @@ def collect_inline_comment_ids(posted, folder, pull_request, sources, needed):
             raise ReviewError(f"review {review['id']} was posted but GitHub returned no comment for {', '.join(absent)}")
 
 
-def post_review(record, round_number, placed, pull_request, sources):
-    """Posts the inline findings and the body's as one review; returns its id."""
+def post_review(record, round_number, placed, advisories, pull_request, sources):
+    """Posts the inline findings, the body's and the advisory as one review; returns its id."""
     endpoint = f"repos/{{owner}}/{{repo}}/pulls/{pull_request}/reviews"
-    return posted_id(sources.gh_api(endpoint, review_payload(round_number, record["head"], placed["inline"], placed["body"])))
+    payload = review_payload(round_number, record["head"], placed["inline"], placed["body"], advisories)
+    return posted_id(sources.gh_api(endpoint, payload))
 
 
 def post_file_comment(head, finding, pull_request, sources):
@@ -1216,14 +1410,16 @@ def main(argv=None, sources=None):
     commands.choices["withdraw"].add_argument("--token", required=True)
     commands.choices["request"].add_argument("--restart", action="store_true")
     commands.choices["request"].add_argument("--if-due", action="store_true")
+    commands.choices["request"].add_argument("--ticket", help="the issue's ticket file, or its Jira page")
     args = parser.parse_args(argv)
     if not KEY_PATTERN.match(args.key):
         parser.error(f"{args.key!r} is not a Jira key (KEY-123)")
     sources = sources or Sources()
     try:
         if args.command == "request":
-            outcome = request(args.key, sources, args.restart, if_due=args.if_due)
-            print(json.dumps({"path": str(outcome.path) if outcome.path else None, "note": outcome.note, "token": outcome.token}))
+            outcome = request(args.key, sources, args.restart, if_due=args.if_due, ticket=args.ticket)
+            print(json.dumps({"path": str(outcome.path) if outcome.path else None, "note": outcome.note,
+                              "token": outcome.token, "round": outcome.round, "written": outcome.written}))
         elif args.command == "withdraw":
             print(withdraw(args.key, sources, args.token))
         elif args.command == "claim":

@@ -20,6 +20,7 @@ import unittest
 from unittest import mock
 
 from lib import cli
+from lib import reviews as reviews_mod
 from lib import ship as ship_mod
 from lib import start as startLib
 from lib import term as term_mod
@@ -431,6 +432,14 @@ class CmdBrowseTests(unittest.TestCase):
             self.browse()
 
 
+def requested(note="written", token="t1", written=True):
+    return reviews_mod.RoundRequest(".tmp/SK-0001/rounds/1/request.md", note, token, 1, written)
+
+
+def nothingRequested(note):
+    return reviews_mod.RoundRequest(None, note, None, None, False)
+
+
 # `plan review KEY`: whether a request goes out. reviews.requestRound and term.startReview are
 # stubbed; what they run is their own tests'.
 class CmdReviewTests(unittest.TestCase):
@@ -443,10 +452,17 @@ class CmdReviewTests(unittest.TestCase):
         before = os.getcwd()
         self.addCleanup(os.chdir, before)
         os.chdir(self.top)
+        windowDir = tempfile.mkdtemp(prefix="skuld-plan-window-")
+        self.addCleanup(shutil.rmtree, windowDir)
+        self.planWorkspace = os.path.join(windowDir, term_mod.PLAN_WORKSPACE_NAME)
+        with open(self.planWorkspace, "w") as f:
+            f.write("{}")
+        self.cfg = {**JIRA_ON, "workspaceDir": windowDir}
 
-    def review(self, *args, outcome=(".tmp/SK-0001/rounds/1/request.md", "written", "t1")):
+    def review(self, *args, outcome=None):
+        outcome = outcome or requested()
         out = io.StringIO()
-        with mock.patch.object(cli.config_mod, "load", return_value=JIRA_ON), mock.patch.object(
+        with mock.patch.object(cli.config_mod, "load", return_value=self.cfg), mock.patch.object(
             cli.reviews_mod, "requestRound", return_value=outcome
         ) as self.request, mock.patch.object(term_mod, "startReview") as self.open, contextlib.redirect_stdout(out):
             main(["review", *args])
@@ -454,17 +470,17 @@ class CmdReviewTests(unittest.TestCase):
 
     def test_the_review_starts_on_the_rounds_request_and_the_line_names_its_terminal(self):
         said = self.review("SK-0001")
-        self.assertEqual(self.request.call_args.args[1:], ("SK-0001", False, False))
-        self.assertEqual(self.open.call_args.args[:2], ("SK-0001", ".tmp/SK-0001/rounds/1/request.md"))
+        self.assertEqual(self.request.call_args.args[1:4], ("SK-0001", False, False))
+        self.assertEqual(self.open.call_args.args[:3], ("SK-0001", 1, "t1"))
         self.assertEqual(said, "review started in the Review SK-0001 terminal of the plan window\n")
 
     def test_restart_is_passed_to_the_request(self):
         self.review("SK-0001", "--restart")
-        self.assertEqual(self.request.call_args.args[1:], ("SK-0001", True, False))
+        self.assertEqual(self.request.call_args.args[1:4], ("SK-0001", True, False))
 
     def test_if_due_is_passed_to_the_request_and_a_note_with_no_path_starts_no_review(self):
-        said = self.review("SK-0001", "--if-due", outcome=(None, "round 1 was requested for HEAD abc and hasn't finished", None))
-        self.assertEqual(self.request.call_args.args[1:], ("SK-0001", False, True))
+        said = self.review("SK-0001", "--if-due", outcome=nothingRequested("round 1 was requested for HEAD abc and hasn't finished"))
+        self.assertEqual(self.request.call_args.args[1:4], ("SK-0001", False, True))
         self.open.assert_not_called()
         self.assertIn("hasn't finished", said)
 
@@ -472,37 +488,57 @@ class CmdReviewTests(unittest.TestCase):
         with mock.patch.object(cli.agents_mod, "currentAgents", side_effect=AssertionError("no lookup")):
             self.review("SK-0001")
 
+    def test_a_store_issue_s_ticket_file_is_passed_to_the_request(self):
+        store = os.path.join(self.top, "store")
+        os.makedirs(store)
+        ticket = os.path.join(store, "SK-0001-the-slug.md")
+        open(ticket, "w").close()
+        with mock.patch.dict(self.cfg, {"issueStore": store}):
+            self.review("SK-0001")
+        self.assertEqual(self.request.call_args.args[4], ticket)
+
+    def test_with_no_store_the_request_gets_no_ticket(self):
+        self.review("SK-0001")
+        self.assertIsNone(self.request.call_args.args[4])
+
+    def test_a_jira_issue_s_ticket_is_its_page(self):
+        self.assertEqual(cli.issueTicket(JIRA_ON, "CIAM-12"), "https://jira.example/browse/CIAM-12")
+
     def test_a_round_the_script_refuses_starts_no_review(self):
-        with mock.patch.object(cli.config_mod, "load", return_value=JIRA_ON), mock.patch.object(
+        with mock.patch.object(cli.config_mod, "load", return_value=self.cfg), mock.patch.object(
             cli.reviews_mod, "requestRound", side_effect=RuntimeError("run plan review SK-0001 --restart")
         ), mock.patch.object(term_mod, "startReview") as opened:
             with self.assertRaisesRegex(RuntimeError, "--restart"):
                 main(["review", "SK-0001"])
         opened.assert_not_called()
 
-    def failing_link(self, outcome):
+    def failing_link(self, outcome, linkError=RuntimeError("code is not on PATH"), raised="code is not on PATH", withdrawError=None):
         err = io.StringIO()
-        with mock.patch.object(cli.config_mod, "load", return_value=JIRA_ON), mock.patch.object(
+        with mock.patch.object(cli.config_mod, "load", return_value=self.cfg), mock.patch.object(
             cli.reviews_mod, "requestRound", return_value=outcome
-        ), mock.patch.object(cli.reviews_mod, "withdrawRequest", return_value="withdrawn it") as withdrawn, mock.patch.object(
-            term_mod, "startReview", side_effect=RuntimeError("code is not on PATH")
-        ), contextlib.redirect_stderr(err):
-            with self.assertRaisesRegex(RuntimeError, "code is not on PATH"):
+        ), mock.patch.object(cli.reviews_mod, "withdrawRequest", return_value="withdrawn it", side_effect=withdrawError) as withdrawn, \
+                mock.patch.object(term_mod, "startReview", side_effect=linkError), contextlib.redirect_stderr(err):
+            with self.assertRaisesRegex(RuntimeError, raised):
                 main(["review", "SK-0001", "--if-due"])
         return withdrawn, err.getvalue()
 
     def test_a_link_that_cant_be_sent_withdraws_the_request_this_run_wrote_by_its_token(self):
-        withdrawn, said = self.failing_link((".tmp/SK-0001/rounds/1/request.md", "written", "t1"))
+        withdrawn, said = self.failing_link(requested())
         self.assertEqual(withdrawn.call_args.args[1:], ("SK-0001", "t1"))
         self.assertEqual(said, "withdrawn it\n")
 
     def test_a_link_that_cant_be_sent_for_a_reopened_request_withdraws_nothing(self):
-        withdrawn, said = self.failing_link((".tmp/SK-0001/rounds/1/request.md", "reopened", None))
+        withdrawn, said = self.failing_link(requested(note="reopened", written=False))
         withdrawn.assert_not_called()
         self.assertIn("left as it is", said)
 
+    def test_a_request_with_no_token_sends_no_link_and_says_to_restart(self):
+        with self.assertRaisesRegex(RuntimeError, "no token .*plan review SK-0001 --restart"):
+            self.review("SK-0001", outcome=requested(token=None, written=False))
+        self.open.assert_not_called()
+
     def test_nothing_due_prints_why_and_opens_nothing(self):
-        said = self.review("SK-0001", outcome=(None, "HEAD abc12345 was reviewed in round 1", None))
+        said = self.review("SK-0001", outcome=nothingRequested("HEAD abc12345 was reviewed in round 1"))
         self.open.assert_not_called()
         self.assertEqual(said, "HEAD abc12345 was reviewed in round 1\n")
 
@@ -512,7 +548,7 @@ class CmdReviewTests(unittest.TestCase):
         self.assertEqual(os.path.realpath(self.request.call_args.args[0]), self.top)
 
     def test_a_worktree_on_another_issues_branch_is_refused_before_anything_is_written(self):
-        with mock.patch.object(cli.config_mod, "load", return_value=JIRA_ON), mock.patch.object(
+        with mock.patch.object(cli.config_mod, "load", return_value=self.cfg), mock.patch.object(
             cli.reviews_mod, "requestRound"
         ) as request, mock.patch.object(term_mod, "startReview") as opened:
             with self.assertRaisesRegex(RuntimeError, "branch is feat/SK-0001-the-slug, not SK-0002's"):
@@ -526,16 +562,34 @@ class CmdReviewTests(unittest.TestCase):
         self.assertIsNone(cli.branchKey("main"))
 
     def test_the_link_goes_to_the_plan_window_when_its_workspace_exists(self):
-        tmp = tempfile.mkdtemp(prefix="skuld-review-")
-        self.addCleanup(shutil.rmtree, tmp)
-        planWorkspace = os.path.join(tmp, "plan.code-workspace")
-        with open(planWorkspace, "w") as f:
-            f.write("{}")
-        with mock.patch.object(cli.config_mod, "load", return_value={**JIRA_ON, "workspaceDir": tmp}), mock.patch.object(
-            cli.reviews_mod, "requestRound", return_value=("r.md", "written", "t1")
-        ), mock.patch.object(term_mod, "startReview") as opened, contextlib.redirect_stdout(io.StringIO()):
-            main(["review", "SK-0001"])
-        self.assertEqual(opened.call_args.args[2], planWorkspace)
+        self.review("SK-0001")
+        self.assertEqual(self.open.call_args.args[3], self.planWorkspace)
+
+    def test_with_no_plan_window_no_link_is_sent_and_the_request_is_withdrawn(self):
+        os.remove(self.planWorkspace)
+        withdrawn, said = self.failing_link(requested(), linkError=None, raised="workspace .* doesn't exist.*plan open SK-0001")
+        self.assertEqual(withdrawn.call_args.args[1:], ("SK-0001", "t1"))
+        self.assertEqual(said, "withdrawn it\n")
+
+    def test_a_withdraw_that_fails_is_reported_and_the_link_s_error_is_raised(self):
+        withdrawn, said = self.failing_link(requested(), withdrawError=RuntimeError("another review run holds the lock"))
+        self.assertIn("request not withdrawn (another review run holds the lock)", said)
+        self.assertIn("plan review SK-0001 --restart", said)
+
+    def test_a_branch_that_names_no_issue_is_taken_as_the_key_s(self):
+        subprocess.run(["git", "-C", self.top, "checkout", "-q", "-b", "spike-native"], check=True)
+        self.review("SK-0001")
+        self.assertEqual(self.request.call_args.args[1], "SK-0001")
+
+    def test_the_key_rule_finds_a_key_under_any_prefix(self):
+        self.assertEqual(cli.branchKey("feat/sub/SK-1-x"), "SK-1")
+        self.assertIsNone(cli.branchKey("feat/AB2-5-x"))
+
+    def test_an_unknown_flag_a_second_word_or_both_flags_are_refused(self):
+        for args in (["SK-0001", "--restrat"], ["SK-0001", "SK-0002"], ["SK-0001", "--restart", "--if-due"]):
+            with self.assertRaisesRegex(RuntimeError, "usage: plan review"):
+                self.review(*args)
+        self.request.assert_not_called()
 
 
 # `plan agents`' enter: raise the plan window and bring the session's issue forward.

@@ -335,14 +335,11 @@ leaves the issues file, the issue leaves the Issues view, and its `Claude <KEY>`
 terminals stay until the human closes them, since `plan done` is often run in one of them.
 
 **Claude's review of an issue's PR runs in its own terminal.** `plan review KEY` sends the link
-`vscode://skuld.plan-window/review?key=<KEY>&request=<path>`, where the path is the absolute path of
-the review round's `request.md` in the worktree. `plan-window` reads the issue workspace file and
-refuses a request that isn't a `request.md` inside the issue's worktree. Otherwise it closes any
+`vscode://skuld.plan-window/review?key=<KEY>&round=<n>&token=<token>`. The round is a number, and the token is the one `review.py request` stored in that round's `request.json`. The link carries no path and no prompt. `plan-window` reads the issue workspace file and builds the request's path itself, `<worktree>/.tmp/<KEY>/rounds/<n>/request.md`, under the worktree's real path. It refuses the link unless that file exists at exactly that path, with no symbolic link on the way, and the round's `request.json` there names the round and carries the link's token. It also refuses the link while the `reviewer` that `review.py claim` recorded in that `request.json` has a live pid, so a replayed link can't close a reviewer at work, and `review.py` refuses to reopen such a round. A refused link shows the refusal and leaves every terminal as it is. Otherwise the window closes any
 `Review <KEY>` terminal and creates a new one in the worktree, which starts Claude the way the
 issue's Claude terminal does, with `PLAN_KEY` set and the inherited `CLAUDE*` session variables
-unset. The prompt names the request and is submitted at once. Each round gets a fresh conversation
-apart from the author's. The link carries no prompt, so it can only start the review of a request
-already written in the worktree.
+unset. The prompt names the request by its real path and is submitted at once. Each round gets a fresh conversation
+apart from the author's. That conversation has none of the earlier reviewer's reasoning, so each finding in `review.json` carries it: `why`, why it matters, and `fixShows`, what a correct fix must show. The next round reads both with the author's reply and the fix's diff, and marks the finding Fixed only when the fix shows what `fixShows` asks. The window starts the reviewer with `CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`, which keeps its transcript off disk ([docs](https://code.claude.com/docs/en/env-vars#variables)). So the worktree's conversations stay the author's, and `claude --continue` in the issue's terminal never resumes a reviewer. The reviewer's session still registers, and `claude agents --json` lists it. A link can only start the review of a request `review.py` wrote in the worktree, and only with the token stored beside it. A reopened round keeps its token, so its link carries the stored one.
 
 **Each issue's item in the Issues view shows its Claude's state.** The status engine, `lib/agents.py`, places
 each session from `claude agents --json` by its cwd: a cwd in `<repo>.worktrees/<KEY>` gives the
