@@ -4,7 +4,8 @@
 
 ## 1. Status
 
-Accepted. Replaces the Aerospace placement in [ADR 0002](0002-vscode-front-end.md), §3.
+Replaced by [ADR 0004](0004-one-plan-window.md). It replaced the Aerospace placement in
+[ADR 0002](0002-vscode-front-end.md), §3.
 
 <a id="context"></a>
 

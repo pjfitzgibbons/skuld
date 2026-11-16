@@ -5,7 +5,7 @@ The [architecture](docs/architecture.md) says what the system is and the rules i
 links to it for the reasons and doesn't repeat them.
 
 Skuld plans and ships work from the terminal. `plan` lists what's next, and starts, opens, ships and
-finishes an issue, each in its own VS Code window on its own macOS Desktop. `pr` commits, pushes,
+finishes an issue. Every issue's Claude runs in one VS Code window, the plan window. `pr` commits, pushes,
 opens or updates the pull request and answers its review. Issues live in the ticket store, a git
 repo of Markdown files, or in Jira Cloud (`cryoport.atlassian.net`).
 
@@ -31,7 +31,7 @@ repo of Markdown files, or in Jira Cloud (`cryoport.atlassian.net`).
    Next up (plan order)       worktree <repo>.worktrees/<KEY>          the issue (store or Jira)
    ────────────────────       ───────────────────────────────          ─────────────────────────
    (1) START ───────────────▶ branch <type>/<KEY>-slug, off base ────▶ in progress, "Started" logged
-                              issue window, Claude in its terminal      (a store ticket opens in a tab)
+                              plan window, Claude in its terminal       (a store ticket opens in a tab)
                               Claude works · writes <store>/reviews/<KEY>/
    (2) SHIP ────────────────▶ pr <KEY>: commit, push, open/update PR ─▶ Done boxes ticked
                               review rounds: replies/                    (Jira: dev panel, native)
@@ -57,8 +57,8 @@ macOS only. In order:
 
 1. **Tools.** `git`, `gh` (signed in with `gh auth login`), Python 3.10 or later on `PATH` as
    `python3` (`/usr/bin/python3` is 3.9 and can't run the scripts), [uv](https://docs.astral.sh/uv/)
-   (`brew install uv`) for the local server's venv, VS Code with its `code` command on `PATH`, fzf, and Xcode's Command Line Tools for `swiftc` (steps 12 and 13). A menu bar for
-   the Desktops is optional: SlotBar (step 13) or SketchyBar.
+   (`brew install uv`) for the local server's venv, VS Code with its `code` command on `PATH`, and
+   fzf.
 
 2. **The Jira token in `~/.netrc`**, on a Mac that works Jira projects (step 5), never in a
    tracked file or an env var:
@@ -116,14 +116,15 @@ macOS only. In order:
    | `typeMap` | Story and Task `feat`, Bug `fix` | Issue type to branch prefix, merged over the default |
    | `pr` | `~/.local/bin/pr` | The `pr` that Ship runs, by path |
    | `disposable` | `done.py`'s list | Ignored files Done may delete with a worktree |
-   | `slotsFile` | `~/.cache/plan/workspaces` | The `<slot>=<KEY>` lines that place issues on Desktops |
-   | `windowsFile` | `~/.cache/plan/windows` | The `<KEY>=<window id>` lines that say which window is each issue's |
-   | `workspaceDir` | `~/.cache/plan/code-workspaces` | Where each issue window's throwaway `<KEY>.code-workspace` goes; Done deletes it |
-   | `spacesHelper` | `macos/build/skuld-spaces` in skuld | The helper `bin/build-spaces` builds; `plan` builds the default one itself when it is missing or older than its source |
-   | `reservedDesktops` | `[1]` | Desktops `plan` never takes for an issue |
+   | `issuesFile` | `~/.cache/plan/issues` | The issues Started or Opened and not yet Done, one `<KEY>` per line, that the Issues view and the Claude status engine read (§4, step 7) |
+   | `pulsesFile` | `~/.cache/plan/pulses` | Each issue's colour in the Issues view, one `<KEY>=orange` or `<KEY>=green` line per coloured issue, written by `plan pulse` and the Claude status engine (§2, step 12) |
+   | `workspaceDir` | `~/.cache/plan/code-workspaces` | Where the plan window's `plan.code-workspace` goes, and each issue's `<KEY>.code-workspace`, its record for plan-window; Done deletes an issue's file |
    | `netrcFile` | `~/.netrc` | Where the Jira token is, under `machine <baseUrl's host>` |
    | `claudeCommand` | `~/.local/bin/claude` | The `claude` that `plan agents` asks for its sessions, by path |
    | `serverPort` | `8765` | The local server's port on `127.0.0.1` (§7) |
+
+   A config that sets `slotsFile`, `windowsFile`, `spacesHelper` or `reservedDesktops` still
+   loads; `plan` ignores those keys.
 
 6. **The skill.** Link `skills/jira-issues/` to `~/.claude/skills/jira-issues/`, so every repo
    shares one copy.
@@ -151,17 +152,48 @@ macOS only. In order:
     then restart VS Code:
 
     ```sh
-    ln -s "$(pwd)/vscode/plan-window" ~/.vscode/extensions/skuld.plan-window-0.0.1
+    ln -sfn "$(pwd)/vscode/plan-window" ~/.vscode/extensions/skuld.plan-window-0.0.1
     ```
 
-    When an issue window opens, it opens the ticket in a tab, starts Claude with Start's prompt in
-    a terminal beside it, locks the terminal's editor group so files opened from the Explorer go to
-    the ticket's side, and opens a shell in the panel (§4). Both terminals unset every `CLAUDE*`
-    variable the window inherited, so a window opened by `code -n` from inside a Claude session
-    still gets a Claude that registers as a session of its own. It also handles the
-    `vscode://skuld.plan-window/browse` links that `plan browse` sends (§7). It is disabled in Restricted Mode,
-    so trust the folder that holds each configured repo with its `<repo>.worktrees/`, and the
-    ticket store's folder.
+    `-f` and `-n` replace a link that already exists, so running it again repairs a link that
+    points at another checkout. `plan start` and `plan open` check the link before they change
+    anything: when no `skuld.plan-window-*` entry resolves into the checkout `plan` runs from, they
+    stop and print where the link points, the numbered fix with every path shell-quoted (remove a
+    leftover link of another version, or move a real directory at any `skuld.plan-window-*` name to
+    `~/.Trash`; `mkdir -p` an extensions folder that does not exist; `ln -sfn` with the running
+    checkout's path, "Restart VS Code (quit and reopen).", re-run the command), and never run
+    `ln`, `mv` or `mkdir` themselves.
+
+    It adds an **Issues** view to the plan window's Explorer sidebar: one item per issue in the
+    issues file (§4, step 7), in the file's order, labelled with its key. An item is tinted orange
+    or green from the pulses file. The view watches both files. With no issues file it shows no
+    items, and with no pulses file no colours.
+
+    Clicking an item opens the issue (§4, step 10). First plan-window opens the issue's ticket,
+    every time: a store ticket in an editor tab, or a Jira issue's page in the integrated browser.
+    A tab already showing it comes to the front instead of a second one opening.
+    Then it opens the shell; both terminals get the issue's key as `PLAN_KEY`. Then, if the plan window has the issue's `Claude <KEY>` terminal, it
+    comes to the front; otherwise plan-window creates it in the worktree and starts
+    `claude --continue` when the worktree has an earlier Claude session, or `claude` with Start's
+    prompt when it has none. Claude comes last so that it has the focus, and plan-window locks Claude's editor group, so
+    a file opened from the Explorer goes beside the ticket instead of into Claude's group. Then, if the issue has a
+    line in the pulses file, plan-window clears the item's colour by running `plan pulse <KEY> off`;
+    its `plan.command` setting names the `plan` to run, which Start and Open set in the plan
+    workspace to the running checkout's `bin/plan`, and if that fails the window shows a warning
+    and the colour stays. Both terminals unset every `CLAUDE*`
+    session variable the window inherited except `CLAUDE_CONFIG_DIR`, which says where Claude
+    keeps its config and conversations and which the `--continue` check reads. So a window opened by `code` from inside a Claude session still
+    gets a Claude that registers as a session of its own. When Done takes an issue out of the
+    issues file, the issue leaves the view, and its terminals stay open until you close them; you
+    often run `plan done` in one of them.
+
+    It also handles the `vscode://skuld.plan-window/open` links that Start and Open send and the
+    `vscode://skuld.plan-window/browse` links that `plan browse` sends (§7). It acts only in the
+    plan window, the window on `<workspaceDir>/plan.code-workspace`: any other window has no
+    Issues view, no click command and no watchers, and a link that reaches one shows "this link is
+    for the plan window." and does nothing else. It is disabled in
+    Restricted Mode, so trust the folder that holds each configured repo with its
+    `<repo>.worktrees/`, and the ticket store's folder.
 
 11. **The LaunchAgents.** `issue-watch` watches the store and commits and pushes it, and
     the local server serves issue pages (§7). Both start at login and restart if they stop. For
@@ -176,67 +208,24 @@ macOS only. In order:
     The agent runs the server from the checkout `plan serve start` ran in, so run it from the main
     checkout, not a worktree. After pulling `main`, run `uv sync` and `plan serve restart`.
 
-12. **Native Desktops.** Each issue window gets its own macOS Desktop. SIP stays on and nothing is
-    installed beyond the helper:
-    1. Run no other window manager. Aerospace, for one, holds every window on one Desktop.
-    2. In System Settings → Desktop & Dock → Mission Control, turn off "Automatically rearrange
-       Spaces based on most recent use", and leave "Displays have separate Spaces" and "When
-       switching to an application, switch to a Space with open windows" on.
-    3. In System Settings → Keyboard → Keyboard Shortcuts → Mission Control, turn on "Switch to
-       Desktop 1" through the highest Desktop an issue may use (^1 to ^N).
-    4. In Mission Control, add Desktops up to that number. `plan` never creates one.
-    5. Allow VS Code to control the computer through System Events when macOS asks, on the first
-       Start.
-    6. Build the helper with `bin/build-spaces`, or let the first Start build it. It needs
-       `swiftc` alone and no permission grant.
-    7. For SketchyBar, give each Desktop a `space` item with `associated_space=N`, and subscribe it
-       to `plan_workspaces_change` so it relabels from the slots file. Run `sketchybar --reload`
-       after adding a Desktop. For SlotBar, see step 13.
-
-13. **SlotBar**, optional. A menu-bar item that shows each Desktop, a dot on each issue's Desktop
-    and an underline under the one showing. `plan pulse` pulses a Desktop orange or green, and
-    choosing a Desktop from its menu switches to it. It reads the slots file. SlotBar and
-    SketchyBar are alternatives: whichever has its LaunchAgent loaded is the bar.
-    1. Set the menu bar to never hide: System Settings → Control Center → "Automatically hide and
-       show the menu bar" → Never. From a shell, `defaults write NSGlobalDomain _HIHideMenuBar
-       -bool false` and `defaults write com.apple.controlcenter AutoHideMenuBarOption -int 3`. A
-       SketchyBar setup that hides the menu bar hides SlotBar with it.
-    2. Stop SketchyBar if it runs: `brew services stop sketchybar`. `brew services start
-       sketchybar` brings it back, after `bin/install-slotbar --uninstall`.
-    3. Make the signing certificate once per Mac: `bin/slotbar-signing-identity`. It puts a
-       self-signed "SlotBar Local Signing" code-signing certificate in the login keychain. With it,
-       a rebuilt SlotBar keeps its Accessibility grant; signed ad-hoc, every build needs the grant
-       again.
-    4. Build, install and start it: `bin/install-slotbar`. It builds with `swiftc` into
-       `macos/build/`, installs `~/Applications/SlotBar.app` and the LaunchAgent
-       `~/Library/LaunchAgents/dev.skuld.slotbar.plist`, starts it, and says whether macOS put the
-       item in the menu bar. The first build may ask to let `codesign` use the key: choose Always
-       Allow. The agent starts SlotBar at login and restarts it after a crash; Quit SlotBar stays
-       quit until `bin/start-slotbar` or the next login. Its log is `~/Library/Logs/SlotBar.log`.
-    5. If the item doesn't appear, allow SlotBar under System Settings → Menu Bar.
-    6. Grant Accessibility when SlotBar asks, so it can send ^N: System Settings → Privacy &
-       Security → Device Control and Data Access on macOS 27, Accessibility before it. Desktops
-       whose ^N shortcut is off (step 12.3) are greyed out in its menu. If the grant is on but
-       SlotBar keeps asking, the entry is from an earlier signature:
-       `tccutil reset Accessibility dev.skuld.slotbar`, then `bin/start-slotbar` and grant again.
-
-    7. Install the Claude status engine: `bin/install-agents`, from the main checkout. Its
-       LaunchAgent `~/Library/LaunchAgents/dev.skuld.agents.plist` runs `plan agents tick --watch`
-       from login and restarts it if it stops. Every few seconds it pulses each issue's Desktop orange
-       while its Claude waits on a person, green once its Claude is idle with a
-       `.tmp/<KEY>/report.html` newer than the branch's last commit, and clears it otherwise.
-       Switching to or from a Desktop clears its colour until its Claude's state changes again.
-       It also adds `bin/claude-waiting` to `~/.claude/settings.json` as a hook on Notification,
-       UserPromptSubmit, PreToolUse, PostToolUse, Stop and SessionEnd, keeping your other hooks: a
-       Claude that stops for a permission, a question or input turns its Desktop orange as its system
-       notification shows. Once a minute it also checks each slotted issue's PR with `gh`, and
-       turns the Desktop orange while Copilot's review is on the PR's head commit, until the next
-       push. Its log is `~/Library/Logs/plan-agents.log`;
-       `bin/install-agents --uninstall` removes the agent and the hook.
-
-    To rebuild after pulling `main`, run `bin/install-slotbar` and `bin/install-agents` again from
-    the main checkout. SlotBar is replaced while running, and the grant carries over.
-    `bin/test-slotbar` runs its tests.
+12. **The Claude status engine.** Run `bin/install-agents` from the main checkout. Its LaunchAgent
+    `~/Library/LaunchAgents/dev.skuld.agents.plist` runs `plan agents tick --watch` from login and
+    restarts it if it stops. Every few seconds it sets each issue's colour in the pulses file:
+    orange while its Claude waits on a person, green once its Claude is idle with a
+    `.tmp/<KEY>/report.html` newer than the branch's last commit, and none otherwise, or once the
+    issue leaves the issues file. It writes the file only when an issue's colour changes, so a
+    colour cleared by clicking the issue's item stays clear until its Claude's state changes
+    again, including across a restart: the engine keeps what it last sent in `<pulsesFile>.sent`
+    (orange and green only) and starts from it. Its first tick sends nothing for a listed issue
+    that is off.
+    It also adds `bin/claude-waiting` to `~/.claude/settings.json` as a hook on Notification,
+    UserPromptSubmit, PreToolUse, PostToolUse, Stop and SessionEnd, keeping your other hooks: a
+    Claude that stops for a permission, a question or input turns its issue orange as its system
+    notification shows. Every few seconds it also reads the `.tmp/<KEY>/rounds/` of each issue in
+    the issues file that has a Claude, and turns the issue orange while Claude's review of the
+    worktree's HEAD has unsettled findings (§5), until the next push. Its log is `~/Library/Logs/plan-agents.log`;
+    `bin/install-agents --uninstall` removes the agent and the hook. After pulling `main`, run
+    `bin/install-agents` again from the main checkout.
 
 ## 3. Commands
 
@@ -264,17 +253,18 @@ decides the repo (§4).
 | `plan start <KEY>`, `plan open <KEY>` | Start or Open (§4); one command, one code path |
 | `plan ship [KEY]` | Ship (§5); the key defaults to the current worktree's branch |
 | `plan done [KEY]` | Done (§6) |
-| `plan browse <KEY \| pr#N \| url> [KEY]` | Open a page in the issue window's browser (§7) |
+| `plan browse <KEY \| pr#N \| url> [KEY]` | Open a page in the plan window's browser (§7) |
 | `plan serve start\|stop\|restart\|status` | Control the local server's LaunchAgent (§7); `status` prints the server's URL, whether it answers, and its pid |
-| `plan pulse <KEY> orange\|green\|off` | Pulse the issue's Desktop in SlotBar, or clear its tint (§2, step 13); exits non-zero when SlotBar isn't running |
-| `plan agents [list]` | Every Claude session, most urgent first: its state, Desktop (`-` when it can't be placed), key, issue title and name |
-| `plan agents status` | The same sessions on one line, as symbols on each Desktop: `⏳` waiting, `◆` done, `●` busy, `■` blocked, `○` idle |
-| `plan agents --json` | The listing as JSON: each session's key, Desktop, state, title, name and cwd |
-| `plan agents pick` | The listing in fzf; `enter` brings the chosen session's issue window forward |
-| `plan agents tick [--watch]` | Pulse each Desktop in SlotBar once from its Claudes' states; `--watch` keeps doing so, as its LaunchAgent does (§2, step 13.7) |
+| `plan pulse <KEY> orange\|green\|off` | Set the issue's colour in the pulses file, which tints its item in the Issues view; `off` removes its line (§2, step 10) |
+| `plan agents [list]` | Every Claude session, most urgent first: its state, issue key (`-` when it has none, `- (KEY)` for a session in the worktree of a key that isn't in the issues file), issue title and name |
+| `plan agents status` | The same sessions on one line, as symbols beside each issue key: `⏳` waiting, `◆` done, `●` busy, `■` blocked, `○` idle; an unlisted key shows as `-(KEY)` |
+| `plan agents --json` | The listing as JSON: each session's key, state, title, name and cwd |
+| `plan agents pick` | The listing in fzf; `enter` opens the chosen session's issue in the plan window |
+| `plan agents tick [--watch]` | Set each issue's colour in the pulses file once from its Claudes' states; `--watch` keeps doing so, as its LaunchAgent does (§2, step 12) |
 | `plan archive` | Move closed tickets past `archiveAfterDays` to `archive/` |
 | `plan init-store` | Make an empty store's folders |
-| `pr [done] [--no-copilot] [KEY]` | Send a round (§5) |
+| `pr [done] [KEY]` | Send a round (§5) |
+| `plan review KEY` | Write the next review round's request and start Claude's review on it in the plan window's `Review KEY` terminal; `pr` runs it when a review is due (§5), and it is how to start one by hand |
 | `issue-check [PATH…]` | Check ticket files, or the whole store; exits non-zero naming file, line and rule |
 | `issue-watch` | The store's watcher; launchd runs it |
 | `jira-get <path>` | One read-only Jira GET with `~/.netrc` auth, so an agent can read Jira without seeing the token |
@@ -307,42 +297,44 @@ runs only when it has something to do:
    and refuses if the read-back `statusCategory` isn't `indeterminate`. Store: `FileStore` sets
    `status: in-progress` and reads the file back. Then "Started" is logged: an ADF comment in
    Jira, a `## Log` line in the ticket.
-7. **Place the issue on a slot.** `SpacesPlacer` does this, and
-   `term.writeSlot()` records `<slot>=<KEY>` through a temp file and a rename. SketchyBar is told
-   to relabel its bar (`sketchybar --trigger plan_workspaces_change`, skipped when it isn't
-   installed). Every command that touches slots first sweeps the slots file through the placer,
-   dropping lines whose issue window is gone.
-   `SpacesPlacer` reads the Desktops and VS Code's windows through `skuld-spaces`. It reuses the
-   issue's slot if that Desktop holds no VS Code window. Otherwise it takes the first Desktop
-   that exists, isn't in `reservedDesktops`, holds no VS Code window and is no other issue's
-   slot. Start refuses, with nothing opened, when there is no such Desktop, when the Desktop
-   doesn't exist, when its ^N shortcut is off (naming the setting), or when the helper reports a
-   SkyLight call missing.
-8. **Open the issue window.** Write `<KEY>.code-workspace` to `workspaceDir`, listing the
-   worktree and the ticket store. Start sends the Desktop's ^N shortcut through System Events, waits until
-   that Desktop shows, and runs `code` on the workspace file. A window id that wasn't there before
-   is the new window, recorded in `windowsFile`; it is never found by its title. When no new
-   window appears and VS Code has switched to another Desktop instead, the workspace was already
-   open there, and Start takes the frontmost VS Code window as the issue's. A window on a Desktop
-   other than the one switched to is left there, and its slot is rewritten to that Desktop, with
-   a note. When that Desktop is another issue's slot, the note says to drag the window to a free
-   Desktop and run `plan open <KEY>`. Claude starts in one integrated terminal with a prompt
-   naming the issue, and a shell waits in another; both carry the issue's key in their
-   environment. When the window is already open, Open reuses it, rewrites the slot when the
-   window sits on another Desktop, and never moves it.
-9. **Put the issue beside Claude.** A Jira issue's browse URL is printed, then opens in the
-   issue window's integrated browser, as `plan browse` opens it (§7). Each step after the print
-   is best-effort. A store ticket opens in an editor tab, on the ticket file in the window's store
-   folder. The URL or file path is printed either way.
-10. **Focus the issue.** Switch to the slot and focus the issue window with Claude's terminal
-    in front, so the command ends with the human at the issue's Claude: `code <workspace file>`
-    switches to the window's Desktop.
+7. **Add the issue to the issues file and the plan workspace.** `term.addIssue(key)` appends
+   `<KEY>` as a line of `issuesFile`, unless it is there already, through a temp file and a
+   rename, so a reader never sees a half-written file. The key stays until Done removes it,
+   whether or not the plan window is open. The issue's worktree is added as a folder of the plan
+   workspace file, `plan.code-workspace` in `workspaceDir`, written the same way. The plan
+   workspace also lists the ticket store's folder, always as its first folder: Start and Open add
+   it or move it to the front, and Done never removes it. A key matches `ISSUE_KEY_PATTERN`, the
+   rule for the issues file, the pulses file and the extension (architecture §5). The Issues view
+   and the Claude status engine read the issues file; `plan list` and the picker do not.
+8. **Open the plan window.** Write the issue's `<KEY>.code-workspace` to `workspaceDir`, with its
+   key, worktree and prompt, and its ticket: `plan.ticket`, a store ticket's file, or
+   `plan.ticketUrl`, a Jira issue's browse URL, set only when there is no `plan.ticket`. It holds
+   these settings only, with no folders, window title or terminal environment. It is
+   for plan-window to read; no window opens on it. Then run
+   `code` on the plan workspace file. `code` opens the plan window, or raises it, wherever it is.
+   VS Code knows a window by its workspace file's path, so Open never opens a second plan window,
+   and `plan` never moves one. A failed `code` stops Start, naming the step and the `code` command
+   to run by hand.
+9. **Print the ticket.** A Jira issue's browse URL, or a store ticket's file path, is printed.
+   The ticket opens beside Claude when the issue is opened (step 10): a store ticket in an editor
+   tab, a Jira issue's page in the plan window's integrated browser.
+10. **Open the issue.** Send `vscode://skuld.plan-window/open?key=<KEY>` with `code --open-url`, which opens the issue in
+    the plan window as a click on its item does (§2, step 10), so the command ends with the human
+    at the issue's Claude. Its terminals carry the issue's key in their environment. This step is
+    best-effort: if it fails, Start or Open still succeeds and prints `couldn't open <KEY> in the
+    plan window: <error>; click it in the Issues view` on stderr. A click on the issue's item
+    does what the link would have done.
 
-`plan list` and the picker show each issue's slot (`D3`), and both Desktops when
-the window has moved off its slot (`D3, window on D4`).
-
-Open on an issue whose window or slot is gone recreates what's missing
+Open on an issue whose worktree or plan-window folder is gone recreates what's missing
 ([failure-modes.md, *Open*](docs/failure-modes.md)).
+
+**Reopening a finished issue is one manual step.** Done removes the key, the pulse and the folder,
+and the issue's terminals stay open. Set the issue back to In Progress: in Jira for a Jira issue,
+or `status: in-progress` in the front matter of a store ticket. Then run `plan start <KEY>`. Start
+accepts an issue in progress and refuses only a done one. It makes the worktree at
+`<repo>.worktrees/<KEY>`, reusing a local branch for the issue, else checking out `origin`'s, else
+making a new branch from the base. It adds the key and the folder again, and the Claude terminal
+runs `claude --continue` when the worktree's conversation files exist.
 
 ## 5. Ship and the review round
 
@@ -383,7 +375,7 @@ Rules the files follow:
 Ship runs `ship.check()`, which refuses by name: a branch that isn't the issue's, a missing
 `pr-body.md`, a tree with changes and no `commit.txt`, a reply file not named
 `replies/<digits>.md`, an empty reply, or two replies to one thread. On success it runs `pr <KEY>`
-in an integrated terminal of the issue window, so its output shows as it runs.
+in an integrated terminal of the plan window, so its output shows as it runs.
 
 - **Non-zero exit:** the terminal shows why, and nothing else happens.
 - **Zero exit:** any round file edited while `pr` ran, which `pr` has since sent and deleted, is
@@ -392,7 +384,7 @@ in an integrated terminal of the issue window, so its output shows as it runs.
 `pr` writes no tracker field to link the PR; the key in the branch name and PR title does that.
 Ship again is the next round, and with nothing left to send, `pr` sends nothing.
 
-### `pr [done] [--no-copilot] [KEY]`
+### `pr [done] [KEY]`
 
 `KEY` defaults to the key in the branch name (`fix/CIAM-88-go-requests` is `CIAM-88`). Each step
 runs only when it has something to do, so `pr` is safe to repeat:
@@ -403,13 +395,256 @@ runs only when it has something to do, so `pr` is safe to repeat:
 | merged? | the PR is merged | refuses if HEAD isn't the merged head or the tree has changes; sends any leftover replies and ticks; says to run `plan done`; exits |
 | commit | the tree has changes | needs `commit.txt`; `git add -A`, `git commit -F`, deletes the file |
 | push | always | `GIT_TERMINAL_PROMPT=0 git push -u origin HEAD` |
-| Copilot | an existing PR whose head the push moved | `gh pr edit --add-reviewer @copilot` |
 | PR | always | `gh pc` with no PR, else `gh pb` |
-| round | `replies/` or `issue.md` exist | `pr_threads.py --post`, then `checklist.py`, after the push |
 | hand-off | always | records the PR on the branch's git config and prints its URL |
+| review | HEAD isn't the head of the last review's record, or there is no record, and no round is unfinished for HEAD (`review.py due`) | `plan review KEY`, which starts Claude's review in the plan window's `Review KEY` terminal and returns without waiting |
+| round | `replies/` or `issue.md` exist | `pr_threads.py --post`, then `checklist.py`, after the push |
 
-`pr done` runs the merged-PR step and refuses an unmerged PR. `--no-copilot` skips the Copilot step,
-and `gh pc` then doesn't ask Copilot to review a new PR either.
+`pr done` runs the merged-PR step and refuses an unmerged PR. The review is due from the record, not from what this push moved, so a `pr` that stopped after its
+push, before the review step, reviews those commits on its next run. A `pr` with no commits since
+the last review prints "pr: no review: HEAD <short> was reviewed in round <n>" and sends nothing.
+When a round requested for HEAD hasn't finished, it prints "pr: no review: round <n> was requested
+for HEAD <short> and hasn't finished; it runs in the Review KEY terminal of the plan window, or run
+plan review KEY to start it again". `plan review KEY` starts that round again on its existing request, unless the reviewer that claimed it is still running. When the round was requested
+for an older HEAD, `plan review KEY` refuses and names `plan review KEY --restart`, which writes the
+round again in its own folder at HEAD; `pr` prints that refusal. A review that can't start prints
+why and the command to start it by hand; the review never fails `pr`. The review starts straight after
+the PR and its URL, before the round's replies and ticks, so a failed send doesn't skip it. `pr`
+runs the `bin/plan` of the repo its own script is in, and the `plan` on `PATH` only when that file
+is missing, so the script and the CLI it calls are the same version. `pr` asks no one else to
+review: not Copilot, and `gh pc` and `gh pb` don't either.
+
+### Claude's review: how it runs and what it keeps
+
+**It runs in the plan window's `Review KEY` terminal**, not in a `claude -p` process and not in
+the author's own conversation. The terminal's Claude is a fresh conversation: the reviewer has the worktree, the
+repo's rules and the `code-review` skill, and none of the author's context, which keeps the review
+independent. `plan review KEY` (`lib/cli.py`, `cmdReview`):
+
+1. finds the worktree root (`git rev-parse --show-toplevel`), so it works from any folder of it;
+2. refuses when the worktree's branch carries another issue's key, since it writes there and posts
+   to that branch's PR; a branch with no key in it is accepted. It also refuses an unknown flag, a
+   second word, and `--restart` with `--if-due`;
+3. runs `review.py request KEY --ticket <ticket>`, which writes `request.md` in the round's folder
+   (below): the first-review or round prompt (`skills/jira-issues/prompts/`) filled with the PR, the
+   exact `/code-review` call, the round number, the worktree root, the paths of the log and the record,
+   the unsettled findings, the OK files with their blob SHAs, and the PR's lenses. The ticket is a store
+   issue's ticket file or a Jira issue's page. From a ticket file, `request.md` copies the `[x]` lines
+   of its `## Lenses` and, for each, its row of the lens table: the one in
+   `~/.claude/agents/technical-writer.md`, with the repo's `docs/agents/technical-writer.md` adding
+   rows or overriding them. A selected lens with no row in either table is named in a line under the table. A `[x]` or `[X]`
+   under a `-`, `*` or `+` bullet selects a lens. For a Jira issue it names the page, whose description's `## Lenses` the
+   reviewer reads, and lists every lens. With no ticket, or one that can't be read, the reviewer uses
+   every lens and says so in its log. With a
+   round unfinished for this HEAD it reopens that round as it is, rewriting only to remove a
+   claimed reviewer that is no longer a live Claude session from `request.json`, unless that
+   reviewer is still running: then it refuses and says to close its `Review KEY` terminal first. With one for an
+   older head it refuses and names `--restart`, which writes the round again in its own folder at
+   HEAD unless the round's reviewer is still running (see Restart below). With none unfinished and no review due, it prints "HEAD <short> was reviewed in round <n>"
+   and opens nothing;
+4. focuses the plan window, the way `plan browse` does, then sends it
+   `vscode://skuld.plan-window/review?key=<KEY>&round=<n>&token=<token>`, the round's number and the
+   token `request` stored in its `request.json` (a reopened round's stored token, too).
+   `plan-window` reads the issue's worktree from its `<KEY>.code-workspace` and builds the request's
+   path itself: `<worktree>/.tmp/<KEY>/rounds/<n>/request.md`, under the worktree's real path. It
+   refuses the link, closing no terminal, unless that file exists at that path with no symbolic link
+   on the way and the round's `request.json` names the round and carries the link's token. It also
+   refuses while the `reviewer` recorded in that `request.json` has a live pid, so a replayed link
+   can't close a reviewer at work. Then it
+   closes a `Review <KEY>` terminal left from an earlier round and opens a new one in the worktree.
+   It starts Claude there the way it starts the issue's own Claude: a login shell running
+   `claude "$PLAN_PROMPT"`, with `PLAN_KEY` set and the window's `CLAUDE*` session variables unset.
+   It also sets `CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`, which keeps the reviewer's transcript off disk
+   ([docs](https://code.claude.com/docs/en/env-vars#variables)), so `claude --continue` in the
+   issue's terminal resumes the author's conversation, never a reviewer's. The session still
+   registers, and `claude agents --json` lists it for `claim`.
+   The prompt is `<KEY> review: read <real path of request.md> and do the review it describes.`,
+   and it is submitted at once.
+
+The command prints "review started in the Review KEY terminal of the plan window", and `pr` shows
+it. The link carries no path and no prompt, so a link from anywhere else can only start the review
+of a request `review.py` wrote in the issue's worktree, and only with the token stored beside it. A
+request with no token (written before requests had one) gets no link: `plan review KEY --restart`
+writes it again. `plan review` needs the plan window's `plan.code-workspace`; without it no window
+would start the review, so it says `plan open KEY` writes it. When that file is missing or the link
+can't be sent, `plan review` withdraws the request only if this run wrote it; a reopened request is
+left as it is. A withdraw that fails is reported with the link's error, naming `plan review KEY
+--restart`. A `review.py` run that takes longer than 60 s is stopped and reported; the lock it
+leaves holds a dead pid, which the next run clears. The prompt opens by stopping if Claude's working
+directory isn't the worktree root.
+
+The reviewer's first step is `review.py claim KEY`, which finds the Claude it runs under (the nearest
+ancestor process that `claude agents --json` lists) and records its pid and session id as `reviewer`
+in the round's `request.json`; the reviewer stops if the claim fails. It then appends its progress to the round's `review.log`, writes `review.next.json`, and runs
+`review.py finish KEY` as its last step. The panel can report `/code-review` findings through the
+ReportFindings tool instead of as text
+([docs](https://code.claude.com/docs/en/code-review-local.md#how-findings-are-reported)), so the
+prompts tell the reviewer to copy every finding into `review.next.json` however the review reported
+it. The reviewer never commits, pushes, replies to a thread, resolves one, or writes `report.md`.
+
+**The reviewer is also an owner of the code.** The prompts set its stance: its goal is a correct and
+accurate change, built with Clean Code, Clean Architecture, SOLID and security, so it reviews
+thoroughly, completely and kindly, as kind to the author as it would want a reviewer to be to it, and
+kind is never incomplete or shallow. The review and the author work toward convergence. Owning the
+code is a stance toward its quality, not permission to change it: the reviewer changes nothing in
+the code or on GitHub except through `finish`.
+
+**The review fans out** to Sonnet subagents run in parallel: one per selected lens, one for the
+topic's overall concerns, and the `/code-review` call, which the reviewer runs itself as the
+general-correctness leg. The call runs at `medium`: `high` would need an instruction that the lenses
+are reviewed elsewhere, and without `ultra` the text after the level and flags is all review target
+([docs](https://code.claude.com/docs/en/code-review-local.md#text-after-the-effort-level-and-flags)).
+The subagents report findings and edit nothing. The reviewer merges what every leg reported into one
+finding per defect, checks each against the code, and records it. A concern found more than twice
+across the legs that deserves a lens of its own goes in the record's `advisories`, each with the
+`concern`, the `lens` it suggests and the three or more places it was `seen`.
+
+**Where it is kept.** An issue's rounds are numbered from 0, one folder each,
+`.tmp/<KEY>/rounds/<n>/` in the worktree, the highest `n` the latest. Round 0 is the author's change,
+reviewed with `/code-review medium`; each later round answers a review of the PR. Claude's review
+after a push opens the next round: `n` is the latest round plus one, and at least 1. The author then
+answers it in the same folder (`report.md`, `replies/`, `commit.txt`). The folder is
+`rounds_folder()` in `review.py`; the rounds move to the store with the rest of an issue's files, and
+that function is the one place the path changes. The review's files in `rounds/<n>/`:
+
+| File | Written by | Then |
+| --- | --- | --- |
+| `request.md`, `request.json` | `review.py request` | deleted by `finish` |
+| `review.log` | `request`, the reviewer, `finish`: one line per step | kept |
+| `review.next.json` | the reviewer | deleted by `finish` |
+| `review.json` | `finish`, atomically (temp file, then rename), after the posts | kept |
+
+**`finish`** checks `review.next.json` against the head the review was requested for (`request.json`),
+posts the review's new unsettled findings and records each id against its finding. A finding whose
+lines are all in the PR's diff is an inline comment of one PR review (`gh api` on
+`pulls/<n>/reviews`, event `COMMENT`), so `pr_threads.py` lists it as a thread as it does any
+review's. A finding whose file is in the diff but whose lines aren't, a renamed file or a binary
+change among them, is a file-level review comment (`subject_type: file`, a separate call to
+`pulls/<n>/comments`). A finding whose file isn't in the PR is a line of the review's body, and its
+record holds the review's id, `reviewId`, where the others hold a `commentId`. Each posted comment
+carries a hidden `<!-- review-finding: KEY -->` marker, which maps its id back. The review is posted
+on the requested head, so a push made while the review runs doesn't refuse its work. `finish` reads
+every page of the posted review's comments (`gh api --paginate --slurp`). Only then does it write
+`review.json` and delete the request files. A failure before that leaves no `review.json` and logs why.
+The record's advisories go in the body of the review `finish` posts, under a hidden
+`<!-- review-advisory -->` marker, once per head: with no finding left to post, `finish` posts a
+review for the advisory alone, and `posted.json` records the head (`advisedHead`) a review carried it
+at, so a round restarted at a new head posts that head's advisories and a rerun at the same head doesn't.
+
+**`review.json`** holds `findings`, each `{file, line, summary, disposition}` plus `key`
+(`file:lines:classification`), `why` (why it matters) and `fixShows` (what a correct fix must show),
+optional `fix`, `commentId` and `reviewId`, and `dispositions`, each
+`{path, blob, passes, verdict}` (OK, or the list of finding keys), plus `head`, `base`, `round`,
+`range`, `call`, `checks` and `advisories`. The local server's review page reads `findings` and `dispositions`;
+the rest is extra. A finding's disposition is `open` when first raised, `Fixed` when it held, `New`
+when it's back or newly raised in a round; `open` and `New` are unsettled. A review's findings
+include every earlier unsettled finding with its new disposition, so the latest review is complete
+on its own. Each round's reviewer is a new conversation, so `why` and `fixShows` carry the reasoning
+of the reviewer who raised the finding: `finish` refuses a finding it is about to post without them,
+a later round copies them forward, and a record written before they existed loads without them. The
+round prompt lists each unsettled finding with both. The format is documented in `review.py`'s
+docstring.
+
+**The last review** is the highest round whose `review.json` has a `head`, which only a finished
+review after a push writes; round 0's `review.json` has none. A round is unfinished while its folder
+has `request.json` and no `review.json`.
+
+**First review, then rounds.** Every call names its range and `--max-findings all`: with no target
+the review reads only the commits ahead of the upstream, which the push has just moved to HEAD, and
+a value passed in one run isn't remembered by the next. With no last review, the reviewer runs the
+first-review prompt, exactly `/code-review medium --max-findings all origin/<base>...<sha>`: the whole
+PR, through every leg of the fan-out, with every changed file given a disposition. With one, it runs
+the round prompt, exactly `/code-review medium --max-findings all <last-head>..<sha>` with
+`<last-head>` read from the last review. A round is not a review of the whole PR again: every leg is
+scoped to the round's changes, each checked for whether it fixes its finding and what it breaks. Each
+unsettled finding is judged from its `why` and `fixShows`, the author's reply in its thread and the
+diff that answers it, checked in context (its `file:lines` and the code one and two steps out), and
+marked Fixed when the fix shows what `fixShows` asks, else New; a reply that only explains or defers
+fixes nothing; a recommended fix applied verbatim is Fixed without
+further check; an OK file whose blob is unchanged is not read again; a new finding is raised only
+for what the round's changes introduce, a regression, a silent loss or a crash; repeats are grouped under a named cause, and a third repeat becomes a
+check script. A PR whose Copilot threads are still open gets no last review until Claude's first
+one, and `pr_threads.py` lists and answers those threads with the rest.
+
+**The requested commit is pinned.** `<sha>` is the commit HEAD named when the request was made. The
+call, every range, the blob lookups and the diff `finish` places findings against all use it, never
+the moving HEAD, so a push between the request and the review doesn't change what is reviewed. The
+prompts tell the reviewer that when `git rev-parse HEAD` differs from `<sha>` it reads every file at
+that commit with `git show <sha>:<path>`, not from the working tree, and says so in the log.
+
+**After a rebase**, when the last review's head isn't in `<sha>`'s history, the range can't be
+`<last-head>..<sha>`. Nor can it after a merge commit since the last head: a merge of the base would
+put every change the base made into `<last-head>..<sha>`, which the PR's three-dot range leaves out.
+The repo rebases and never merges the base in, so this guards a history made outside `rebase-main`. The call is then `/code-review medium --max-findings all origin/<base>...<sha> --
+<files>`, listing only the files not settled: those without an OK disposition at an unchanged blob,
+those of unsettled findings, those the PR deletes, and those the last review gave a disposition that
+the PR no longer changes at all. The prompt tells the reviewer to review only those. The docs
+don't describe a range combined with paths; they say Claude "receives that text as the review
+target" ([docs](https://code.claude.com/docs/en/code-review-local.md#choose-what-to-review)), and the
+combination is confirmed in the live round. With no file left, there is nothing to call, and `review.py`
+moves the last review's head to `<sha>`; a deleted path or a dropped one always leaves a file, so a
+rebase never skips a deletion. A file the PR deletes, or that is no longer in the PR, gets a
+disposition whose `blob` is `"absent"` and a verdict like any other file; one already found OK at
+`"absent"` isn't reviewed again.
+
+**One run at a time.** `request` and `finish` hold an exclusive lock on the issue's rounds folder,
+`.tmp/<KEY>/rounds/.review.lock`, created with `O_EXCL`. The file holds its run's pid, and a run
+removes it when it ends, however it ends, only while it still holds its own pid. A lock whose pid is
+dead (`os.kill(pid, 0)` finds no such process) is moved aside with one atomic rename, so of two runs
+that found it dead only one's rename succeeds, and the run goes on; a run whose rename took a lock
+another run had already created puts it back. That put-back can itself fail if a third run took the
+path in between, so the lock excludes overlapping runs in practice, not against every interleaving
+of three. One whose pid is alive refuses at once and names the file, and doesn't wait. A lock whose
+pid can't be read refuses too: when no run is active, delete the file the refusal names. `request`
+reads the state and checks that a review is due inside the lock, so overlapping runs don't choose
+the same round or overwrite each other's request. `pr` calls
+`plan review KEY --if-due`, which writes and reopens nothing, and so starts no review, when no
+review is due, an unfinished round already requested for this HEAD included; two overlapping `pr`
+runs start one review. A manual `plan review KEY` still starts that round again once its claimed
+reviewer has stopped: the plan window closes the `Review KEY` terminal it had, and the new reviewer
+claims the round. While the claimed reviewer is still running, `review.py` refuses the reopen and the
+window refuses the link. The reviewing Claude never
+deletes `.review.lock`: on a lock refusal it stops and says so.
+
+**An unfinished round, and which one is due.** A review is due when HEAD differs from the last
+review's head, or there is none, and no unfinished round was already requested for this HEAD
+(`review.py due`, which exits 0 when due, 1 with the reason when not, and 2 on any failure). A
+round whose review never started, or whose terminal was closed before it finished, stays
+unfinished: `plan review KEY` starts it again for the same HEAD, and `plan review KEY --restart`
+writes it again at HEAD when HEAD moved. When the review link can't be sent, `plan review` withdraws the request it wrote, by the token stored in
+`request.json`, under `.review.lock` and only while no reviewer has claimed it; a reopened, claimed or
+replaced request is left as it is. The next request writes a withdrawn round again in its own folder
+and keeps its `posted.json`, so the round numbers don't skip. A push made while a review runs leaves HEAD ahead of its head; the review finishes for the
+head it was requested for, and the next `pr` starts the follow-up review.
+
+**Orange.** The issue's item turns orange when the last review was of the worktree's current HEAD, has a
+finding in disposition `open` or `New`, and no round is unfinished. It's read from the round folders
+and a local `git rev-parse HEAD`; the next push moves HEAD and clears it.
+
+**Restart.** `plan review KEY --restart` writes an unfinished round's request again in the same
+folder at the current HEAD, and keeps the round's `posted.json`. `finish` for a restarted round
+posts only the findings `posted.json` doesn't name, in a further review of the same round, so no
+finding is posted twice. GitHub must still return a comment for each earlier-posted inline finding
+the restarted record carries as unsettled, since the record stores its id; for a finding the record
+no longer carries as unsettled, a missing comment is noted in `posted.json` and doesn't stop the
+finish. When a rebase leaves nothing to review, a restarted round is completed with the last record
+at the new head, and the findings the round had posted join it with their ids, so it doesn't stay
+unfinished and loses nothing posted. `--restart` is refused while the round's claimed reviewer is still a session in `claude agents
+--json`, whatever its state (a Claude waiting at a prompt is running), and when that list can't be
+read; the message says to close its `Review KEY` terminal and run `plan review KEY --restart` again. A round nobody
+claimed, or whose reviewer's pid is gone, restarts. A reviewer that does reach `finish` after a
+restart gets a refusal that says the round was restarted: the prompts tell it to stop, edit nothing
+and tell the author, on a head mismatch as on a lock refusal.
+
+**Limits.** A reviewer is known to `--restart` only through its `claim`: a round whose reviewer never
+ran `claim` (a terminal closed before its first step, say) restarts without a check, and a round stays
+unfinished until `finish` runs or it is restarted. `finish` is safe to rerun: it writes `posted.json` in the
+round's folder as each POST succeeds, and a rerun posts only what that file doesn't name, so a
+failure after a review was posted doesn't post it twice. Before each POST it also writes an intent to
+`posted.json`; a rerun that finds one with no outcome (the POST failed, or GitHub took it and the
+answer was lost) looks for the review or file-level comment on the PR by round, head and finding
+markers, and posts only what is missing. A finding posted in one round and found
+again in a later round as New is posted again as a new comment; that is what New means.
 
 ### Review: co-signing and dispositions
 
@@ -445,14 +680,14 @@ Done shows once a PR for the issue's branch is found (`gh pr view <branch>` or
 changes anything.
 
 The checks, in order: the PR is merged; it belongs to this checkout's `origin`; the worktree is
-clean, holds no ignored files outside `disposable`, and its HEAD is the PR's merged head or behind
+clean, holds no ignored files outside `disposable` (a refusal names each ignored folder once), and its HEAD is the PR's merged head or behind
 it; no round files are left unsent; the worktree isn't locked; the main checkout's base can
 fast-forward to `origin/<base>`.
 
 The changes: fast-forward the base, `git worktree remove`, delete the workspace file (a warning if it won't go), delete every
 branch named for the issue whose tip is in the PR, note the PR and merge commit on the issue (an ADF
-comment in Jira, a `## Log` line in a ticket), free the issue's workspace slot, and print the close
-note:
+comment in Jira, a `## Log` line in a ticket), remove the issue's lines from the issues file and the pulses file and its folder from the plan
+workspace (the ticket store's folder stays), and print the close note:
 
 ```text
 Close CIAM-123 in Jira: https://cryoport.atlassian.net/browse/CIAM-123
@@ -523,39 +758,34 @@ no buttons that act. A page is always opened at its server URL, never as a `file
 
 `plan browse` takes a Jira key (the issue's page), `pr#N` (the pull request, as `gh` finds it
 from the current folder) or an http(s) URL. A store ticket's key is refused, naming its file, until
-the local server serves its page. `[KEY]` names the issue whose window the page belongs in when the
-target doesn't.
+the local server serves its page. `[KEY]` names the issue the page belongs to when the target doesn't.
 
-`plan browse` prints the URL, then picks the issue window: the target's key, else `[KEY]`, else the
-calling terminal's `PLAN_KEY`, else whichever VS Code window has focus
-([architecture §7.6.1](docs/architecture.md#open-url)). It runs `code <workspace file>` to focus
-that window, then `code --open-url` with a `vscode://skuld.plan-window/browse?url=…&key=<KEY>`
-link. VS Code hands the link to the focused window, and plan-window opens the page in its
-integrated browser. A window whose `plan.key` isn't the link's key refuses it with a
-`plan window: …` notice, so a page never opens in another issue's window when focus moves between
-the two commands. Run `plan browse` again from the issue's window.
+`plan browse` prints the URL and takes the issue from the target's key, else `[KEY]`, else the
+calling terminal's `PLAN_KEY` ([architecture §7.6.1](docs/architecture.md#open-url)). It runs
+`code` on the plan workspace file to focus the plan window, then `code --open-url` with a
+`vscode://skuld.plan-window/browse?url=…&key=<KEY>` link. VS Code hands the link to the focused
+window, and plan-window opens the page in its integrated browser.
 
-A localhost or loopback link clicked in an issue window's terminal opens in its integrated browser
-too: Start writes `workbench.browser.openLocalhostLinks` into the window's workspace file. Any other
+A localhost or loopback link clicked in a terminal of the plan window opens in its integrated
+browser too, through `workbench.browser.openLocalhostLinks` in the plan workspace file's settings. Any other
 clicked link goes to the system browser; open it with `plan browse <url>`.
 
 Every step is best-effort; the printed URL stands on its own. System `open` is never used for a
-page, since it sends the page to the default browser, outside every issue window. The
+page, since it sends the page to the default browser, outside the plan window. The
 `no_bare_open.py` hook refuses it in an agent's shell (§9).
 
 ### Browser automation and tests
 
 Browser tests are scripts that run in Chrome or Chromium with the test suite. The
 `chrome-devtools` MCP server (Chrome, `--isolated`) is for investigating an issue, not for
-checking a change. Neither runs in an issue window, whose integrated browser is the human's own.
+checking a change. Neither runs in the plan window, whose integrated browser is the human's own.
 
 ## 8. The helpers
 
 All are stdlib Python or shell, in `skills/jira-issues/scripts/`.
 
 - **`ghbody.sh`**, run as `gh pc` and `gh pb`. `gh pc` takes the title from the branch's first
-  commit subject (`git log --reverse origin/<base>..HEAD`) and the body from `pr-body.md`, then asks
-  Copilot to review. `gh pb` replaces the body (`gh pr edit --body-file`). Both refuse an
+  commit subject (`git log --reverse origin/<base>..HEAD`) and the body from `pr-body.md`. `gh pb` replaces the body (`gh pr edit --body-file`). Both refuse an
   attribution line and a smart-commit token. `GHBODY_DRY=1` prints the command instead of running
   it.
 - **`pr_threads.py <PR>`** lists unresolved review threads. `--drafts DIR` writes each thread's
@@ -617,9 +847,9 @@ These recur through the code, and they're worth taking away even without the too
    GitHub credentials.
 8. **A refusal that names its fix** instead of recovery code.
 9. **Outside systems behind ports.** Each tracker, GitHub and git remote is reached through its
-   port's adapter, and the `WindowPlacer` (`lib/placer.py`, `lib/spaces.py`)
-   alone runs `code`, `skuld-spaces` and System Events, so the rest of `lib/`
-   tests without a real terminal ([architecture §6](docs/architecture.md#components)).
+   port's adapter ([architecture §6](docs/architecture.md#components)). The plan window opens
+   with one `code` call through `run`, the subprocess seam that every Start and Open test fakes,
+   so `lib/`'s tests need no window server.
 10. **A gate that fails loudly.** The watcher commits nothing that fails the checker, and says so
     in a notification and a log.
 
@@ -645,11 +875,10 @@ and the exit code out. The server's routes run through Flask's test client, with
 
 ## 12. Limits
 
-- **macOS only:** native Desktops, launchd and the Keychain-free `~/.netrc` setup
-  all assume it.
+- **macOS only:** launchd and the Keychain-free `~/.netrc` setup assume it.
 - **One user and one Jira site:** `cryoport.atlassian.net`, with the `netrc` machine name in
   config.
-- **No in-terminal browsing:** pages open in the issue window's integrated browser, never in a TUI
+- **No in-terminal browsing:** pages open in the plan window's integrated browser, never in a TUI
   browser or through system `open`.
 - **GitHub only for pull requests;** GitHub Issues is not used.
 
@@ -663,19 +892,9 @@ bin/
   plan                     plan's entry point
   jira-get                 one read-only Jira GET with ~/.netrc auth
   gh-aliases.yml           gh pc and gh pb
-  build-spaces             builds macos/build/skuld-spaces with swiftc
-  build-slotbar            builds and signs macos/build/SlotBar.app, slotbar-pulse inside it
-  install-slotbar          installs SlotBar and its LaunchAgent, or --uninstall removes them
-  start-slotbar            starts SlotBar through its LaunchAgent after Quit
-  slotbar-signing-identity makes SlotBar's self-signed code-signing certificate, once per Mac
-  test-slotbar             builds and runs SlotBar's core tests
   install-agents           installs the LaunchAgent running plan agents tick --watch and the
                            claude-waiting hook, or --uninstall removes both
   claude-waiting           Claude Code hook: marks a session waiting on a person, clears it after
-macos/spaces.swift         skuld-spaces: read-only SkyLight calls listing Desktops and VS Code windows
-macos/slotbar/             SlotBar: SlotCore.swift (slots, pulses, shortcuts, Desktop numbering;
-                           Foundation only) and its tests, slotbar.swift (the menu-bar item),
-                           pulse.swift (slotbar-pulse), Info.plist
 lib/
   cli.py                   subcommand dispatch and the fzf picker
   config.py                reads the machine config and store.yml
@@ -683,14 +902,12 @@ lib/
   start.py                 Start and Open: repo resolution, names, worktrees, the lock
   ship.py                  Ship's checks and round-file naming
   done.py                  Done: checks, then changes, then the close note
-  term.py                  the workspace file, the slots file, SketchyBar's trigger, Ship's tmux window
-  placer.py                the WindowPlacer port, Placement and placerFrom()
-  spaces.py                SpacesPlacer: native Desktops through skuld-spaces and System Events
-  slotbar.py               plan pulse: a key's Desktop from the slots file, sent to slotbar-pulse
-  agents.py                plan agents: each Claude session's issue, Desktop and state, and the
-                           pulses that show them in SlotBar
+  term.py                  the workspace files, the issues file, the code call, Ship's tmux window
+  pulses.py                plan pulse: an issue's colour, written to the pulses file
+  agents.py                plan agents: each Claude session's issue and state, and the
+                           colours that show them in the Issues view
   waiting.py               the waiting markers bin/claude-waiting keeps, one per session
-  reviews.py               which slotted issues' PRs have a Copilot review on their head commit
+  reviews.py               which issues in the issues file have a review of Claude's waiting, from .tmp/<KEY>/rounds/
   claude_hooks.py          adds and removes bin/claude-waiting in ~/.claude/settings.json
   serve.py                 plan serve: the server's LaunchAgent through launchctl, and its status
   server.py                the local server: Flask on 127.0.0.1, the one module that imports Flask
@@ -706,9 +923,10 @@ claude/
   settings.json            attribution, permissions, the hooks
   hooks/                   no_ai_attribution.py, no_terminal_jira_transition.py,
                            no_bare_open.py, and a test for each
-vscode/plan-window/        the VS Code extension that opens an issue window's ticket and Claude
-                           terminal, and plan browse's pages: extension.js (the VS Code calls), plan.js (what they
-                           need, from the plan.* settings), plan.test.js
+vscode/plan-window/        the VS Code extension that opens an issue's ticket and Claude
+                           terminal in the plan window, plan browse's pages and the Explorer's
+                           Issues view: package.json, extension.js (the VS Code calls), plan.js
+                           (what they need, from the plan.* settings), plan.test.js
 docs/
   architecture.md          what the system is, and its rules (§10)
   failure-modes.md         each command's failure-mode table

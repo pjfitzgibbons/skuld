@@ -11,7 +11,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .jira import KEY_RE, projectOf
+from .issuekeys import KEY_RE, projectOf
 
 # Jira issue types vary per project and have no fixed branch convention, unlike Redmine's trackers.
 # The map is config (plan.typeMap), not a hardcoded constant; this is only its default.
@@ -132,9 +132,8 @@ def expandHome(dir):
 
 # Opt-in debug tracing (env PLAN_DEBUG=1): every run() call -- every code/osascript/tmux/git/etc
 # invocation in the whole tool goes through here -- prints its argv to stderr before running, and
-# its outcome (returned stdout, or the raised RuntimeError) after. The placer's best-effort steps
-# (SpacesPlacer.showUrl() and focus()) swallow their errors, so this is how to see which call
-# failed.
+# its outcome (returned stdout, or the raised RuntimeError) after. term.py's best-effort steps
+# (showUrl() and revealIssue()) swallow their errors, so this is how to see which call failed.
 def _debugEnabled():
     return os.environ.get("PLAN_DEBUG") == "1"
 
@@ -346,7 +345,7 @@ def resolvedRepo(named, project):
 # Start issue key, or reopen its worktree. Safe to repeat: each step runs only when it has something
 # to do. confirm(blockers) is asked only before a new worktree; false stops with nothing changed.
 # handOff(result), when given, is the last step of setup, so a handoff that fails runs setup again
-# (cmdStart opens the issue window after start() returns instead, so it passes none).
+# (cmdStart opens the plan window after start() returns instead, so it passes none).
 # Returns { dir, branch, created, started, notes }, or None when Peter said no. started: this Start
 # finished the worktree's setup, here or after an earlier one stopped part way.
 def start(jira, checkouts, key, confirm, handOff=None, typeMap=None, cwd=None, pickRepo=None):

@@ -11,17 +11,9 @@ from urllib.parse import quote, urlparse
 import urllib.error
 import urllib.request
 
+from .issuekeys import projectOf
+
 # The machine config names the site and the projects; nothing here defaults to either.
-
-# A Jira key: a project code of two or more letters/digits starting with a letter, a dash, a
-# number. CIAM-123, not a bare number or a branch-release tag. This is the one pattern every
-# other key check in the repo (the scripts' KEY_RE-equivalents, pr.sh, ghbody.sh) must match (L2).
-KEY_RE = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
-
-
-def projectOf(key):
-    return key.split("-")[0]
-
 
 # Next up's Jira half when the config sets no `jql`: the open issues assigned to me in the
 # configured projects, in Jira's rank order.

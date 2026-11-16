@@ -6,6 +6,7 @@ import os
 import re
 from urllib.parse import urlparse
 
+from .issuekeys import ISSUE_KEY_PATTERN, KEY_RE
 from .start import git, run
 
 # A round's files for pr, in .tmp/<KEY>/: beside the commit message and PR body, the review replies
@@ -13,7 +14,7 @@ from .start import git, run
 # ticks. A reply's name is digits, as pr_threads.py reads it. The key is a Jira key, CIAM-123, not
 # Redmine's bare issue number: it names the whole folder, so .tmp/CIAM-123/ replaces .tmp/<n>/.
 ROUND = r"(?:commit\.txt|pr-body\.md|issue\.md|replies/[0-9]+\.md)"
-REVIEW_FILE = re.compile(rf"^(.+)/\.tmp/([A-Z][A-Z0-9]*-[0-9]+)/{ROUND}$")
+REVIEW_FILE = re.compile(rf"^(.+)/\.tmp/({ISSUE_KEY_PATTERN})/{ROUND}$")
 ROUND_FILE = re.compile(rf"^{ROUND}$")
 
 
@@ -85,7 +86,7 @@ def keepEdits(file, text):
 def unsentIn(root):
     tmp = os.path.join(root, ".tmp")
     if os.path.isdir(tmp):
-        keys = [n for n in os.listdir(tmp) if re.match(r"^[A-Z][A-Z0-9]*-[0-9]+$", n)]
+        keys = [n for n in os.listdir(tmp) if KEY_RE.match(n)]
     else:
         keys = []
     result = []

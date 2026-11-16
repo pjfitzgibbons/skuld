@@ -250,7 +250,7 @@ def adf_comment_simple(text_lines: list[str]) -> dict:
 
 def main(argv=None) -> int:
     args = sys.argv[1:] if argv is None else argv
-    if len(args) != 2 or not re.match(r"^[A-Z][A-Z0-9]+-\d+$", args[0]):
+    if len(args) != 2 or not re.match(r"^[A-Z]+-[0-9]+$", args[0]):
         sys.exit("usage: checklist.py <KEY> <file>")
     file = Path(args[1])
     try:

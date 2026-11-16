@@ -12,7 +12,7 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from lib.jira import Jira, KEY_RE, projectOf, readNetrc
+from lib.jira import Jira, readNetrc
 
 
 class _FakeJiraServer:
@@ -286,20 +286,6 @@ class ReadNetrcTests(unittest.TestCase):
         entry = readNetrc("cryoport.atlassian.net", file)
         self.assertEqual(entry["login"], "a@b.com")
         self.assertEqual(entry["password"], "tok")
-
-
-class KeyRETests(unittest.TestCase):
-    def test_key_re_and_project_of(self):
-        self.assertTrue(KEY_RE.match("CIAM-123"))
-        self.assertFalse(KEY_RE.match("123"))
-        self.assertFalse(KEY_RE.match("release-2026-10"))
-        self.assertEqual(projectOf("CIAM-123"), "CIAM")
-
-    def test_key_re_requires_two_or_more_char_project_code(self):
-        # A single letter before the dash is the shape of a stray token, not a real Jira project
-        # code; the unified pattern (jira.py, pr.sh, ghbody.sh) rejects it everywhere the same way.
-        self.assertFalse(KEY_RE.match("C-1"))
-        self.assertTrue(KEY_RE.match("C1-1"))
 
 
 if __name__ == "__main__":

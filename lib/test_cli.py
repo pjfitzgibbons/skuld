@@ -8,9 +8,11 @@
 # visible to cli.py immediately.
 #
 # Ported from lib/cli.test.js. Faithful, behavior-preserving port.
+import contextlib
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -18,145 +20,366 @@ import unittest
 from unittest import mock
 
 from lib import cli
+from lib import reviews as reviews_mod
 from lib import ship as ship_mod
 from lib import start as startLib
 from lib import term as term_mod
 from lib.cli import main, mergeRows, resolveDir, shellQuote
-from lib.placer import Placement
 from lib.test_start import sandbox as start_sandbox
 
 # A config with Jira on: one project and a site that no test ever reaches.
 JIRA_ON = {"jira": {"CIAM": {"repos": []}}, "baseUrl": "https://jira.example"}
 
 
+# An extensions folder with the plan-window link pointing into the checkout the tests run from, and
+# PLAN_EXTENSIONS_DIR aimed at it for the test, so no test reads the real ~/.vscode/extensions.
+def useLinkedExtensions(test, linkName=term_mod.EXTENSION_LINK_NAME):
+    folder = tempfile.mkdtemp(prefix="skuld-extensions-")
+    test.addCleanup(shutil.rmtree, folder)
+    os.symlink(term_mod.extensionSource(term_mod.runningCheckout()), os.path.join(folder, linkName))
+    patch = mock.patch.dict(os.environ, {term_mod.EXTENSIONS_DIR_ENV: folder})
+    patch.start()
+    test.addCleanup(patch.stop)
+    return folder
+
+
 # `start` and `open` are the same command (main() routes both to cmdStart -- a second Open on an
 # issue that already has a worktree is just Start finding "nothing to do" and reusing it), so these
-# run cmdStart through main(["open", ...]) with start.start() and the window calls stubbed, and
-# check the workspace file it writes.
+# run cmdStart through main(["open", ...]) with start.start() stubbed and term's `run` faked, then
+# check the commands run, the issue's workspace file and the plan workspace's folders.
 class CmdOpenTests(unittest.TestCase):
-    def runOpen(self, key, ticket):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="skuld-open-")
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.cfg = {
+            "issueStore": "/issues",
+            "workspaceDir": os.path.join(self.tmp, "ws"),
+            "issuesFile": os.path.join(self.tmp, "issues"),
+        }
+        self.planWorkspace = os.path.join(self.tmp, "ws", "plan.code-workspace")
+        self.extensions = useLinkedExtensions(self)
+
+    def worktree(self, key):
+        path = os.path.join(self.tmp, "repo.worktrees", key)
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    # Runs `plan open key`; run fails for any command whose name is in failing. Returns the
+    # (command, args) pairs run and what was printed; failingLink fails `code --open-url`.
+    def runOpen(self, key, ticket=None, failing=(), failingLink=False, command="open"):
         class FakeJira:
             def browseUrl(self, key):
                 return ticket or f"https://cryoport.atlassian.net/browse/{key}"
 
-        tmp = tempfile.mkdtemp(prefix="skuld-open-")
-        self.addCleanup(shutil.rmtree, tmp)
-        worktree = os.path.join(tmp, "repo.worktrees", key)
-        os.makedirs(worktree)
-        cfg = {"issueStore": "/issues", "workspaceDir": os.path.join(tmp, "ws")}
-        placer = FakePlacer(Placement(False, "3", "Desktop 3"))
-        with mock.patch.object(cli.config_mod, "load", return_value=cfg), mock.patch.object(
+        ran = []
+
+        def run(command, args, cwd):
+            ran.append((command, args))
+            if command in failing:
+                raise RuntimeError(f"{command} exited 1")
+            if failingLink and args[0] == "--open-url":
+                raise RuntimeError("--open-url failed")
+            return ""
+
+        out = io.StringIO()
+        with mock.patch.object(cli.config_mod, "load", return_value=self.cfg), mock.patch.object(
             cli, "jiraFrom", return_value=FakeJira()
-        ), mock.patch.object(cli.placer_mod, "placerFrom", return_value=placer), mock.patch.object(
-            startLib, "start", return_value={"dir": worktree, "notes": []}
-        ) as start, mock.patch.object(term_mod, "showUrl") as showUrl, mock.patch("builtins.print"):
-            main(["open", key])
-        workspaceFile = os.path.join(tmp, "ws", f"{key}.code-workspace")
-        with open(workspaceFile, encoding="utf8") as f:
+        ), mock.patch.object(startLib, "start", return_value={"dir": self.worktree(key), "notes": []}), mock.patch.object(
+            term_mod, "run", side_effect=run
+        ), mock.patch("sys.stdout", out):
+            main([command, key])
+        return ran, out.getvalue()
+
+    def issueSettings(self, key):
+        with open(os.path.join(self.tmp, "ws", f"{key}.code-workspace"), encoding="utf8") as f:
+            return json.load(f)["settings"]
+
+    def planFolders(self):
+        with open(self.planWorkspace, encoding="utf8") as f:
+            return [folder["path"] for folder in json.load(f)["folders"]]
+
+    def test_open_on_a_sk_key_opens_the_plan_window_then_brings_the_issue_forward(self):
+        ran, out = self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
+        self.assertEqual(
+            ran,
+            [("code", [self.planWorkspace]), ("code", ["--open-url", "vscode://skuld.plan-window/open?key%3DSK-0001"])],
+        )
+        self.assertEqual(out, "SK-0001 ready.\n/issues/SK-0001-slug.md\n")
+
+    # The extension link. A stop leaves nothing started: no run, no issues-file line, no workspace.
+    def replaceLink(self, target=None):
+        link = os.path.join(self.extensions, term_mod.EXTENSION_LINK_NAME)
+        os.remove(link)
+        if target:
+            os.symlink(target, link)
+        return link
+
+    def assertNothingStarted(self, ran):
+        self.assertEqual(ran, [])
+        self.assertEqual(term_mod.issueKeys(self.cfg["issuesFile"]), [])
+        self.assertFalse(os.path.exists(self.planWorkspace))
+
+    def stoppedBy(self, command):
+        ran = []
+        with mock.patch.object(startLib, "start") as start, mock.patch.object(
+            term_mod, "run", side_effect=lambda c, a, cwd: ran.append((c, a))
+        ), mock.patch.object(cli.config_mod, "load", return_value=self.cfg):
+            with self.assertRaises(RuntimeError) as stop:
+                main([command, "SK-0001"])
+        start.assert_not_called()
+        self.assertNothingStarted(ran)
+        return str(stop.exception)
+
+    def test_a_link_into_another_worktree_stops_open_with_the_whole_fix(self):
+        elsewhere = os.path.join(self.tmp, "other.worktrees", "SK-0063", "vscode", "plan-window")
+        link = self.replaceLink(elsewhere)
+        checkout = term_mod.runningCheckout()
+        fixed = os.path.join(self.extensions, term_mod.EXTENSION_LINK_NAME)
+        self.assertEqual(
+            self.stoppedBy("open"),
+            f"plan-window extension link is wrong: {link} -> {elsewhere}\n"
+            f"plan runs from {checkout}. To fix:\n"
+            f"  1. ln -sfn {checkout}/vscode/plan-window {fixed}\n"
+            "  2. Restart VS Code (quit and reopen).\n"
+            "  3. Re-run: plan open SK-0001",
+        )
+
+    def test_a_missing_link_stops_start_naming_the_folder_and_re_running_start(self):
+        self.replaceLink()
+        message = self.stoppedBy("start")
+        self.assertIn(f"no skuld.plan-window-* link in {self.extensions}", message)
+        self.assertIn("  3. Re-run: plan start SK-0001", message)
+
+    def test_a_leftover_link_of_another_version_is_removed_in_the_fix(self):
+        self.replaceLink()
+        leftover = os.path.join(self.extensions, "skuld.plan-window-0.0.0")
+        os.symlink(os.path.join(self.tmp, "old"), leftover)
+        message = self.stoppedBy("open")
+        self.assertIn(f"  1. rm {leftover}\n  2. ln -sfn ", message)
+        self.assertIn("  4. Re-run: plan open SK-0001", message)
+
+    def test_a_real_directory_at_the_fixed_name_is_moved_to_the_trash_before_linking(self):
+        link = self.replaceLink()
+        os.mkdir(link)
+        trash = term_mod.expandHome(term_mod.TRASH_DIR)
+        message = self.stoppedBy("open")
+        self.assertIn(f"  1. mv -i {link} {trash}/\n  2. ln -sfn ", message)
+        self.assertIn(f"{link}\n  3. Restart VS Code", message)
+
+    def test_a_leftover_real_directory_is_moved_to_the_trash_where_a_link_is_removed(self):
+        self.replaceLink()
+        directory = os.path.join(self.extensions, "skuld.plan-window-0.0.0")
+        os.mkdir(directory)
+        link = os.path.join(self.extensions, "skuld.plan-window-0.0.1")
+        os.symlink(os.path.join(self.tmp, "old"), link)
+        message = self.stoppedBy("open")
+        trash = term_mod.expandHome(term_mod.TRASH_DIR)
+        self.assertIn(f"  1. mv -i {directory} {trash}/\n  2. ln -sfn ", message)
+        self.assertNotIn("rm ", message)
+
+    def test_every_path_in_the_fix_is_shell_quoted(self):
+        spaced = os.path.join(self.tmp, "my extensions")
+        os.mkdir(spaced)
+        leftover = os.path.join(spaced, "skuld.plan-window-0.0.0")
+        os.symlink(os.path.join(self.tmp, "old"), leftover)
+        with mock.patch.dict(os.environ, {term_mod.EXTENSIONS_DIR_ENV: spaced}):
+            message = self.stoppedBy("open")
+        fixed = os.path.join(spaced, term_mod.EXTENSION_LINK_NAME)
+        source = term_mod.extensionSource(term_mod.runningCheckout())
+        self.assertIn(f"  1. rm '{leftover}'\n", message)
+        self.assertIn(f"  2. ln -sfn {shlex.quote(source)} '{fixed}'\n", message)
+
+    def test_a_missing_extensions_folder_is_made_before_linking(self):
+        missing = os.path.join(self.tmp, "no such", "extensions")
+        with mock.patch.dict(os.environ, {term_mod.EXTENSIONS_DIR_ENV: missing}):
+            message = self.stoppedBy("open")
+        fixed = os.path.join(missing, term_mod.EXTENSION_LINK_NAME)
+        self.assertIn(f"no skuld.plan-window-* link in {missing}", message)
+        self.assertIn(f"  1. mkdir -p '{missing}'\n  2. ln -sfn ", message)
+        self.assertIn(f"'{fixed}'\n  3. Restart VS Code", message)
+
+    def test_a_link_into_this_checkout_with_another_version_suffix_opens(self):
+        self.replaceLink()
+        os.symlink(
+            term_mod.extensionSource(term_mod.runningCheckout()), os.path.join(self.extensions, "skuld.plan-window-0.2.0")
+        )
+        ran, out = self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
+        self.assertEqual(out, "SK-0001 ready.\n/issues/SK-0001-slug.md\n")
+        self.assertEqual(ran[0], ("code", [self.planWorkspace]))
+
+    def test_open_writes_the_issues_own_workspace_file_without_opening_it(self):
+        self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
+        settings = self.issueSettings("SK-0001")
+        self.assertEqual(settings["plan.key"], "SK-0001")
+        self.assertEqual(settings["plan.ticket"], "/issues/SK-0001-slug.md")
+        self.assertIn("read /issues/SK-0001-slug.md first", settings["plan.prompt"])
+
+    def test_open_moves_the_store_to_the_front_of_a_workspace_that_lists_it_later(self):
+        os.makedirs(os.path.dirname(self.planWorkspace))
+        with open(self.planWorkspace, "w") as f:
+            json.dump({"folders": [{"path": self.worktree("CIAM-1")}, {"path": "/issues"}]}, f)
+        self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
+        self.assertEqual(self.planFolders(), ["/issues", self.worktree("CIAM-1"), self.worktree("SK-0001")])
+
+    def test_open_adds_the_key_to_the_issues_file_and_the_worktree_to_the_plan_workspace(self):
+        self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
+        self.runOpen("CIAM-1")
+        self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
+        self.assertEqual(term_mod.issueKeys(self.cfg["issuesFile"]), ["SK-0001", "CIAM-1"])
+        self.assertEqual(self.planFolders(), ["/issues", self.worktree("SK-0001"), self.worktree("CIAM-1")])
+
+    def test_start_and_open_with_no_store_stop_before_anything_changes(self):
+        del self.cfg["issueStore"]
+        for command in ("start", "open"):
+            with self.subTest(command=command), mock.patch.object(cli.config_mod, "load", return_value=self.cfg), mock.patch.object(
+                cli, "jiraFrom"
+            ) as jiraFrom, mock.patch.object(startLib, "start") as start, mock.patch.object(term_mod, "run") as run:
+                with self.assertRaisesRegex(RuntimeError, "no issue store set"):
+                    main([command, "CIAM-1"])
+                for step in (jiraFrom, start, run):
+                    step.assert_not_called()
+        self.assertEqual(os.listdir(self.tmp), [])
+
+    def test_a_jira_issues_record_has_its_browse_url(self):
+        self.runOpen("CIAM-1")
+        self.assertEqual(self.issueSettings("CIAM-1")["plan.ticketUrl"], "https://cryoport.atlassian.net/browse/CIAM-1")
+
+    def test_a_store_issues_record_has_its_ticket_and_no_browse_url(self):
+        self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
+        settings = self.issueSettings("SK-0001")
+        self.assertEqual(settings["plan.ticket"], "/issues/SK-0001-slug.md")
+        self.assertNotIn("plan.ticketUrl", settings)
+
+    def test_open_on_a_jira_key_prints_its_url_and_opens_only_the_plan_window_and_link(self):
+        ran, out = self.runOpen("CIAM-1")
+        self.assertNotIn("plan.ticket", self.issueSettings("CIAM-1"))
+        self.assertEqual(self.issueSettings("CIAM-1")["plan.prompt"], "Work on Jira CIAM-1")
+        self.assertEqual(ran, [("code", [self.planWorkspace]), ("code", ["--open-url", term_mod.openLink("CIAM-1")])])
+        self.assertEqual(out, "CIAM-1 ready.\nhttps://cryoport.atlassian.net/browse/CIAM-1\n")
+
+    def test_a_code_failure_stops_open_naming_the_command_to_run_by_hand(self):
+        with self.assertRaisesRegex(RuntimeError, f"opening the plan window failed: code exited 1\nOpen it by hand: code {self.planWorkspace}"):
+            self.runOpen("SK-0001", "/issues/SK-0001-slug.md", failing=("code",))
+        self.assertEqual(term_mod.issueKeys(self.cfg["issuesFile"]), ["SK-0001"])
+
+    def test_a_failed_open_link_still_says_ready_and_names_the_failure_on_stderr(self):
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err):
+            _, out = self.runOpen("SK-0001", "/issues/SK-0001-slug.md", failingLink=True)
+        self.assertIn("SK-0001 ready.", out)
+        self.assertEqual(
+            err.getvalue(),
+            "couldn't open SK-0001 in the plan window: --open-url failed; click it in the Issues view\n",
+        )
+
+    def test_a_plan_workspace_that_cant_be_read_stops_open_naming_the_file_and_stays_as_it_is(self):
+        os.makedirs(os.path.dirname(self.planWorkspace))
+        text = '{\n  // mine\n  "folders": [],\n}\n'
+        with open(self.planWorkspace, "w") as f:
+            f.write(text)
+        with self.assertRaisesRegex(RuntimeError, r"adding the issue's folder to the plan workspace failed: .*plan\.code-workspace could not be read.*\nFix or delete"):
+            self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
+        with open(self.planWorkspace, encoding="utf8") as f:
+            self.assertEqual(f.read(), text)
+
+    def test_a_plan_workspace_with_a_bad_folders_is_replaced_keeping_its_settings_when_it_has_some(self):
+        os.makedirs(os.path.dirname(self.planWorkspace))
+        with open(self.planWorkspace, "w") as f:
+            f.write('{"folders": "x", "settings": {"editor.tabSize": 2}}')
+        self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
+        with open(self.planWorkspace, encoding="utf8") as f:
+            workspace = json.load(f)
+        self.assertEqual(workspace["folders"], [{"path": "/issues"}, {"path": self.worktree("SK-0001")}])
+        self.assertEqual(workspace["settings"]["editor.tabSize"], 2)
+
+    def test_the_plan_workspace_names_the_issues_pulses_and_records_folder(self):
+        self.cfg["pulsesFile"] = os.path.join(self.tmp, "pulses")
+        self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
+        with open(self.planWorkspace, encoding="utf8") as f:
             settings = json.load(f)["settings"]
-        self.assertIn(("openWindow", key, workspaceFile), placer.calls)
-        self.assertEqual(placer.calls[-1], ("focus", "3", workspaceFile))
-        return {"start": start, "shown": [call.args for call in showUrl.call_args_list], "settings": settings}
+        self.assertEqual(
+            settings,
+            {
+                "plan.command": term_mod.PLAN_COMMAND,
+                "workbench.browser.openLocalhostLinks": True,
+                "plan.issuesFile": self.cfg["issuesFile"],
+                "plan.pulsesFile": self.cfg["pulsesFile"],
+                "plan.workspaceDir": self.cfg["workspaceDir"],
+            },
+        )
 
-    def test_open_on_a_sk_key_names_the_ticket_and_opens_no_browser(self):
-        opened = self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
-        self.assertEqual(opened["settings"]["plan.ticket"], "/issues/SK-0001-slug.md")
-        self.assertIn("read /issues/SK-0001-slug.md first", opened["settings"]["plan.prompt"])
-        self.assertEqual(opened["shown"], [])
-
-    def test_open_on_a_jira_key_opens_its_url_and_has_no_ticket_tab(self):
-        opened = self.runOpen("CIAM-1", None)
-        self.assertNotIn("plan.ticket", opened["settings"])
-        self.assertEqual(opened["settings"]["plan.prompt"], "Work on Jira CIAM-1")
-        workspaceFile = opened["shown"][0][2]
-        self.assertEqual(opened["shown"], [("https://cryoport.atlassian.net/browse/CIAM-1", "CIAM-1", workspaceFile)])
-        self.assertTrue(workspaceFile.endswith("CIAM-1.code-workspace"))
+    def test_the_record_is_always_in_the_workspace_folder_even_beside_a_legacy_file(self):
+        legacy = term_mod.legacyWorkspaceFilePath(self.worktree("SK-0001"), "SK-0001")
+        open(legacy, "w").close()
+        self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
+        self.assertEqual(self.issueSettings("SK-0001")["plan.worktree"], self.worktree("SK-0001"))
+        self.assertEqual(os.path.getsize(legacy), 0)
 
     def test_open_pads_a_sk_key_typed_without_its_zeros(self):
         class FakeJira:
             def browseUrl(self, key):
                 return "/issues/SK-0001-slug.md"
 
-        with mock.patch.object(cli, "jiraFrom", return_value=FakeJira()), mock.patch.object(
-            cli, "writeIssueWorkspaceFile", return_value="/w/SK-0001.code-workspace"
-        ), mock.patch.object(
-            cli.placer_mod, "placerFrom", return_value=FakePlacer(Placement(False, "3", "Desktop 3"))
-        ), mock.patch.object(
-            startLib, "start", return_value={"dir": "/w/SK-0001", "notes": []}
-        ) as start, mock.patch("builtins.print"):
+        with mock.patch.object(cli.config_mod, "load", return_value=self.cfg), mock.patch.object(
+            cli, "jiraFrom", return_value=FakeJira()
+        ), mock.patch.object(startLib, "start", return_value={"dir": self.worktree("SK-0001"), "notes": []}) as start, mock.patch.object(
+            term_mod, "run", return_value=""
+        ), mock.patch("builtins.print"):
             main(["open", "SK-1"])
         self.assertEqual(start.call_args.args[2], "SK-0001")
 
 
-# The WindowPlacer port seen from Start and Open: a fake placer records what cmdStart asks of it,
-# so the order (sweep, open, show the URL, focus) and what's printed are checked with no window
-# server.
-class FakePlacer:
-    def __init__(self, placement):
-        self.placement = placement
-        self.calls = []
+# Review finding L6: a config that still sets the Desktop keys loads with a warning for each, and
+# Start then opens the plan window. The config is a real file read by config.load(), not a stub.
+class StartWithDesktopKeysTests(unittest.TestCase):
+    DESKTOP_KEYS = {"slotsFile": "/s", "windowsFile": "/w", "spacesHelper": "/h", "reservedDesktops": 2}
 
-    def sweep(self):
-        self.calls.append(("sweep",))
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="skuld-desktop-keys-")
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.worktree = os.path.join(self.tmp, "repo.worktrees", "SK-0001")
+        os.makedirs(self.worktree)
+        self.configFile = os.path.join(self.tmp, "config.json")
+        settings = {
+            **self.DESKTOP_KEYS,
+            "issueStore": os.path.join(self.tmp, "issues"),
+            "workspaceDir": os.path.join(self.tmp, "ws"),
+            "issuesFile": os.path.join(self.tmp, "plan", "issues"),
+            "pulsesFile": os.path.join(self.tmp, "plan", "pulses"),
+        }
+        with open(self.configFile, "w", encoding="utf8") as f:
+            json.dump(settings, f)
+        useLinkedExtensions(self)
 
-    def openWindow(self, key, workspaceFile):
-        self.calls.append(("openWindow", key, workspaceFile))
-        return self.placement
-
-    def focus(self, placement, workspaceFile):
-        self.calls.append(("focus", placement.slot, workspaceFile))
-
-
-class CmdStartWithFakePlacerTests(unittest.TestCase):
-    def runStart(self, key, placement, ticket=None):
+    def test_the_desktop_keys_load_with_a_warning_and_an_issue_still_starts(self):
         class FakeJira:
             def browseUrl(self, key):
-                return ticket or f"https://cryoport.atlassian.net/browse/{key}"
+                return "/issues/SK-0001-slug.md"
 
-        placer = FakePlacer(placement)
-        out = io.StringIO()
-        with mock.patch.object(cli.config_mod, "load", return_value={"issueStore": "/issues"}), mock.patch.object(
+        ran = []
+        stderr = io.StringIO()
+        with mock.patch.object(cli.config_mod, "CONFIG_FILE", self.configFile), mock.patch.object(
             cli, "jiraFrom", return_value=FakeJira()
-        ), mock.patch.object(cli.placer_mod, "placerFrom", return_value=placer), mock.patch.object(
-            cli, "writeIssueWorkspaceFile", return_value=f"/w/{key}.code-workspace"
-        ), mock.patch.object(startLib, "start", return_value={"dir": f"/w/{key}", "notes": []}), mock.patch.object(
-            term_mod, "showUrl", side_effect=lambda url, key, workspaceFile: placer.calls.append(("showUrl", url, key, workspaceFile))
-        ), mock.patch("sys.stdout", out):
-            main(["start", key])
-        return placer.calls, out.getvalue()
-
-    def test_start_on_desktops_opens_then_focuses_and_says_where(self):
-        placement = Placement(True, "3", "Desktop 3")
-        calls, out = self.runStart("SK-0044", placement, "/issues/SK-0044-x.md")
-        self.assertEqual(
-            calls,
-            [("sweep",), ("openWindow", "SK-0044", "/w/SK-0044.code-workspace"), ("focus", "3", "/w/SK-0044.code-workspace")],
-        )
-        self.assertIn("Desktop 3 ready.", out)
-
-    def test_open_prints_the_placers_notes_such_as_a_rewritten_slot(self):
-        note = "SK-0044's window is on Desktop 4, not its slot's Desktop 3; the slot now says 4."
-        _, out = self.runStart("SK-0044", Placement(False, "4", "Desktop 4", [note]), "/issues/SK-0044-x.md")
-        self.assertIn(note, out)
-        self.assertIn("Desktop 4 ready.", out)
-
-    def test_a_jira_issue_shows_its_url_in_its_own_window_before_focus(self):
-        calls, _ = self.runStart("CIAM-1", Placement(True, "5", "Desktop 5"))
-        self.assertEqual(calls[2], ("showUrl", "https://cryoport.atlassian.net/browse/CIAM-1", "CIAM-1", "/w/CIAM-1.code-workspace"))
-        self.assertEqual(calls[3][0], "focus")
+        ), mock.patch.object(startLib, "start", return_value={"dir": self.worktree, "notes": []}), mock.patch.object(
+            term_mod, "run", side_effect=lambda command, args, cwd: ran.append((command, args))
+        ), mock.patch("sys.stderr", stderr), mock.patch("sys.stdout", io.StringIO()):
+            main(["start", "SK-0001"])
+        for key in self.DESKTOP_KEYS:
+            self.assertIn(f"{key}, which is no longer read", stderr.getvalue())
+        self.assertEqual(ran[0], ("code", [os.path.join(self.tmp, "ws", "plan.code-workspace")]))
+        self.assertEqual(term_mod.issueKeys(os.path.join(self.tmp, "plan", "issues")), ["SK-0001"])
 
 
-# `plan browse`: which URL and which window. term.showUrl() is stubbed; what it runs is term's tests'.
+# `plan browse`: which URL and which issue, and the plan window raised when its workspace exists.
+# term.showUrl() is stubbed; what it runs is term's tests'.
 class CmdBrowseTests(unittest.TestCase):
-    def browse(self, *args, env=None, workspaceFiles=(), cfg=None, worktree=None):
+    def browse(self, *args, env=None, planWorkspace=False, cfg=None):
         tmp = tempfile.mkdtemp(prefix="skuld-browse-")
         self.addCleanup(shutil.rmtree, tmp)
         cfg = {**(cfg or JIRA_ON), "workspaceDir": tmp}
-        for key in workspaceFiles:
-            open(term_mod.workspaceFilePath(key, tmp), "w").close()
-        with mock.patch.object(cli.config_mod, "load", return_value=cfg), mock.patch.object(
-            cli, "issueWorktree", return_value=worktree
-        ), mock.patch.dict(
+        if planWorkspace:
+            open(term_mod.planWorkspacePath(tmp), "w").close()
+        with mock.patch.object(cli.config_mod, "load", return_value=cfg), mock.patch.dict(
             os.environ, env or {}, clear=False
         ), mock.patch.object(term_mod, "showUrl") as showUrl:
             if "PLAN_KEY" not in (env or {}):
@@ -165,30 +388,23 @@ class CmdBrowseTests(unittest.TestCase):
         url, key, workspaceFile = showUrl.call_args.args
         return url, key, workspaceFile and os.path.basename(workspaceFile)
 
-    def test_a_jira_key_opens_its_page_in_its_own_window(self):
-        shown = self.browse("CIAM-1", env={"PLAN_KEY": "CIAM-2"}, workspaceFiles=["CIAM-1"])
-        self.assertEqual(shown, ("https://jira.example/browse/CIAM-1", "CIAM-1", "CIAM-1.code-workspace"))
+    def test_a_jira_key_opens_its_page_for_that_issue_in_the_plan_window(self):
+        shown = self.browse("CIAM-1", env={"PLAN_KEY": "CIAM-2"}, planWorkspace=True)
+        self.assertEqual(shown, ("https://jira.example/browse/CIAM-1", "CIAM-1", "plan.code-workspace"))
 
-    def test_an_issue_with_a_legacy_workspace_file_is_focused_through_it(self):
-        tmp = tempfile.mkdtemp(prefix="skuld-legacy-")
-        self.addCleanup(shutil.rmtree, tmp)
-        worktree = os.path.join(tmp, "repo.worktrees", "CIAM-1")
-        os.makedirs(worktree)
-        legacy = term_mod.legacyWorkspaceFilePath(worktree, "CIAM-1")
-        open(legacy, "w").close()
-        shown = self.browse("CIAM-1", workspaceFiles=["CIAM-1"], worktree=worktree)
-        self.assertEqual(shown[2], os.path.basename(legacy))
-        self.assertEqual(term_mod.issueWorkspaceFilePath("CIAM-1", worktree), legacy)
+    def test_with_no_plan_workspace_the_link_goes_to_the_focused_window(self):
+        shown = self.browse("CIAM-1")
+        self.assertEqual(shown, ("https://jira.example/browse/CIAM-1", "CIAM-1", None))
 
     def test_a_url_goes_to_the_named_key_before_the_terminals(self):
         shown = self.browse("https://example.com/x", "CIAM-3", env={"PLAN_KEY": "CIAM-2"})
         self.assertEqual(shown, ("https://example.com/x", "CIAM-3", None))
 
     def test_a_url_goes_to_the_terminals_key_when_none_is_named(self):
-        shown = self.browse("https://example.com/x", env={"PLAN_KEY": "SK-0031"}, workspaceFiles=["SK-0031"])
-        self.assertEqual(shown, ("https://example.com/x", "SK-0031", "SK-0031.code-workspace"))
+        shown = self.browse("https://example.com/x", env={"PLAN_KEY": "SK-0031"}, planWorkspace=True)
+        self.assertEqual(shown, ("https://example.com/x", "SK-0031", "plan.code-workspace"))
 
-    def test_a_url_with_no_key_anywhere_goes_to_the_focused_window(self):
+    def test_a_url_with_no_key_anywhere_has_no_key(self):
         self.assertEqual(self.browse("http://127.0.0.1:8737/"), ("http://127.0.0.1:8737/", None, None))
 
     def test_pr_n_opens_the_pull_request(self):
@@ -216,51 +432,201 @@ class CmdBrowseTests(unittest.TestCase):
             self.browse()
 
 
-class IssueWorktreeTests(unittest.TestCase):
-    PORCELAIN = "worktree /repo\nHEAD a\nbranch refs/heads/main\n\nworktree /repo.worktrees/CIAM-5\nHEAD b\nbranch refs/heads/feat/CIAM-5-x\n"
-
-    def lookup(self, mainCheckout):
-        with mock.patch.object(startLib, "mainCheckout", side_effect=mainCheckout) as mc, mock.patch.object(
-            startLib, "git", return_value=self.PORCELAIN
-        ):
-            return cli.issueWorktree({}, "CIAM-5"), mc
-
-    def test_finds_the_issues_worktree_from_the_key_alone(self):
-        found, mc = self.lookup(lambda *a: {"checkout": "/repo"})
-        self.assertEqual(found, "/repo.worktrees/CIAM-5")
-        self.assertEqual(mc.call_args.args[0], {"key": "CIAM-5"})
-
-    def test_a_repo_it_cant_choose_is_no_worktree_and_never_asks(self):
-        def mainCheckout(issue, checkouts, cwd, action, typeMap, pickRepo):
-            pickRepo(["/a", "/b"])
-
-        self.assertIsNone(self.lookup(mainCheckout)[0])
+def requested(note="written", token="t1", written=True):
+    return reviews_mod.RoundRequest(".tmp/SK-0001/rounds/1/request.md", note, token, 1, written)
 
 
-class IssueRowsSlotColumnTests(unittest.TestCase):
-    def test_the_slot_column_sits_after_status_and_is_blank_for_issues_without_one(self):
-        jira = [
-            {"id": "CIAM-1", "subject": "a", "status": "To Do"},
-            {"id": "CIAM-22", "subject": "b", "status": "To Do"},
-        ]
+def nothingRequested(note):
+    return reviews_mod.RoundRequest(None, note, None, None, False)
 
-        class FakeJira:
-            def list(self, jql=None):
-                return jira
 
-        class FakeFileIssues:
-            def __init__(self, settings=None):
-                pass
+# `plan review KEY`: whether a request goes out. reviews.requestRound and term.startReview are
+# stubbed; what they run is their own tests'.
+class CmdReviewTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.mkdtemp(prefix="skuld-review-")
+        self.addCleanup(shutil.rmtree, tmp)
+        self.top = os.path.realpath(tmp)
+        subprocess.run(["git", "init", "-q", "-b", "feat/SK-0001-the-slug", self.top], check=True)
+        os.makedirs(os.path.join(self.top, "lib", "deep"))
+        before = os.getcwd()
+        self.addCleanup(os.chdir, before)
+        os.chdir(self.top)
+        windowDir = tempfile.mkdtemp(prefix="skuld-plan-window-")
+        self.addCleanup(shutil.rmtree, windowDir)
+        self.planWorkspace = os.path.join(windowDir, term_mod.PLAN_WORKSPACE_NAME)
+        with open(self.planWorkspace, "w") as f:
+            f.write("{}")
+        self.cfg = {**JIRA_ON, "workspaceDir": windowDir}
 
-            def list(self):
-                return []
+    def review(self, *args, outcome=None):
+        outcome = outcome or requested()
+        out = io.StringIO()
+        with mock.patch.object(cli.config_mod, "load", return_value=self.cfg), mock.patch.object(
+            cli.reviews_mod, "requestRound", return_value=outcome
+        ) as self.request, mock.patch.object(term_mod, "startReview") as self.open, contextlib.redirect_stdout(out):
+            main(["review", *args])
+        return out.getvalue()
 
-        with mock.patch.object(cli, "jiraFrom", return_value=FakeJira()), mock.patch.object(
-            cli.fileissues_mod, "FileIssues", FakeFileIssues
-        ):
-            rows = cli.issueRows({**JIRA_ON, "issueStore": "/s"}, {"CIAM-22": "D3, window on D4"})
-        self.assertEqual(rows[0]["line"], "CIAM-1   To Do                    a")
-        self.assertEqual(rows[1]["line"], "CIAM-22  To Do  D3, window on D4  b")
+    def test_the_review_starts_on_the_rounds_request_and_the_line_names_its_terminal(self):
+        said = self.review("SK-0001")
+        self.assertEqual(self.request.call_args.args[1:4], ("SK-0001", False, False))
+        self.assertEqual(self.open.call_args.args[:3], ("SK-0001", 1, "t1"))
+        self.assertEqual(said, "review started in the Review SK-0001 terminal of the plan window\n")
+
+    def test_restart_is_passed_to_the_request(self):
+        self.review("SK-0001", "--restart")
+        self.assertEqual(self.request.call_args.args[1:4], ("SK-0001", True, False))
+
+    def test_if_due_is_passed_to_the_request_and_a_note_with_no_path_starts_no_review(self):
+        said = self.review("SK-0001", "--if-due", outcome=nothingRequested("round 1 was requested for HEAD abc and hasn't finished"))
+        self.assertEqual(self.request.call_args.args[1:4], ("SK-0001", False, True))
+        self.open.assert_not_called()
+        self.assertIn("hasn't finished", said)
+
+    def test_no_claude_session_is_looked_up(self):
+        with mock.patch.object(cli.agents_mod, "currentAgents", side_effect=AssertionError("no lookup")):
+            self.review("SK-0001")
+
+    def test_a_store_issue_s_ticket_file_is_passed_to_the_request(self):
+        store = os.path.join(self.top, "store")
+        os.makedirs(store)
+        ticket = os.path.join(store, "SK-0001-the-slug.md")
+        open(ticket, "w").close()
+        with mock.patch.dict(self.cfg, {"issueStore": store}):
+            self.review("SK-0001")
+        self.assertEqual(self.request.call_args.args[4], ticket)
+
+    def test_with_no_store_the_request_gets_no_ticket(self):
+        self.review("SK-0001")
+        self.assertIsNone(self.request.call_args.args[4])
+
+    def test_a_jira_issue_s_ticket_is_its_page(self):
+        self.assertEqual(cli.issueTicket(JIRA_ON, "CIAM-12"), "https://jira.example/browse/CIAM-12")
+
+    def test_the_review_arguments_name_the_flags_that_are_unknown_or_conflict(self):
+        self.assertEqual(cli.unknownFlags(["--restart", "--nope"]), ["--nope"])
+        self.assertEqual(cli.unknownFlags(["--restart", "--if-due"]), [])
+        self.assertTrue(cli.conflictingFlags(["--restart", "--if-due"]))
+        self.assertFalse(cli.conflictingFlags(["--restart"]))
+        self.assertEqual(cli.reviewArguments(["SK-1", "--if-due"]), ("SK-1", False, True))
+        for args in (["--restart", "--if-due"], ["--nope"], ["SK-1", "SK-2"]):
+            with self.assertRaisesRegex(RuntimeError, "usage: plan review"):
+                cli.reviewArguments(args)
+
+    def test_a_round_the_script_refuses_starts_no_review(self):
+        with mock.patch.object(cli.config_mod, "load", return_value=self.cfg), mock.patch.object(
+            cli.reviews_mod, "requestRound", side_effect=RuntimeError("run plan review SK-0001 --restart")
+        ), mock.patch.object(term_mod, "startReview") as opened:
+            with self.assertRaisesRegex(RuntimeError, "--restart"):
+                main(["review", "SK-0001"])
+        opened.assert_not_called()
+
+    def failing_link(self, outcome, linkError=RuntimeError("code is not on PATH"), raised="code is not on PATH", withdrawError=None):
+        err = io.StringIO()
+        with mock.patch.object(cli.config_mod, "load", return_value=self.cfg), mock.patch.object(
+            cli.reviews_mod, "requestRound", return_value=outcome
+        ), mock.patch.object(cli.reviews_mod, "withdrawRequest", return_value="withdrawn it", side_effect=withdrawError) as withdrawn, \
+                mock.patch.object(term_mod, "startReview", side_effect=linkError), contextlib.redirect_stderr(err):
+            with self.assertRaisesRegex(RuntimeError, raised):
+                main(["review", "SK-0001", "--if-due"])
+        return withdrawn, err.getvalue()
+
+    def test_a_link_that_cant_be_sent_withdraws_the_request_this_run_wrote_by_its_token(self):
+        withdrawn, said = self.failing_link(requested())
+        self.assertEqual(withdrawn.call_args.args[1:], ("SK-0001", "t1"))
+        self.assertEqual(said, "withdrawn it\n")
+
+    def test_a_link_that_cant_be_sent_for_a_reopened_request_withdraws_nothing(self):
+        withdrawn, said = self.failing_link(requested(note="reopened", written=False))
+        withdrawn.assert_not_called()
+        self.assertIn("left as it is", said)
+
+    def test_a_request_with_no_token_sends_no_link_and_says_to_restart(self):
+        with self.assertRaisesRegex(RuntimeError, "no token .*plan review SK-0001 --restart"):
+            self.review("SK-0001", outcome=requested(token=None, written=False))
+        self.open.assert_not_called()
+
+    def test_nothing_due_prints_why_and_opens_nothing(self):
+        said = self.review("SK-0001", outcome=nothingRequested("HEAD abc12345 was reviewed in round 1"))
+        self.open.assert_not_called()
+        self.assertEqual(said, "HEAD abc12345 was reviewed in round 1\n")
+
+    def test_from_a_subdirectory_the_request_is_for_the_worktree_root(self):
+        os.chdir(os.path.join(self.top, "lib", "deep"))
+        self.review("SK-0001")
+        self.assertEqual(os.path.realpath(self.request.call_args.args[0]), self.top)
+
+    def test_a_worktree_on_another_issues_branch_is_refused_before_anything_is_written(self):
+        with mock.patch.object(cli.config_mod, "load", return_value=self.cfg), mock.patch.object(
+            cli.reviews_mod, "requestRound"
+        ) as request, mock.patch.object(term_mod, "startReview") as opened:
+            with self.assertRaisesRegex(RuntimeError, "branch is feat/SK-0001-the-slug, not SK-0002's"):
+                main(["review", "SK-0002"])
+        request.assert_not_called()
+        opened.assert_not_called()
+
+    def test_the_key_comes_from_the_branch_with_or_without_a_prefix(self):
+        self.assertEqual(cli.branchKey("feat/SK-0001-the-slug"), "SK-0001")
+        self.assertEqual(cli.branchKey("CIAM-9-x"), "CIAM-9")
+        self.assertIsNone(cli.branchKey("main"))
+
+    def test_the_link_goes_to_the_plan_window_when_its_workspace_exists(self):
+        self.review("SK-0001")
+        self.assertEqual(self.open.call_args.args[3], self.planWorkspace)
+
+    def test_with_no_plan_window_no_link_is_sent_and_the_request_is_withdrawn(self):
+        os.remove(self.planWorkspace)
+        withdrawn, said = self.failing_link(requested(), linkError=None, raised="workspace .* doesn't exist.*plan open SK-0001")
+        self.assertEqual(withdrawn.call_args.args[1:], ("SK-0001", "t1"))
+        self.assertEqual(said, "withdrawn it\n")
+
+    def test_a_withdraw_that_fails_is_reported_and_the_link_s_error_is_raised(self):
+        withdrawn, said = self.failing_link(requested(), withdrawError=RuntimeError("another review run holds the lock"))
+        self.assertIn("request not withdrawn (another review run holds the lock)", said)
+        self.assertIn("plan review SK-0001 --restart", said)
+
+    def test_a_branch_that_names_no_issue_is_taken_as_the_key_s(self):
+        subprocess.run(["git", "-C", self.top, "checkout", "-q", "-b", "spike-native"], check=True)
+        self.review("SK-0001")
+        self.assertEqual(self.request.call_args.args[1], "SK-0001")
+
+    def test_the_key_rule_finds_a_key_under_any_prefix(self):
+        self.assertEqual(cli.branchKey("feat/sub/SK-1-x"), "SK-1")
+        self.assertIsNone(cli.branchKey("feat/AB2-5-x"))
+
+    def test_an_unknown_flag_a_second_word_or_both_flags_are_refused(self):
+        for args in (["SK-0001", "--restrat"], ["SK-0001", "SK-0002"], ["SK-0001", "--restart", "--if-due"]):
+            with self.assertRaisesRegex(RuntimeError, "usage: plan review"):
+                self.review(*args)
+        self.request.assert_not_called()
+
+
+# `plan agents`' enter: raise the plan window and bring the session's issue forward.
+class FocusAgentTests(unittest.TestCase):
+    def focus(self, key, listed):
+        tmp = tempfile.mkdtemp(prefix="skuld-focus-")
+        self.addCleanup(shutil.rmtree, tmp)
+        cfg = {"workspaceDir": tmp, "issuesFile": os.path.join(tmp, "issues")}
+        for listedKey in listed:
+            term_mod.addIssue(listedKey, cfg["issuesFile"])
+        agent = mock.Mock(key=key, name="claude-1", cwd="/w")
+        out = io.StringIO()
+        with mock.patch.object(term_mod, "run", return_value="") as run, mock.patch("sys.stdout", out):
+            cli.focusAgent(cfg, agent)
+        return [call.args[:2] for call in run.call_args_list], out.getvalue(), tmp
+
+    def test_a_listed_issue_raises_the_plan_window_then_opens_its_link(self):
+        ran, _, tmp = self.focus("SK-0041", ["SK-0041"])
+        self.assertEqual(
+            ran,
+            [("code", [os.path.join(tmp, "plan.code-workspace")]), ("code", ["--open-url", term_mod.openLink("SK-0041")])],
+        )
+
+    def test_an_unlisted_issue_says_how_to_add_it(self):
+        ran, out, _ = self.focus("SK-0041", [])
+        self.assertEqual(ran, [])
+        self.assertIn("plan open SK-0041 adds it", out)
 
 
 class ResolveDirTests(unittest.TestCase):
@@ -387,7 +753,7 @@ class CmdShipTests(unittest.TestCase):
         shipWindow.assert_called_once_with("CIAM-5", self.DIR, "/Users/t/.local/bin/pr")
 
     def test_plan_go_is_an_unknown_command_now(self):
-        with self.assertRaisesRegex(RuntimeError, r'unknown command "go"; try: list, view, start, open, browse, ship, done'):
+        with self.assertRaisesRegex(RuntimeError, r'unknown command "go"; try: list, view, start, open, browse, review, ship, done'):
             main(["go", "CIAM-5"])
 
 
@@ -591,23 +957,15 @@ def writeStore():
     return store
 
 
-class ListingPlacer:
-    def sweep(self):
-        pass
-
-    def slotLabels(self):
-        return {}
-
-
 class JiraOffTests(unittest.TestCase):
     def setUp(self):
         store = writeStore()
         self.addCleanup(shutil.rmtree, store)
         self.cfg = {**cli.config_mod.defaults(), "issueStore": store}
+        useLinkedExtensions(self)
         for patch in (
             mock.patch.object(cli.config_mod, "load", return_value=self.cfg),
             mock.patch.object(cli, "Jira", side_effect=AssertionError("Jira was constructed")),
-            mock.patch.object(cli.placer_mod, "placerFrom", return_value=ListingPlacer()),
         ):
             patch.start()
             self.addCleanup(patch.stop)
@@ -636,11 +994,11 @@ class JiraOffTests(unittest.TestCase):
             with self.subTest(command=command), mock.patch.object(startLib, "start") as start, mock.patch.object(
                 ship_mod, "check"
             ) as check, mock.patch.object(cli.done_mod, "finish") as finish, mock.patch.object(
-                cli.placer_mod, "placerFrom"
-            ) as placerFrom:
+                term_mod, "run"
+            ) as run:
                 with self.assertRaisesRegex(RuntimeError, r'CIAM-1 is unknown on this Mac: .*has no "jira" entry naming CIAM'):
                     main([command, "CIAM-1"])
-                for step in (start, check, finish, placerFrom):
+                for step in (start, check, finish, run):
                     step.assert_not_called()
 
 

@@ -40,7 +40,7 @@ TRANSITIONS_PATH = re.compile(r"/transitions\b", re.IGNORECASE)
 TRANSITION_VERB = re.compile(r"\bjira\s+issue\s+(?:move|transition)\b", re.IGNORECASE)
 
 # Jira issue keys, so the message can name which ticket the command touches, if any.
-ISSUE_KEY = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
+ISSUE_KEY = re.compile(r"\b[A-Z]+-[0-9]+\b")
 
 # N11: `git` accepts global options BEFORE the subcommand -- "-C <dir>" (run as if cd'd there
 # first) and "-c <key>=<value>" (a one-off config override) are the two Claude is realistically

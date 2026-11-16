@@ -92,6 +92,13 @@ class ConfigTest(unittest.TestCase):
         cfg = {**config.defaults(), "jira": {"CIAM": {}}, "baseUrl": "https://jira.example", "jql": "key = CIAM-1"}
         self.assertEqual(config.jiraSettingsFrom(cfg)["jql"], "key = CIAM-1")
 
+    # The plan workspace is always <workspaceDir>/plan.code-workspace; no key moves it.
+    def test_the_issues_and_pulses_defaults_and_no_plan_workspace_key(self):
+        defaults = config.defaults()
+        self.assertEqual(defaults["issuesFile"], "~/.cache/plan/issues")
+        self.assertEqual(defaults["pulsesFile"], "~/.cache/plan/pulses")
+        self.assertNotIn("planWorkspace", defaults)
+
     def test_a_config_with_the_retired_project_key_loads_with_a_warning(self):
         with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
             config.load(writeConfig({"project": "CIAM"}))

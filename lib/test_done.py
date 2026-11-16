@@ -20,7 +20,7 @@ from datetime import date
 from unittest import mock
 
 from lib import done as done_mod
-from lib import term
+from lib import pulses, term
 from lib.fileissues import FileIssues
 from lib.store_sandbox import FILE_NAME, KEY as SK_KEY, head, makeStore
 from lib.done import DISPOSABLE, branchForKey, doneNote, finish
@@ -202,8 +202,20 @@ class DoneNoteTests(unittest.TestCase):
 
 
 class FinishTests(unittest.TestCase):
+    # Every file finish() keeps outside the repo defaults to a temp folder, so no test reads or
+    # writes the real ~/.cache/plan.
     def setUp(self):
         self._dirs = []
+        self.cache = tempfile.mkdtemp(prefix="skuld-done-cache-")
+        self._dirs.append(self.cache)
+        for name, value in (
+            ("DEFAULT_ISSUES_FILE", os.path.join(self.cache, "issues")),
+            ("DEFAULT_WORKSPACE_DIR", os.path.join(self.cache, "code-workspaces")),
+            ("DEFAULT_PULSES_FILE", os.path.join(self.cache, "pulses")),
+        ):
+            patch = mock.patch.object(term, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
 
     def tearDown(self):
         for d in self._dirs:
@@ -228,6 +240,64 @@ class FinishTests(unittest.TestCase):
         self.assertRegex(jira.comments[0][1]["text"], r"Done: \[origin#1\]")
         self.assertTrue(any(f"Close {KEY} in Jira" in n for n in result["notes"]))
         self.assertTrue(any(f"Close {KEY} in Jira: https://cryoport.atlassian.net/browse/{KEY}" in n for n in result["notes"]))
+
+    def test_takes_the_issue_out_of_the_issues_pulses_and_plan_workspace_files(self):
+        s = self.sandbox()
+        planWorkspace = term.planWorkspacePath()
+        term.addIssue("SK-0041")
+        term.addIssue(KEY)
+        pulses.setPulse(KEY, "green")
+        pulses.setPulse("SK-0041", "orange")
+        term.addFolders(["/w/SK-0041"], planWorkspace, {})
+        term.addFolders([s["dir"]], planWorkspace, {})
+        finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        self.assertEqual(term.issueKeys(), ["SK-0041"])
+        self.assertEqual(pulses.readPulses(), {"SK-0041": "orange"})
+        self.assertEqual(term.readPlanWorkspace(planWorkspace)["folders"], [{"path": "/w/SK-0041"}])
+
+    def test_the_store_folder_stays(self):
+        s = self.sandbox()
+        planWorkspace = term.planWorkspacePath()
+        term.addFolders([s["dir"], "/issues"], planWorkspace, {})
+        finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        self.assertEqual(term.readPlanWorkspace(planWorkspace)["folders"], [{"path": "/issues"}])
+
+    def test_an_issue_the_files_dont_list_leaves_them_unwritten(self):
+        s = self.sandbox()
+        term.addIssue("SK-0041")
+        before = os.stat(term.resolveIssuesFile()).st_mtime_ns
+        finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        self.assertEqual(os.stat(term.resolveIssuesFile()).st_mtime_ns, before)
+        self.assertFalse(os.path.exists(term.resolvePulsesFile()))
+        self.assertFalse(os.path.exists(term.planWorkspacePath()))
+
+    def test_the_plan_workspace_in_a_configured_workspace_folder_loses_the_folder(self):
+        s = self.sandbox()
+        workspaceDir = os.path.join(s["root"], "ws")
+        planWorkspace = term.planWorkspacePath(workspaceDir)
+        term.addFolders([s["dir"]], planWorkspace, {})
+        finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"], workspaceDir=workspaceDir)
+        self.assertEqual(term.readPlanWorkspace(planWorkspace)["folders"], [])
+
+    def test_a_failing_last_write_warns_what_to_do_by_hand_and_done_still_finishes(self):
+        s = self.sandbox()
+        planWorkspace = term.planWorkspacePath()
+        term.addIssue(KEY)
+        pulses.setPulse(KEY, "green")
+        term.addFolders([s["dir"]], planWorkspace, {})
+        with open(planWorkspace, "w") as f:
+            f.write('{\n  // mine\n  "folders": [],\n}\n')  # JSONC: the plan workspace can't be read
+        with mock.patch.object(term, "removeIssue", side_effect=OSError("disk full")):
+            result = finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        warnings = [n for n in result["notes"] if n.startswith("Warning:")]
+        self.assertEqual(len(warnings), 2)
+        self.assertIn(f"removing {KEY} from the issues file failed: disk full", warnings[0])
+        self.assertIn("Delete the", warnings[0])
+        self.assertIn("could not be read", warnings[1])
+        self.assertIn(f"Remove {os.path.realpath(s['dir'])} from the folders in", warnings[1])
+        self.assertEqual(pulses.readPulses(), {})  # the step between the two failures still ran
+        self.assertFalse(os.path.exists(s["dir"]))
+        self.assertTrue(any(f"Close {KEY} in Jira" in n for n in result["notes"]))
 
     def test_deletes_the_issue_windows_workspace_files(self):
         s = self.sandbox()
@@ -338,6 +408,51 @@ class FinishTests(unittest.TestCase):
         jira = FakeJira(inProgressIssue())
         with self.assertRaisesRegex(RuntimeError, "isn't in .* origin"):
             finish(jira, s["checkouts"], KEY, view=lambda cwd, branch: pr, cwd=s["checkout"])
+
+    def test_removes_worktree_holding_the_e2e_suites_downloaded_vscode(self):
+        s = self.sandbox()
+        writeIgnoredFolder(s["dir"], "vscode/plan-window/e2e/.wdio-vscode-service", 5)
+        finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        self.assertFalse(os.path.exists(s["dir"]))
+
+    def test_removes_worktree_holding_ruffs_cache(self):
+        s = self.sandbox()
+        writeIgnoredFolder(s["dir"], ".ruff_cache", 3)
+        finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        self.assertFalse(os.path.exists(s["dir"]))
+
+    def test_refusal_names_an_ignored_folder_once_and_lists_none_of_its_files(self):
+        s = self.sandbox()
+        writeIgnoredFolder(s["dir"], "cache", 50)
+        with self.assertRaises(RuntimeError) as raised:
+            finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        lines = str(raised.exception).splitlines()
+        self.assertIn("has ignored files its removal would delete", lines[0])
+        self.assertEqual(lines[1:], ["cache/"])
+        self.assertTrue(os.path.exists(s["dir"]))
+
+    def test_refusal_caps_the_list_and_counts_the_rest(self):
+        s = self.sandbox()
+        for i in range(13):
+            writeIgnoredFolder(s["dir"], f"cache{i:02d}", 1)
+        with self.assertRaises(RuntimeError) as raised:
+            finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        lines = str(raised.exception).splitlines()
+        self.assertEqual(len(lines), 1 + 10 + 1)
+        self.assertEqual(lines[-1], "and 3 more")
+
+
+def writeIgnoredFolder(dir, relative, count):
+    folder = os.path.join(dir, relative)
+    os.makedirs(os.path.join(folder, "sub"), exist_ok=True)
+    # The repo's exclude file ignores the folder, as the repo's .gitignore does for a tool's cache.
+    exclude = git(dir, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude").strip()
+    os.makedirs(os.path.dirname(exclude), exist_ok=True)
+    with open(exclude, "a") as f:
+        f.write(f"/{relative}/\n")
+    for i in range(count):
+        with open(os.path.join(folder, "sub", f"f{i}.txt"), "w") as f:
+            f.write("x\n")
 
 
 class FinishStoreTicketTests(unittest.TestCase):
