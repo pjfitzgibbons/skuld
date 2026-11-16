@@ -27,7 +27,7 @@ An issue is a Jira issue, `<KEY>` (e.g. `CIAM-123`), its description in the issu
 |---|---|
 | `gh pc [KEY]` | `gh pr create`, titled with the branch's first commit subject, body `.tmp/<KEY>/pr-body.md` |
 | `gh pb [KEY]` | `gh pr edit` on this branch's PR with `.tmp/<KEY>/pr-body.md` |
-| `pr [KEY]` | What Ship runs: commits with `.tmp/<KEY>/commit.txt`, pushes, opens or updates the PR, prints its URL, sends the replies and ticks, then, when the push added commits, opens a new Claude Code tab with Claude's review of the PR (`plan review <KEY>`), which Peter starts with Enter |
+| `pr [KEY]` | What Ship runs: commits with `.tmp/<KEY>/commit.txt`, pushes, opens or updates the PR, prints its URL, sends the replies and ticks, then, when the push added commits, opens a new Claude Code tab with Claude's review of the PR (`plan review <KEY>`), which Peter starts with Enter (`plan review <KEY> --restart` writes an unfinished round for an older HEAD again, once its reviewer's tab is closed) |
 | `pr done [KEY]` | After the merge: sends any replies and ticks left, then says to press Done in `plan`, which cleans up and tells you to close the issue in Jira. Bare `pr` does the same once the PR has merged |
 
 `gh pc` and `gh pb` refuse a body containing `Assisted-by` or `Co-authored-by`. `GHBODY_DRY=1` prints the command instead.
@@ -64,8 +64,11 @@ When the work is done and tested, write `.tmp/<KEY>/commit.txt` (ending `Assiste
 How the reviewer co-signs, records a disposition per file, and resolves a verbatim-applied fix
 immediately is GUIDE.md §5, "Review: co-signing and dispositions." This section is the author's
 side of that same round. The review is Claude's own, started by `pr` after a push that adds commits
-(GUIDE.md §5, "Claude's review"): it posts its findings as review threads, which `pr_threads.py`
-lists and `pr` answers like any other, and keeps its record in the next round's folder, `.tmp/<KEY>/rounds/<n>/review.json`. The author
+(GUIDE.md §5, "Claude's review"): it posts its findings on the PR, and keeps its record in the next round's folder, `.tmp/<KEY>/rounds/<n>/review.json`. Findings on lines of the PR's diff are review threads, which `pr_threads.py`
+lists and `pr` answers like any other. A finding on a file's lines outside the diff is a file-level
+comment, also a thread. A finding on a file outside the PR goes in the review's body: it is not a
+thread, never appears in `pr_threads.py` or `--drafts`, and gets no reply in `replies/`; it is
+answered in the next round's review record. The author
 doesn't write that file, and doesn't ask Copilot or anyone else to review.
 
 When a Claude is handed a review request (`<KEY> review: read <path of request.md> and do the review it

@@ -434,60 +434,90 @@ class CmdBrowseTests(unittest.TestCase):
 # `plan review KEY`: whether a request goes out. reviews.requestRound and term.openClaudeTab are
 # stubbed; what they run is their own tests'.
 class CmdReviewTests(unittest.TestCase):
-    def review(self, agentList, *args, request=".tmp/SK-0001/review/request.md"):
+    def setUp(self):
+        tmp = tempfile.mkdtemp(prefix="skuld-review-")
+        self.addCleanup(shutil.rmtree, tmp)
+        self.top = os.path.realpath(tmp)
+        subprocess.run(["git", "init", "-q", "-b", "feat/SK-0001-the-slug", self.top], check=True)
+        os.makedirs(os.path.join(self.top, "lib", "deep"))
+        before = os.getcwd()
+        self.addCleanup(os.chdir, before)
+        os.chdir(self.top)
+
+    def review(self, *args, outcome=(".tmp/SK-0001/rounds/1/request.md", "written")):
         out = io.StringIO()
         with mock.patch.object(cli.config_mod, "load", return_value=JIRA_ON), mock.patch.object(
-            cli.agents_mod, "currentAgents", return_value=agentList
-        ), mock.patch.object(cli.reviews_mod, "requestRound", return_value=request) as self.request, mock.patch.object(
-            term_mod, "openClaudeTab"
-        ) as self.open, contextlib.redirect_stdout(out):
+            cli.reviews_mod, "requestRound", return_value=outcome
+        ) as self.request, mock.patch.object(term_mod, "openClaudeTab") as self.open, contextlib.redirect_stdout(out):
             main(["review", *args])
         return out.getvalue()
 
-    def agent(self, key, state):
-        return cli.agents_mod.Agent(key, key, state, "", "n", "/w", "/w")
+    def test_the_tab_opens_with_the_prompt_and_the_line_says_to_press_enter(self):
+        said = self.review("SK-0001")
+        self.assertEqual(self.request.call_args.args[1:], ("SK-0001", False, False))
+        self.assertEqual(self.open.call_args.args[0], reviews_prompt("SK-0001", ".tmp/SK-0001/rounds/1/request.md"))
+        self.assertEqual(said, "review ready in a new Claude tab in the plan window; press Enter to start\n")
 
-    def test_an_idle_claude_is_stopped_and_the_tab_opens_with_the_prompt(self):
-        said = self.review([self.agent("SK-0001", "idle")], "SK-0001")
-        self.assertEqual(self.request.call_args.args[1:], ("SK-0001", "stopped"))
-        self.assertEqual(self.open.call_args.args[0], reviews_prompt("SK-0001", ".tmp/SK-0001/review/request.md"))
-        self.assertIn("press Enter to start", said)
+    def test_restart_is_passed_to_the_request(self):
+        self.review("SK-0001", "--restart")
+        self.assertEqual(self.request.call_args.args[1:], ("SK-0001", True, False))
 
-    def test_no_claude_is_stopped_too_and_still_opens_the_tab(self):
-        self.review([], "SK-0001")
-        self.assertEqual(self.request.call_args.args[1:], ("SK-0001", "stopped"))
-        self.open.assert_called_once()
+    def test_if_due_is_passed_to_the_request_and_a_note_with_no_path_opens_no_tab(self):
+        said = self.review("SK-0001", "--if-due", outcome=(None, "round 1 was requested for HEAD abc and hasn't finished"))
+        self.assertEqual(self.request.call_args.args[1:], ("SK-0001", False, True))
+        self.open.assert_not_called()
+        self.assertIn("hasn't finished", said)
 
-    def test_a_busy_claude_of_the_issue_is_working(self):
-        self.review([self.agent("SK-0001", "busy")], "SK-0001")
-        self.assertEqual(self.request.call_args.args[1:], ("SK-0001", "working"))
+    def test_no_claude_session_is_looked_up(self):
+        with mock.patch.object(cli.agents_mod, "currentAgents", side_effect=AssertionError("no lookup")):
+            self.review("SK-0001")
 
     def test_a_round_the_script_refuses_opens_no_tab(self):
         with mock.patch.object(cli.config_mod, "load", return_value=JIRA_ON), mock.patch.object(
-            cli.agents_mod, "currentAgents", return_value=[]
-        ), mock.patch.object(cli.reviews_mod, "requestRound", side_effect=RuntimeError("still running")), mock.patch.object(
-            term_mod, "openClaudeTab"
-        ) as opened:
-            with self.assertRaisesRegex(RuntimeError, "still running"):
+            cli.reviews_mod, "requestRound", side_effect=RuntimeError("run plan review SK-0001 --restart")
+        ), mock.patch.object(term_mod, "openClaudeTab") as opened:
+            with self.assertRaisesRegex(RuntimeError, "--restart"):
                 main(["review", "SK-0001"])
         opened.assert_not_called()
 
-    def test_nothing_to_review_opens_no_tab(self):
-        said = self.review([], "SK-0001", request="")
+    def test_a_tab_that_fails_to_open_withdraws_the_request_and_the_next_if_due_call_opens_it(self):
+        round1 = os.path.join(self.top, ".tmp", "SK-0001", "rounds", "1")
+        os.makedirs(round1)
+        for name in ("request.json", "request.md"):
+            open(os.path.join(round1, name), "w").close()
+        outcome = (os.path.join(round1, "request.md"), "written")
+        with mock.patch.object(cli.config_mod, "load", return_value=JIRA_ON), mock.patch.object(
+            cli.reviews_mod, "requestRound", return_value=outcome
+        ), mock.patch.object(term_mod, "openClaudeTab", side_effect=RuntimeError("code is not on PATH")):
+            with self.assertRaisesRegex(RuntimeError, "code is not on PATH"):
+                main(["review", "SK-0001", "--if-due"])
+        self.assertEqual(sorted(os.listdir(round1)), ["review.log"])
+        self.review("SK-0001", "--if-due", outcome=outcome)
+        self.open.assert_called_once()
+
+    def test_nothing_due_prints_why_and_opens_nothing(self):
+        said = self.review("SK-0001", outcome=(None, "HEAD abc12345 was reviewed in round 1"))
         self.open.assert_not_called()
-        self.assertIn("nothing to review", said)
+        self.assertEqual(said, "HEAD abc12345 was reviewed in round 1\n")
 
     def test_from_a_subdirectory_the_request_is_for_the_worktree_root(self):
-        tmp = tempfile.mkdtemp(prefix="skuld-review-")
-        self.addCleanup(shutil.rmtree, tmp)
-        top = os.path.realpath(tmp)
-        subprocess.run(["git", "init", "-q", top], check=True)
-        os.makedirs(os.path.join(top, "lib", "deep"))
-        before = os.getcwd()
-        self.addCleanup(os.chdir, before)
-        os.chdir(os.path.join(top, "lib", "deep"))
-        self.review([], "SK-0001")
-        self.assertEqual(os.path.realpath(self.request.call_args.args[0]), top)
+        os.chdir(os.path.join(self.top, "lib", "deep"))
+        self.review("SK-0001")
+        self.assertEqual(os.path.realpath(self.request.call_args.args[0]), self.top)
+
+    def test_a_worktree_on_another_issues_branch_is_refused_before_anything_is_written(self):
+        with mock.patch.object(cli.config_mod, "load", return_value=JIRA_ON), mock.patch.object(
+            cli.reviews_mod, "requestRound"
+        ) as request, mock.patch.object(term_mod, "openClaudeTab") as opened:
+            with self.assertRaisesRegex(RuntimeError, "branch is feat/SK-0001-the-slug, not SK-0002's"):
+                main(["review", "SK-0002"])
+        request.assert_not_called()
+        opened.assert_not_called()
+
+    def test_the_key_comes_from_the_branch_with_or_without_a_prefix(self):
+        self.assertEqual(cli.branchKey("feat/SK-0001-the-slug"), "SK-0001")
+        self.assertEqual(cli.branchKey("CIAM-9-x"), "CIAM-9")
+        self.assertIsNone(cli.branchKey("main"))
 
     def test_the_tab_goes_to_the_plan_window_when_its_workspace_exists(self):
         tmp = tempfile.mkdtemp(prefix="skuld-review-")
@@ -496,10 +526,8 @@ class CmdReviewTests(unittest.TestCase):
         with open(planWorkspace, "w") as f:
             f.write("{}")
         with mock.patch.object(cli.config_mod, "load", return_value={**JIRA_ON, "workspaceDir": tmp}), mock.patch.object(
-            cli.agents_mod, "currentAgents", return_value=[]
-        ), mock.patch.object(cli.reviews_mod, "requestRound", return_value="r.md"), mock.patch.object(
-            term_mod, "openClaudeTab"
-        ) as opened, contextlib.redirect_stdout(io.StringIO()):
+            cli.reviews_mod, "requestRound", return_value=("r.md", "written")
+        ), mock.patch.object(term_mod, "openClaudeTab") as opened, contextlib.redirect_stdout(io.StringIO()):
             main(["review", "SK-0001"])
         self.assertEqual(opened.call_args.args[1], planWorkspace)
 

@@ -1258,7 +1258,7 @@ class PrReview(unittest.TestCase):
     )
     FAKE_PLAN = (
         "#!/bin/sh\necho \"$@\" >> \"$PLAN_CALLS\"\n"
-        "[ \"${FAKE_PLAN_EXIT:-0}\" = 0 ] || { echo 'no Claude is running for CIAM-9' >&2; exit 1; }\n"
+        "[ \"${FAKE_PLAN_EXIT:-0}\" = 0 ] || { echo 'round 1 was requested for an older HEAD; run plan review CIAM-9 --restart' >&2; exit 1; }\n"
         "echo \"review requested of CIAM-9's Claude\"\n"
     )
 
@@ -1266,7 +1266,8 @@ class PrReview(unittest.TestCase):
     # "both" puts a different fake on PATH too.
     # reviewed: the review record already names HEAD. pb_fails_first: gh pb fails on the first run, and
     # a second run follows; the result is the second's.
-    def run_pr(self, reviewed, plan_exit="0", where="own", with_replies=False, pb_fails_first=False):
+    def run_pr(self, reviewed, plan_exit="0", where="own", with_replies=False, pb_fails_first=False,
+               unfinished=False):
         with tempfile.TemporaryDirectory() as d:
             outer = Path(d)
             root = new_pr_branch(outer)
@@ -1298,6 +1299,10 @@ class PrReview(unittest.TestCase):
                 (directory / name).write_text(text)
                 (directory / name).chmod(0o755)
             (outer / "HEAD_OID").write_text(head)
+            if unfinished:
+                folder = root / ".tmp" / "CIAM-9" / "rounds" / "1"
+                folder.mkdir(parents=True)
+                (folder / "request.json").write_text(json.dumps({"round": 1, "head": head}))
             if with_replies:
                 # a replies folder with a file that isn't a comment id fails pr_threads.py --post
                 (root / ".tmp" / "CIAM-9" / "replies").mkdir()
@@ -1317,13 +1322,14 @@ class PrReview(unittest.TestCase):
     def test_a_push_that_adds_commits_starts_the_review_after_printing_the_url(self):
         result, calls = self.run_pr(reviewed=False)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(calls, "review CIAM-9\n")
+        self.assertEqual(calls, "review CIAM-9 --if-due\n")
         self.assertLess(result.stdout.index("https://example.test/pull/7"), result.stdout.index("review requested"))
 
     def test_a_push_that_adds_nothing_starts_no_review(self):
         result, calls = self.run_pr(reviewed=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("no new commits since the last review; no review", result.stdout)
+        self.assertIn(f"pr: no review: HEAD ", result.stdout)
+        self.assertIn("was reviewed in round 1", result.stdout)
         self.assertEqual(calls, "")
 
     def test_a_pr_that_failed_after_its_push_reviews_those_commits_on_its_next_run(self):
@@ -1331,27 +1337,34 @@ class PrReview(unittest.TestCase):
         self.assertNotEqual(self.first.returncode, 0)
         self.assertEqual(self.calls_after_first, "")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(calls, "review CIAM-9\n")
+        self.assertEqual(calls, "review CIAM-9 --if-due\n")
+
+    def test_a_round_requested_for_this_head_and_unfinished_is_named_as_the_reason(self):
+        result, calls = self.run_pr(reviewed=False, unfinished=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("pr: no review: round 1 was requested for HEAD ", result.stdout)
+        self.assertIn("hasn't finished; press Enter in its Claude tab, or run plan review CIAM-9", result.stdout)
+        self.assertEqual(calls, "")
 
     def test_a_review_that_cannot_start_says_why_and_does_not_fail_pr(self):
         result, calls = self.run_pr(reviewed=False, plan_exit="1")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("no review started: no Claude is running for CIAM-9", result.stderr)
+        self.assertIn("no review started: round 1 was requested for an older HEAD; run plan review CIAM-9 --restart", result.stderr)
         self.assertIn("plan review CIAM-9", result.stderr)
 
     def test_the_review_runs_the_plan_of_the_scripts_own_repo_not_the_one_on_path(self):
         result, calls = self.run_pr(reviewed=False, where="both")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(calls, "review CIAM-9\n")
+        self.assertEqual(calls, "review CIAM-9 --if-due\n")
 
     def test_plan_on_path_is_used_when_the_repo_has_no_bin_plan(self):
         result, calls = self.run_pr(reviewed=False, where="path")
-        self.assertEqual(calls, "review CIAM-9\n")
+        self.assertEqual(calls, "review CIAM-9 --if-due\n")
 
     def test_a_failed_send_does_not_skip_the_review(self):
         result, calls = self.run_pr(reviewed=False, with_replies=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(calls, "review CIAM-9\n")
+        self.assertEqual(calls, "review CIAM-9 --if-due\n")
 
     def test_pr_without_plan_on_the_path_says_how_to_start_the_review(self):
         result, calls = self.run_pr(reviewed=False, where="none")

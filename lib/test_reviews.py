@@ -47,6 +47,40 @@ class ReviewedKeysTests(unittest.TestCase):
         self.assertEqual(found, frozenset({"SK-1"}))
 
 
+class RobustnessTests(unittest.TestCase):
+    def test_a_state_that_cannot_be_read_is_not_waiting_and_spares_the_other_issues(self):
+        def readState(worktree, key):
+            if key == "SK-1":
+                raise PermissionError("rounds folder")
+            return record(), HEAD, False
+
+        found = reviews.reviewedKeys({"SK-1": "/w/SK-1", "SK-2": "/w/SK-2"}, readState)
+        self.assertEqual(found, frozenset({"SK-2"}))
+
+    def test_a_record_the_rule_cannot_read_is_not_waiting(self):
+        broken = {"head": HEAD, "findings": [{"key": "f:1:x"}]}
+        self.assertEqual(reviews.reviewedKeys({"SK-1": "/w"}, lambda worktree, key: (broken, HEAD, False)), frozenset())
+
+    def test_an_unreadable_worktree_has_no_review_state(self):
+        with mock.patch.object(reviews, "readRecord", side_effect=PermissionError("denied")):
+            self.assertEqual(reviews.readReviewState("/w", "SK-1"), (None, None, False))
+
+    def test_review_py_is_loaded_on_first_use_and_once(self):
+        reviews.review.cache_clear()
+        self.addCleanup(reviews.review.cache_clear)
+        with mock.patch.object(reviews, "loadReviewScript", return_value=object()) as load:
+            first, second = reviews.review(), reviews.review()
+        self.assertIs(first, second)
+        load.assert_called_once()
+
+    def test_a_missing_review_py_fails_only_the_review_features(self):
+        reviews.review.cache_clear()
+        self.addCleanup(reviews.review.cache_clear)
+        with mock.patch.object(reviews, "REVIEW_SCRIPT", "/nonexistent/review.py"):
+            with mock.patch.object(reviews, "loadReviewScript", side_effect=FileNotFoundError):
+                self.assertEqual(reviews.reviewedKeys({"SK-1": "/w"}, lambda w, k: (record(), HEAD, False)), frozenset())
+
+
 class ReadReviewStateTests(unittest.TestCase):
     def worktree(self, files):
         outer = tempfile.TemporaryDirectory()
@@ -93,12 +127,35 @@ class RequestRoundTests(unittest.TestCase):
     def test_the_script_runs_in_the_worktree_and_its_refusal_is_raised(self):
         from subprocess import CompletedProcess
 
-        refused = CompletedProcess("x", 1, stdout="", stderr="review: round 1 is still running")
+        refused = CompletedProcess("x", 1, stdout="", stderr="review: run plan review SK-1 --restart")
         with mock.patch.object(reviews.subprocess, "run", return_value=refused) as run:
-            with self.assertRaisesRegex(RuntimeError, "still running"):
-                reviews.requestRound("/w", "SK-1", "working")
+            with self.assertRaisesRegex(RuntimeError, "--restart"):
+                reviews.requestRound("/w", "SK-1")
         self.assertEqual(run.call_args.kwargs["cwd"], "/w")
-        self.assertEqual(run.call_args.args[0][-4:], ["request", "SK-1", "--claude-state", "working"])
+        self.assertEqual(run.call_args.args[0][-2:], ["request", "SK-1"])
+
+    def test_restart_is_passed_on_and_the_outcome_read(self):
+        from subprocess import CompletedProcess
+
+        answer = CompletedProcess("x", 0, stdout='{"path": "/w/r.md", "note": "written"}\n', stderr="")
+        with mock.patch.object(reviews.subprocess, "run", return_value=answer) as run:
+            self.assertEqual(reviews.requestRound("/w", "SK-1", restart=True), ("/w/r.md", "written"))
+        self.assertEqual(run.call_args.args[0][-3:], ["request", "SK-1", "--restart"])
+
+    def test_if_due_is_passed_on(self):
+        from subprocess import CompletedProcess
+
+        answer = CompletedProcess("x", 0, stdout='{"path": null, "note": "n"}', stderr="")
+        with mock.patch.object(reviews.subprocess, "run", return_value=answer) as run:
+            reviews.requestRound("/w", "SK-1", ifDue=True)
+        self.assertEqual(run.call_args.args[0][-3:], ["request", "SK-1", "--if-due"])
+
+    def test_nothing_written_comes_back_as_no_path(self):
+        from subprocess import CompletedProcess
+
+        answer = CompletedProcess("x", 0, stdout='{"path": null, "note": "HEAD abc was reviewed in round 1"}', stderr="")
+        with mock.patch.object(reviews.subprocess, "run", return_value=answer):
+            self.assertEqual(reviews.requestRound("/w", "SK-1"), (None, "HEAD abc was reviewed in round 1"))
 
 
 if __name__ == "__main__":

@@ -399,9 +399,13 @@ runs only when it has something to do, so `pr` is safe to repeat:
 
 `pr done` runs the merged-PR step and refuses an unmerged PR. The review is due from the record, not from what this push moved, so a `pr` that stopped after its
 push, before the review step, reviews those commits on its next run. A `pr` with no commits since
-the last review prints "no new commits since the last review; no review" and sends nothing. An
-unfinished round requested for HEAD is restarted by `plan review KEY`, not by `pr`. A review that can't start prints why and the command
-to start it by hand, `plan review KEY`; the review never fails `pr`. The review starts straight after
+the last review prints "pr: no review: HEAD <short> was reviewed in round <n>" and sends nothing.
+When a round requested for HEAD hasn't finished, it prints "pr: no review: round <n> was requested
+for HEAD <short> and hasn't finished; press Enter in its Claude tab, or run plan review KEY to open
+it again". `plan review KEY` reopens that round's tab on its existing request. When the round was requested
+for an older HEAD, `plan review KEY` refuses and names `plan review KEY --restart`, which writes the
+round again in its own folder at HEAD; `pr` prints that refusal. A review that can't start prints
+why and the command to start it by hand; the review never fails `pr`. The review starts straight after
 the PR and its URL, before the round's replies and ticks, so a failed send doesn't skip it. `pr`
 runs the `bin/plan` of the repo its own script is in, and the `plan` on `PATH` only when that file
 is missing, so the script and the CLI it calls are the same version. `pr` asks no one else to
@@ -415,24 +419,31 @@ repo's rules and the `code-review` skill, and none of the author's context, whic
 independent. `plan review KEY` (`lib/cli.py`, `cmdReview`):
 
 1. finds the worktree root (`git rev-parse --show-toplevel`), so it works from any folder of it;
-2. runs `review.py request KEY`, which writes `request.md` in the round's folder (below): the
+2. refuses when the worktree's branch isn't KEY's, since it writes there and posts to that
+   branch's PR;
+3. runs `review.py request KEY`, which writes `request.md` in the round's folder (below): the
    first-review or round prompt (`skills/jira-issues/prompts/`) filled with the PR, the exact
    `/code-review` call, the round number, the worktree root, the paths of the log and the record, the
-   unsettled findings and the OK files with their blob SHAs. It refuses while a review of the issue
-   is still running, meaning a Claude of the issue is busy and the round is unfinished; no Claude, or
-   an idle one, counts as stopped;
-3. focuses the plan window, the way `plan browse` does, then opens
+   unsettled findings and the OK files with their blob SHAs. With a
+   round unfinished for this HEAD it reopens that round as it is, rewriting nothing. With one for an
+   older head it refuses and names `--restart`, which writes the round again in its own folder at
+   HEAD unless the round's reviewer is still running (see Restart below). With none unfinished and no review due, it prints "HEAD <short> was reviewed in round <n>"
+   and opens nothing;
+4. focuses the plan window, the way `plan browse` does, then opens
    `vscode://anthropic.claude-code/open?prompt=<url-encoded line>`. The Claude Code extension
    registers that link; its `prompt` is pre-filled in a new tab and not submitted, and the link opens
    in whichever window is focused
    ([docs](https://code.claude.com/docs/en/vs-code.md#launch-a-vs-code-tab-from-other-tools)). The
    line is `<KEY> review: read <absolute path of request.md> and do the review it describes.`
 
-**Peter presses Enter** in the new tab to start the review; `pr` says "review ready in a new Claude
-tab in the plan window; press Enter to start". The prompt opens by stopping if the tab's working directory isn't the
-worktree root, which guards against the link landing in another window.
+**Peter presses Enter** in the new tab to start the review; the command prints "review ready in a
+new Claude tab in the plan window; press Enter to start", and `pr` shows it. The prompt opens by
+stopping if the tab's working directory isn't the worktree root, which guards against the link
+opening in another window.
 
-The reviewer appends its progress to the round's `review.log`, writes `review.next.json`, and runs
+The reviewer's first step is `review.py claim KEY`, which finds the Claude it runs under (the nearest
+ancestor process that `claude agents --json` lists) and records its pid and session id as `reviewer`
+in the round's `request.json`; the reviewer stops if the claim fails. It then appends its progress to the round's `review.log`, writes `review.next.json`, and runs
 `review.py finish KEY` as its last step. The panel can report `/code-review` findings through the
 ReportFindings tool instead of as text
 ([docs](https://code.claude.com/docs/en/code-review-local.md#how-findings-are-reported)), so the
@@ -483,9 +494,9 @@ has `request.json` and no `review.json`.
 **First review, then rounds.** Every call names its range and `--max-findings all`: with no target
 the review reads only the commits ahead of the upstream, which the push has just moved to HEAD, and
 a value passed in one run isn't remembered by the next. With no last review, the reviewer runs the
-first-review prompt, exactly `/code-review high --max-findings all origin/<base>...HEAD`, with every
+first-review prompt, exactly `/code-review high --max-findings all origin/<base>...<sha>`, with every
 changed file given a disposition. With one, it runs the round prompt, exactly
-`/code-review high --max-findings all <last-head>..HEAD` with `<last-head>` read from the last
+`/code-review high --max-findings all <last-head>..<sha>` with `<last-head>` read from the last
 review: each unsettled finding is checked in context, its `file:lines`, summary, fix and the code one
 and two steps out, and marked Fixed or New; a recommended fix applied verbatim is Fixed without
 further check; an OK file whose blob is unchanged is not read again; a new finding is raised only
@@ -493,29 +504,74 @@ for a silent loss or a crash; repeats are grouped under a named cause, and a thi
 check script. A PR whose Copilot threads are still open gets no last review until Claude's first
 one, and `pr_threads.py` lists and answers those threads with the rest.
 
-**After a rebase**, when the last review's head isn't in HEAD's history, the range can't be
-`<last-head>..HEAD`. The call is then `/code-review high --max-findings all origin/<base>...HEAD --
+**The requested commit is pinned.** `<sha>` is the commit HEAD named when the request was made. The
+call, every range, the blob lookups and the diff `finish` places findings against all use it, never
+the moving HEAD, so a push between the request and the review doesn't change what is reviewed. The
+prompts tell the reviewer that when `git rev-parse HEAD` differs from `<sha>` it reads every file at
+that commit with `git show <sha>:<path>`, not from the working tree, and says so in the log.
+
+**After a rebase**, when the last review's head isn't in `<sha>`'s history, the range can't be
+`<last-head>..<sha>`. The call is then `/code-review high --max-findings all origin/<base>...<sha> --
 <files>`, listing only the files not settled: those without an OK disposition at an unchanged blob,
-and those of unsettled findings, and the prompt tells the reviewer to review only those. The docs
+those of unsettled findings, those the PR deletes, and those the last review gave a disposition that
+the PR no longer changes at all. The prompt tells the reviewer to review only those. The docs
 don't describe a range combined with paths; they say Claude "receives that text as the review
 target" ([docs](https://code.claude.com/docs/en/code-review-local.md#choose-what-to-review)), and the
-combination is confirmed in the live round. With no file left and no new commit, there is nothing to
-call, and `review.py` moves the last review's head to HEAD.
+combination is confirmed in the live round. With no file left, there is nothing to call, and `review.py`
+moves the last review's head to `<sha>`; a deleted path or a dropped one always leaves a file, so a
+rebase never skips a deletion. A file the PR deletes, or that is no longer in the PR, gets a
+disposition whose `blob` is `"absent"` and a verdict like any other file; one already found OK at
+`"absent"` isn't reviewed again.
+
+**One run at a time.** `request` and `finish` hold an exclusive lock on the issue's rounds folder,
+`.tmp/<KEY>/rounds/.review.lock`, created with `O_EXCL`. The file holds its run's pid, and a run
+removes it when it ends, however it ends, only while it still holds its own pid. A lock whose pid is
+dead (`os.kill(pid, 0)` finds no such process) is moved aside with one atomic rename, so of two runs
+that found it dead only one's rename succeeds, and the run goes on; a run whose rename took a lock
+another run had already created puts it back. That put-back can itself fail if a third run took the
+path in between, so the lock excludes overlapping runs in practice, not against every interleaving
+of three. One whose pid is alive refuses at once and names the file, and doesn't wait. A lock whose
+pid can't be read refuses too: when no run is active, delete the file the refusal names. `request`
+reads the state and checks that a review is due inside the lock, so overlapping runs don't choose
+the same round or overwrite each other's request. `pr` calls
+`plan review KEY --if-due`, which writes and reopens nothing, and so opens no tab, when no review is
+due, an unfinished round already requested for this HEAD included; two overlapping `pr` runs open
+one tab. A manual `plan review KEY` still reopens that round's tab. The reviewing Claude never
+deletes `.review.lock`: on a lock refusal it stops and says so.
 
 **An unfinished round, and which one is due.** A review is due when HEAD differs from the last
 review's head, or there is none, and no unfinished round was already requested for this HEAD
-(`review.py due`). `review.py request` starts no second review while a Claude of the issue is busy;
-when none is, or the Claude is idle, the round was stopped: the script logs that in the round's
-`review.log` and writes the request again in the same folder. A push made while a review runs leaves
-HEAD ahead of its head, and the next `pr` starts the follow-up review.
+(`review.py due`, which exits 0 when due, 1 with the reason when not, and 2 on any failure). A
+round whose tab never opened, or was closed before Enter, stays unfinished: `plan review KEY`
+reopens it for the same HEAD, and `plan review KEY --restart` writes it again at HEAD when HEAD
+moved. A push made while a review runs leaves HEAD ahead of its head; the review finishes for the
+head it was requested for, and the next `pr` starts the follow-up review.
 
 **Orange.** The issue's item turns orange when the last review was of the worktree's current HEAD, has a
 finding in disposition `open` or `New`, and no round is unfinished. It's read from the round folders
 and a local `git rev-parse HEAD`; the next push moves HEAD and clears it.
 
-**Limits.** A Claude waiting at a permission prompt mid-round counts as stopped, so the next `pr`
-starts a new round. If `finish` posts the review and then fails to write the record, the next round
-posts those findings again, and the round's log names the review that was posted.
+**Restart.** `plan review KEY --restart` writes an unfinished round's request again in the same
+folder at the current HEAD, and keeps the round's `posted.json`. `finish` for a restarted round
+posts only the findings `posted.json` doesn't name, in a further review of the same round, so no
+finding is posted twice. GitHub must still return a comment for each earlier-posted inline finding
+the restarted record carries as unsettled, since the record stores its id; for a finding the record
+no longer carries as unsettled, a missing comment is noted in `posted.json` and doesn't stop the
+finish. When a rebase leaves nothing to review, a restarted round is completed with the last record
+at the new head, and the findings the round had posted join it with their ids, so it doesn't stay
+unfinished and loses nothing posted. `--restart` is refused while the round's claimed reviewer is still a session in `claude agents
+--json`, whatever its state (a Claude waiting at a prompt is running), and when that list can't be
+read; the message says to close that tab and run `plan review KEY --restart` again. A round nobody
+claimed, or whose reviewer's pid is gone, restarts. A reviewer that does reach `finish` after a
+restart gets a refusal that says the round was restarted: the prompts tell it to stop, edit nothing
+and tell the author, on a head mismatch as on a lock refusal.
+
+**Limits.** A reviewer is known to `--restart` only through its `claim`: a round whose reviewer never
+ran `claim` (a tab closed before its first step, say) restarts without a check, and a round stays
+unfinished until `finish` runs or it is restarted. `finish` is safe to rerun: it writes `posted.json` in the
+round's folder as each POST succeeds, and a rerun posts only what that file doesn't name, so a
+failure after a review was posted doesn't post it twice. A finding posted in one round and found
+again in a later round as New is posted again as a new comment; that is what New means.
 
 ### Review: co-signing and dispositions
 

@@ -3,6 +3,10 @@
 Before anything else: this review is for the worktree `{{ROOT}}`. If your working directory isn't
 `{{ROOT}}`, stop and say so; do nothing else.
 
+Then, as your first step, run `python3 {{SCRIPTS}}/review.py claim {{KEY}}`. It records this Claude as the
+round's reviewer, so the author can't restart the round under you. If it fails, stop and say why; do
+nothing else.
+
 You are reviewing PR #{{PR}} of {{KEY}} in this worktree. Run exactly this call:
 
 `{{CALL}}`
@@ -13,7 +17,9 @@ not for reasons to reject.
 
 ## Scope
 
-- The PR's diff against its base: `git diff {{RANGE}}`. HEAD is {{HEAD}}.
+- The PR's diff against its base: `git diff {{RANGE}}`. This review is of commit `{{HEAD}}`. If
+  `git rev-parse HEAD` differs from it, the working tree has moved on: read every file at that
+  commit, with `git show {{HEAD}}:<path>`, never from the working tree, and say so in the log.
 - Files to read:
 
 {{FILES}}
@@ -23,7 +29,7 @@ not for reasons to reject.
 Every changed file gets a disposition, an entry of `dispositions`:
 
 - `path`
-- `blob`: `git rev-parse HEAD:<path>`
+- `blob`: `git rev-parse {{HEAD}}:<path>`; for a file the PR deletes, the string `"absent"`
 - `passes`: the passes you ran against it (for example `correctness`, `callers`, `docs`)
 - `verdict`: `"OK"` when you vouch for the file, else the list of its finding keys
 
@@ -59,5 +65,6 @@ write a Python check script in `{{DIR}}/` and put its path and output in `checks
    ```
 
 2. Run `python3 {{SCRIPTS}}/review.py finish {{KEY}}`. It posts your findings as one PR review with
-   inline comments and writes the record. If it refuses the record, fix what it names and run it
-   again.
+   inline comments and writes the record. If it refuses the record for a mistake in it, fix that and run it
+   again. If it refuses on a head mismatch (the round was restarted), or says another review run holds
+   the lock, stop: edit nothing, never delete `.review.lock`, and tell the author.

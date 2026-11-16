@@ -311,23 +311,45 @@ def cmdBrowse(cfg, target, windowKey):
     term_mod.showUrl(url, key, existingPlanWorkspace(cfg))
 
 
-# `plan review KEY`, run in KEY's worktree (or a folder of it) by `pr`: writes the next review
-# round's request (review.py request), focuses the plan window when its workspace exists and opens a
-# new Claude Code tab there with the line that starts the round in its prompt box, not submitted:
-# Peter presses Enter. The tab is a fresh conversation, so the round's prompt guards that its working
-# directory is the worktree. A round still running (a Claude of the issue is busy) is refused; no
-# Claude, or an idle one, counts as stopped.
-def cmdReview(cfg, key):
+# A branch's issue key: pr.sh's rule, the key after an optional <prefix>/ and before the slug.
+BRANCH_KEY_RE = re.compile(r"^(?:[^/]+/)?([A-Z][A-Z0-9]*-[0-9]+)-")
+
+
+def branchKey(branch):
+    found = BRANCH_KEY_RE.match(branch)
+    return found.group(1) if found else None
+
+
+# Opens the round's tab; when that fails the request is withdrawn, so the next `pr` starts the round again.
+def openReviewTab(cfg, key, request):
+    try:
+        term_mod.openClaudeTab(reviews_mod.reviewPrompt(key, request), existingPlanWorkspace(cfg))
+    except (RuntimeError, OSError):
+        reviews_mod.withdrawRequest(request)
+        raise
+
+
+# `plan review KEY [--restart]`, run in KEY's worktree (or a folder of it) by `pr`: writes the next
+# review round's request (review.py request), focuses the plan window when its workspace exists and
+# opens a new Claude Code tab there with the line that starts the round in its prompt box, not
+# submitted: Peter presses Enter. The tab is a fresh conversation, so the round's prompt guards that
+# its working directory is the worktree. An unfinished round for this HEAD is reopened as it is; one
+# for an older head is refused unless --restart, which the script refuses while the round's claimed
+# reviewer still runs; with nothing due, it says why and opens nothing. --if-due (`pr`'s call) also
+# opens nothing for a round already requested for this HEAD, so two `pr` runs open one tab. It
+# refuses a worktree whose branch isn't KEY's, since it writes there and posts to that branch's PR.
+def cmdReview(cfg, key, restart=False, ifDue=False):
     if not key:
-        raise RuntimeError("usage: plan review KEY")
-    found = agents_mod.currentAgents(cfg.get("issuesFile"), cfg.get("claudeCommand"))
-    claude = agents_mod.reviewerState(found, key) or "stopped"
+        raise RuntimeError("usage: plan review KEY [--restart | --if-due]")
     worktree = startLib.git(os.getcwd(), "rev-parse", "--show-toplevel").strip()
-    request = reviews_mod.requestRound(worktree, key, claude)
+    branch = startLib.git(worktree, "branch", "--show-current").strip()
+    if branchKey(branch) != key:
+        raise RuntimeError(f"this worktree's branch is {branch or '(detached)'}, not {key}'s; run plan review {key} in {key}'s worktree")
+    request, note = reviews_mod.requestRound(worktree, key, restart, ifDue)
     if not request:
-        print(f"nothing to review for {key}; its record now names HEAD")
+        print(note)
         return
-    term_mod.openClaudeTab(reviews_mod.reviewPrompt(key, request), existingPlanWorkspace(cfg))
+    openReviewTab(cfg, key, request)
     print("review ready in a new Claude tab in the plan window; press Enter to start")
 
 
@@ -565,7 +587,8 @@ def main(argv=None):
     if cmd == "browse":
         return cmdBrowse(cfg, rest[0] if rest else None, rest[1] if len(rest) > 1 else None)
     if cmd == "review":
-        return cmdReview(cfg, rest[0] if rest else None)
+        words = [arg for arg in rest if not arg.startswith("--")]
+        return cmdReview(cfg, words[0] if words else None, "--restart" in rest, "--if-due" in rest)
     if cmd == "ship":
         return cmdShip(cfg, rest[0] if rest else None)
     if cmd == "done":

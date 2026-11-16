@@ -3,7 +3,7 @@
 # LaunchAgent runs `plan agents tick --watch` to keep each issue pulsed (architecture §6.3, §7.1).
 #
 # It reads `claude agents --json`, the issues file, git, the waiting markers Claude Code's hooks
-# keep (lib/waiting.py), each listed issue's review record (lib/reviews.py), and, for a
+# keep (lib/waiting.py), each listed issue's review rounds (lib/reviews.py), and, for a
 # listing's titles only, the store or Jira. It never writes to an issue or a session; its only
 # output is the pulses file and its listing.
 #
@@ -14,7 +14,6 @@ import json
 import os
 import re
 import sys
-import threading
 import time
 from dataclasses import asdict, dataclass
 
@@ -124,16 +123,6 @@ def wantedPulses(agents, listedKeys, reviewedKeys=frozenset()):
         if key in reviewedKeys:
             wanted[key] = PULSE_OF_REVIEW
     return wanted
-
-
-# Whether an issue's Claude can take a review request: "working" when a Claude of the issue is busy
-# (a round it was sent may be running), "stopped" when every Claude of the issue is idle or waiting
-# on a person (an unfinished round was stopped), None when no Claude of the issue runs.
-def reviewerState(agents, key):
-    states = [agent.state for agent in agents if agent.key == key]
-    if not states:
-        return None
-    return "working" if "busy" in states else "stopped"
 
 
 # {KEY: worktree} for each listed issue with a Claude in its worktree: the reviews to check.
@@ -315,22 +304,24 @@ def sendPulses(sent, toSend, pulse):
 
 
 # One tick: read the sessions and the issues file, and write each issue whose colour changed since
-# `sent` to the pulses file. Reads no store or Jira, since it runs every few seconds. Returns (new
-# record, failure messages).
-def tick(sent, issuesFile=None, pulsesFile=None, claudeCommand=None, waitingDir=None, reviewedKeys=frozenset()):
+# `sent` to the pulses file. Reads no store or Jira, since it runs every few seconds; it reads each
+# listed issue's review rounds and HEAD from the worktree, with no `claude` or `gh` call beyond the
+# one for the sessions. Returns (new record, failure messages).
+def tick(sent, issuesFile=None, pulsesFile=None, claudeCommand=None, waitingDir=None, readState=reviews.readReviewState):
     listedKeys = term.issueKeys(issuesFile)
     try:
         agents = placeSessions(readSessions(claudeCommand), listedKeys, reportIsFresh, waiting.waitingSessions(waitingDir))
     except RuntimeError as error:
         return sent, [str(error)]
-    toSend = pulsesToSend(sent, wantedPulses(agents, listedKeys, reviewedKeys))
+    reviewed = reviews.reviewedKeys(listedWorktrees(agents), readState)
+    toSend = pulsesToSend(sent, wantedPulses(agents, listedKeys, reviewed))
     return sendPulses(sent, toSend, lambda key, color: pulses.setPulse(key, color, pulsesFile))
 
 
 # tick(), then saves the record when the tick changed what is stored. A save that fails is a
 # failure message, never a crash: the engine runs on, and the next tick that changes it saves again.
-def rememberingTick(sent, issuesFile=None, pulsesFile=None, claudeCommand=None, waitingDir=None, reviewedKeys=frozenset()):
-    record, failures = tick(sent, issuesFile, pulsesFile, claudeCommand, waitingDir, reviewedKeys)
+def rememberingTick(sent, issuesFile=None, pulsesFile=None, claudeCommand=None, waitingDir=None, readState=reviews.readReviewState):
+    record, failures = tick(sent, issuesFile, pulsesFile, claudeCommand, waitingDir, readState)
     if storable(record) == storable(sent):
         return record, failures
     try:
@@ -364,62 +355,17 @@ def sleepUntilMarkersChange(seconds, waitingDir=None):
             return
 
 
-# The keys whose PR has a review waiting, read afresh; `previous` when the sessions can't
-# be read, so a failing `claude` doesn't clear a review's colour.
-def checkReviews(previous, issuesFile=None, claudeCommand=None, readState=reviews.readReviewState):
-    try:
-        agents = currentAgents(issuesFile, claudeCommand)
-    except RuntimeError:
-        return previous
-    return reviews.reviewedKeys(listedWorktrees(agents), readState)
-
-
-def reviewLine(keys):
-    return "Review waiting: " + ", ".join(sorted(keys))
-
-
-# checkReviews, logging each key whose review has just started waiting.
-def refreshReviews(reviewed, issuesFile=None, claudeCommand=None):
-    fresh = checkReviews(reviewed, issuesFile, claudeCommand)
-    if fresh - reviewed:
-        log(reviewLine(fresh - reviewed))
-    return fresh
-
-
-# The keys whose PR has a review waiting, as the last finished check found them. Its own thread
-# checks every few seconds, so a slow or stalled `git` or `claude` never holds up a tick.
-class ReviewSnapshot:
-    def __init__(self, issuesFile=None, claudeCommand=None):
-        self.issuesFile, self.claudeCommand = issuesFile, claudeCommand
-        self.keys = frozenset()
-
-    def refresh(self):
-        self.keys = refreshReviews(self.keys, self.issuesFile, self.claudeCommand)
-
-    def refreshForever(self, every=reviews.REVIEW_CHECK_SECONDS):
-        while True:
-            self.refresh()
-            time.sleep(every)
-
-    def startInBackground(self):
-        threading.Thread(target=self.refreshForever, name="reviews", daemon=True).start()
-        return self
-
-
-# The LaunchAgent's loop: a tick every few seconds, or as soon as a waiting marker changes, and a
-# look at each listed issue's review record every few seconds on a thread of its own. Its log
-# (stderr) gets a line when it starts, one when a review starts waiting, one for each tick that sends
-# a pulse, and a failure only when it differs from the last one, so a quiet issue or a failure that
-# persists adds nothing. It starts from the sent record on disk over the pulses file's colours
-# (loadSent), so a line left for an issue no longer listed is removed and a colour a person cleared
-# isn't written back.
+# The LaunchAgent's loop: a tick every few seconds, or as soon as a waiting marker changes. Its log
+# (stderr) gets a line when it starts, one for each tick that sends a pulse, and a failure only when
+# it differs from the last one, so a quiet issue or a failure that persists adds nothing. It starts
+# from the sent record on disk over the pulses file's colours (loadSent), so a line left for an issue
+# no longer listed is removed and a colour a person cleared isn't written back.
 def watch(issuesFile=None, pulsesFile=None, claudeCommand=None, every=TICK_SECONDS):
-    log(f"watching, a tick every {every}s, reviews every {reviews.REVIEW_CHECK_SECONDS}s")
+    log(f"watching, a tick every {every}s")
     sent, lastFailures = loadSent(pulsesFile), []
-    reviewed = ReviewSnapshot(issuesFile, claudeCommand).startInBackground()
     while True:
         before = sent
-        sent, failures = rememberingTick(sent, issuesFile, pulsesFile, claudeCommand, reviewedKeys=reviewed.keys)
+        sent, failures = rememberingTick(sent, issuesFile, pulsesFile, claudeCommand)
         written = pulsesSent(before, sent)
         if written:
             log(pulseLine(written))

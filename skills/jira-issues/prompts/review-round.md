@@ -3,6 +3,10 @@
 Before anything else: this review is for the worktree `{{ROOT}}`. If your working directory isn't
 `{{ROOT}}`, stop and say so; do nothing else.
 
+Then, as your first step, run `python3 {{SCRIPTS}}/review.py claim {{KEY}}`. It records this Claude as the
+round's reviewer, so the author can't restart the round under you. If it fails, stop and say why; do
+nothing else.
+
 You are reviewing PR #{{PR}} of {{KEY}} in this worktree again. The review is co-signing, not an
 adversarial pass: you and the author vouch together that what you read is correct and ready to
 ship. This round checks only what isn't settled, in the diff since the last reviewed head. Run exactly
@@ -10,7 +14,7 @@ this call:
 
 `{{CALL}}`
 
-{{SCOPE}}Then apply the rules below on top of its findings. The diff is `git diff {{RANGE}}`. HEAD is {{HEAD}}. Nothing settled is read again.
+{{SCOPE}}Then apply the rules below on top of its findings. The diff is `git diff {{RANGE}}`. This review is of commit `{{HEAD}}`. If `git rev-parse HEAD` differs from it, the working tree has moved on: read every file at that commit, with `git show {{HEAD}}:<path>`, never from the working tree, and say so in the log. Nothing settled is read again.
 
 ## Unsettled findings from the last record
 
@@ -29,10 +33,11 @@ this call:
 1. Check each unsettled finding in context: its `file:lines`, its summary, the fix, and the code one
    and two steps out from the change (callers, symbols, docs). Mark it `"Fixed"` when it held, or
    `"New"` when it's back. A recommended fix the author applied verbatim is `"Fixed"` without
-   further check. For a finding marked `"New"`, drop its `commentId`, so it gets a new comment.
-2. Do not re-read a file marked OK whose blob is unchanged (`git rev-parse HEAD:<path>` against the
-   blob above).
-3. Raise a new finding (`"disposition": "New"`, no `commentId`) only for a silent loss or a crash in the
+   further check. For a finding marked `"New"`, drop its `commentId` and its `reviewId`, so it gets a new comment.
+2. Do not re-read a file marked OK whose blob is unchanged (`git rev-parse {{HEAD}}:<path>` against the
+   blob above). A file listed as deleted, or no longer in the PR, gets a disposition whose blob is
+   `"absent"`, and a verdict like any other file.
+3. Raise a new finding (`"disposition": "New"`, no `commentId` or `reviewId`) only for a silent loss or a crash in the
    changed code. Nothing else is a finding in a round.
 4. A finding in the same area as an earlier one is grouped with it under a named cause, in its
    `summary`. When a cause repeats a third time, write a Python check script in
@@ -53,5 +58,6 @@ this call:
    when it keeps its comment, and `checks`. Finding keys stay `file:lines:classification`, and each
    finding has a `summary`.
 2. Run `python3 {{SCRIPTS}}/review.py finish {{KEY}}`. It posts the findings that have no comment
-   as one PR review and writes the review. If it refuses the record, fix what it names and run it
-   again.
+   as one PR review and writes the review. If it refuses the record for a mistake in it, fix that and run it
+   again. If it refuses on a head mismatch (the round was restarted), or says another review run holds
+   the lock, stop: edit nothing, never delete `.review.lock`, and tell the author.

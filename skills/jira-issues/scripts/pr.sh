@@ -201,9 +201,9 @@ start_review() {
   # this push moved the PR's head: a pr that stopped after its push (gh pb failing, say) leaves
   # commits that no later push moves, and the next pr reviews them from the record. Exit 1 means
   # nothing is due; any other failure of the check goes on to the review, which says why it can't.
-  python3 "$scripts/review.py" due "$n" 2>/dev/null && due=0 || due=$?
+  reason=$(python3 "$scripts/review.py" due "$n" 2>/dev/null) && due=0 || due=$?
   if [ "$due" = 1 ]; then
-    echo "pr: no new commits since the last review; no review"
+    echo "pr: no review: $reason"
     return 0
   fi
   plan=$(plan_command)
@@ -211,11 +211,11 @@ start_review() {
     echo "pr: plan isn't on PATH, so no review started; run plan review $n in this worktree" >&2
     return 0
   fi
-  if started=$("$plan" review "$n" 2>&1); then
+  if started=$("$plan" review "$n" --if-due 2>&1); then
     echo "pr: $started"
   else
     echo "pr: no review started: $started" >&2
-    echo "    start it by hand once that is fixed: plan review $n" >&2
+    echo "    plan review $n starts or reopens it by hand once that is fixed" >&2
   fi
 }
 start_review
