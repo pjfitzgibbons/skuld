@@ -26,8 +26,8 @@ from .jira import KEY_RE, Jira, projectOf
 # for every other project. Every call site below already knows its key before it needs a client
 # (checkId() runs first), so dispatch is a plain "which class for this key", not a wrapping
 # router object: each returned client implements the same surface (list/issue/blockers/
-# statusTransitionId/transition/textComment/addComment/browseUrl/closeNote), so start.py/done.py/
-# ship.py need no branch of their own. key=None is the picker's Jira half (issueRows(), below),
+# statusTransitionId/transition/textComment/addComment/browseUrl), so start.py/ship.py need no
+# branch of their own, and done.py only for its last step (closeNote for Jira, close for a file). key=None is the picker's Jira half (issueRows(), below),
 # asked for only when the config names Jira projects. A key whose project the config's `jira`
 # entry doesn't name is refused here, before any command changes anything.
 def jiraFrom(cfg, key=None):

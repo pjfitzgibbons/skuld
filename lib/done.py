@@ -1,10 +1,12 @@
 # Finishing an issue once its PR has merged: its worktree and branch gone, the main checkout's base
-# at the merge, and a comment on the issue linking the merge, with a reminder to close it by hand.
+# at the merge, and a comment on the issue linking the merge. A store ticket is then closed (status
+# done, closed today, INDEX.md regenerated); a Jira issue is left for its human to close.
 # Ported from lib/done.js. Faithful, behavior-preserving port: no change in logic. Each step runs
 # only when it has something to do, so a Done that stopped part way is finished by the next, and a
 # second Done changes nothing.
 #
-# INVARIANT (decision #5): Done never transitions the Jira issue, to Done or anything else. Peter's
+# INVARIANT (decision #5): Done never transitions the Jira issue, to Done or anything else. (A store
+# ticket is a file, with no required fields or workflow: FileIssues.close() writes its front matter.) Peter's
 # PreToolUse hook already blocks any Bash command that looks like it moves an issue to a terminal
 # status, and a terminal transition needs a human regardless -- Jira issues can carry required-field
 # prompts or workflow conditions on close that only a person reviewing the issue can satisfy. So
@@ -30,6 +32,7 @@ from .start import (
     worktreeDir,
     worktrees,
 )
+from .fileissues import isFileBacked
 from .ship import prLink, unsentIn
 from . import term
 
@@ -296,6 +299,16 @@ def issueWorktreePath(resolved, checkout, key):
     return worktreeDir(checkout, key)
 
 
+# Closes a ticket, or says how to close a Jira issue. Jira's is only ever a note: see the invariant at
+# the top of this file.
+def closeNote(jira, key):
+    if not isFileBacked(key):
+        return jira.closeNote(key)
+    if jira.close(key):
+        return f"Closed {key}: status done, closed today, INDEX.md regenerated."
+    return f"{key} is already closed."
+
+
 def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result, disposable, typeMap=None, slotsFile=None, workspaceDir=None):
     if typeMap is None:
         typeMap = DEFAULT_TYPE_MAP
@@ -313,6 +326,10 @@ def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result,
     named = git(checkout, "config", "--get", "remote.origin.url").strip()
     if repoOf(origin) != repoOf(repoUrl(pr)) and repoOf(named) != repoOf(repoUrl(pr)):
         raise RuntimeError(f"{link} isn't in {checkout}'s origin, {named}; link {key}'s PR from its own repo, then Done again")
+
+    # A ticket's close reindexes the store, so a store that can't is found now, not after the merge line.
+    if isFileBacked(key):
+        jira.checkClose(key)
 
     # The issue's worktree is the one on the PR's head branch, whatever its name, so the branch can be
     # deleted; else the one Start would find. A head name counts only from this repo, in a worktree of
@@ -470,7 +487,7 @@ def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result,
     if not noted:
         jira.addComment(key, jira.textComment(doneNote(pr)))
         notes.append(f"Added the note to {key}.")
-    notes.append(jira.closeNote(key))
+    notes.append(closeNote(jira, key))
 
     # Rule 4: the issue is finished, so its workspace slot (if any) is freed, the same way
     # Start/Open label it (term.writeSlot). Done opens no browser -- only

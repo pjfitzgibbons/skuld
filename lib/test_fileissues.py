@@ -5,9 +5,10 @@
 import shutil
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
-from lib.fileissues import FileIssues, canonicalKey, isFileBacked
+from lib.fileissues import FileIssues, canonicalKey, closingFields, isFileBacked, setFrontField
 
 
 def writeIssue(dir, name, text):
@@ -198,18 +199,11 @@ class FileIssuesTests(unittest.TestCase):
         row = self.fi.list()[0]
         self.assertEqual(row["after"], "CIAM-163")
 
-    # --- browseUrl / closeNote -----------------------------------------------------------------
+    # --- browseUrl -----------------------------------------------------------------
 
     def test_browseUrl_is_the_absolute_file_path(self):
         path = writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
         self.assertEqual(self.fi.browseUrl("SK-0001"), str(path.resolve()))
-
-    def test_closeNote_names_the_file_not_a_jira_url(self):
-        writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
-        note = self.fi.closeNote("SK-0001")
-        self.assertIn("SK-0001", note)
-        self.assertIn(self.dir, note)
-        self.assertNotIn("atlassian", note)
 
 
     # --- list(): ordinal order -------------------------------------------------------------------
@@ -317,3 +311,19 @@ class MergedListTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FrontMatterEditTests(unittest.TestCase):
+    def test_setFrontField_adds_a_field_the_block_lacks(self):
+        out = setFrontField(OPEN_BUG, "pr", "https://github.com/a/b/pull/1")
+        self.assertIn("closed:\npr: https://github.com/a/b/pull/1\n---\n", out)
+
+    def test_setFrontField_replaces_a_field_it_has(self):
+        self.assertIn("status: done\n", setFrontField(OPEN_BUG, "status", "done"))
+
+    def test_closingFields_by_status(self):
+        today = date.today().isoformat()
+        self.assertEqual(closingFields({"status": "in-progress", "closed": ""}), {"status": "done"})
+        self.assertEqual(closingFields({"status": "done", "closed": ""}), {"closed": today})
+        self.assertEqual(closingFields({"status": "done", "closed": "2026-11-03"}), {})
+        self.assertEqual(closingFields({"status": "wontfix", "closed": "2026-11-03"}), {})

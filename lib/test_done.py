@@ -16,10 +16,13 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from datetime import date
 from unittest import mock
 
 from lib import done as done_mod
 from lib import term
+from lib.fileissues import FileIssues
+from lib.store_sandbox import FILE_NAME, KEY as SK_KEY, head, makeStore
 from lib.done import DISPOSABLE, branchForKey, doneNote, finish
 from lib.start import worktreeDir
 
@@ -108,7 +111,7 @@ def inProgressIssue(key=KEY):
 
 # Real git: a bare "origin", a clone simulating GitHub's side where the PR gets squash-merged, and
 # the main checkout with the issue's worktree, exactly as the source's sandbox() does.
-def sandbox(merged=True):
+def sandbox(merged=True, key=KEY):
     root = tempfile.mkdtemp(prefix="jira-plan-done-")
     bare = os.path.join(root, "origin.git")
     checkout = os.path.join(root, "demo")
@@ -131,8 +134,8 @@ def sandbox(merged=True):
     git(checkout, "config", "user.email", "t@example.com")
     git(checkout, "config", "user.name", "T")
 
-    branch = f"feat/{KEY}-go-requests"
-    dir = worktreeDir(checkout, KEY)
+    branch = f"feat/{key}-go-requests"
+    dir = worktreeDir(checkout, key)
     os.makedirs(os.path.dirname(dir), exist_ok=True)
     git(checkout, "worktree", "add", "--quiet", "-b", branch, dir, "origin/main")
     with open(os.path.join(dir, "b.txt"), "w") as f:
@@ -153,7 +156,7 @@ def sandbox(merged=True):
         git(github, "config", "user.name", "T")
         git(github, "fetch", "-q", "origin", branch)
         git(github, "merge", "-q", "--squash", f"origin/{branch}")
-        git(github, "commit", "-q", "-m", f"feature work (#1) ({KEY})")
+        git(github, "commit", "-q", "-m", f"feature work (#1) ({key})")
         git(github, "push", "-q", "origin", "main")
         mergeCommit = git(github, "rev-parse", "HEAD").strip()
 
@@ -166,7 +169,7 @@ def sandbox(merged=True):
     pr = {
         "url": f"https://github.com/{repoPart}/pull/1",
         "number": 1,
-        "title": f"feature work ({KEY})",
+        "title": f"feature work ({key})",
         "headRefName": branch,
         "headRefOid": headRefOid,
         "baseRefName": "main",
@@ -185,7 +188,7 @@ def sandbox(merged=True):
         "branch": branch,
         "pr": pr,
         "view": view,
-        "checkouts": {"CIAM": checkout},
+        "checkouts": {"CIAM": checkout, "SK": checkout},
     }
 
 
@@ -335,6 +338,62 @@ class FinishTests(unittest.TestCase):
         jira = FakeJira(inProgressIssue())
         with self.assertRaisesRegex(RuntimeError, "isn't in .* origin"):
             finish(jira, s["checkouts"], KEY, view=lambda cwd, branch: pr, cwd=s["checkout"])
+
+
+class FinishStoreTicketTests(unittest.TestCase):
+    def setUp(self):
+        self.s = sandbox(key=SK_KEY)
+        self.store = makeStore(self.s["root"])
+        self.ticket = self.store / FILE_NAME
+        self.client = FileIssues({"dir": str(self.store)})
+        self.addCleanup(shutil.rmtree, self.s["root"], ignore_errors=True)
+
+    def done(self):
+        return finish(self.client, self.s["checkouts"], SK_KEY, view=self.s["view"], cwd=self.s["checkout"])
+
+    def text(self):
+        return self.ticket.read_text()
+
+    def test_closes_the_ticket_with_its_merge_line_and_drops_it_from_index(self):
+        before = head(self.store)
+        self.done()
+        text = self.text()
+        self.assertIn("\nstatus: done\n", text)
+        self.assertIn(f"\nclosed: {date.today().isoformat()}\n", text)
+        self.assertRegex(text, r"- \d{4}-\d{2}-\d{2}: Done: \[origin#1\]")
+        self.assertNotIn(FILE_NAME, (self.store / "INDEX.md").read_text())
+        self.assertEqual(head(self.store), before)
+
+    def test_a_second_done_leaves_the_closed_ticket_untouched_with_one_merge_line(self):
+        self.done()
+        closed = self.text()
+        result = self.done()
+        self.assertEqual(self.text(), closed)
+        self.assertEqual(closed.count("Done: [origin#1]"), 1)
+        self.assertTrue(any("already closed" in n for n in result["notes"]))
+
+    def test_a_done_stopped_after_the_log_line_closes_on_the_next_run_without_a_second_line(self):
+        self.done()
+        # What a Done killed between the merge line and the close left: the line, an open ticket.
+        stopped = self.text().replace("status: done", "status: in-progress").replace(
+            f"closed: {date.today().isoformat()}", "closed:"
+        )
+        self.ticket.write_text(stopped)
+        (self.store / "INDEX.md").write_text("stale\n")
+        self.done()
+        text = self.text()
+        self.assertIn("\nstatus: done\n", text)
+        self.assertIn(f"\nclosed: {date.today().isoformat()}\n", text)
+        self.assertEqual(text.count("Done: [origin#1]"), 1)
+        self.assertNotIn(FILE_NAME, (self.store / "INDEX.md").read_text())
+
+    def test_a_store_that_cant_reindex_stops_done_before_anything_changes(self):
+        (self.store / "scripts" / "index.py").unlink()
+        original = self.text()
+        with self.assertRaisesRegex(RuntimeError, "index.py"):
+            self.done()
+        self.assertEqual(self.text(), original)
+        self.assertTrue(os.path.exists(self.s["dir"]))
 
 
 class DisposableTests(unittest.TestCase):
