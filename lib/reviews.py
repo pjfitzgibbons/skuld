@@ -46,11 +46,14 @@ def loadedReviewScript(path, version):
 
 # The last finished review's record, or None when there is none.
 def readRecord(worktree, key):
-    return review().last_record(review().rounds_folder(worktree, key))[1]
+    return readRounds(review(), worktree, key)[0]
 
 
-def reviewUnfinished(worktree, key):
-    return review().unfinished_round(review().rounds_folder(worktree, key)) is not None
+# (the last finished review's record or None, whether a round is unfinished), from one listing of the
+# issue's rounds folder. module is review.py, resolved by the caller.
+def readRounds(module, worktree, key):
+    record, unfinished = module.round_state(module.rounds_folder(worktree, key))
+    return record, unfinished is not None
 
 
 def headOf(worktree):
@@ -60,19 +63,16 @@ def headOf(worktree):
         return None
 
 
-# Whether HEAD can matter: only a finished review with unsettled findings waits, so for every other
-# issue the tick spawns no git.
-def couldBeWaiting(record, unfinished):
-    return bool(record) and not unfinished and bool(review().unsettled_findings(record))
-
-
 # What the rule needs from an issue's worktree: (record, HEAD, round unfinished). HEAD is read only
-# when it can matter, else it is None. A worktree whose rounds can't be read (a permission error, a
-# malformed file) has no review waiting.
+# when it can matter (review.py's could_be_orange: a finished review with unsettled findings and no
+# round unfinished), else it is None, so for every other issue the tick spawns no git. The rounds
+# folder is listed once and review.py resolved once. A worktree whose rounds can't be read (a
+# permission error, a malformed file) has no review waiting.
 def readReviewState(worktree, key):
     try:
-        record, unfinished = readRecord(worktree, key), reviewUnfinished(worktree, key)
-        return record, headOf(worktree) if couldBeWaiting(record, unfinished) else None, unfinished
+        module = review()
+        record, unfinished = readRounds(module, worktree, key)
+        return record, headOf(worktree) if module.could_be_orange(record, unfinished) else None, unfinished
     except Exception:
         return None, None, False
 

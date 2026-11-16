@@ -86,6 +86,25 @@ class Rules(unittest.TestCase):
         self.assertFalse(review.is_orange(record(head=HEAD, findings=[finding(state="Fixed")]), HEAD, False))
         self.assertFalse(review.is_orange(None, HEAD, False))
 
+    def test_could_be_orange_is_orange_without_the_head_test(self):
+        open_findings = record(head=OLD, findings=[finding()])
+        self.assertTrue(review.could_be_orange(open_findings, False))
+        self.assertFalse(review.could_be_orange(open_findings, True))
+        self.assertFalse(review.could_be_orange(record(head=OLD, findings=[finding(state="Fixed")]), False))
+        self.assertFalse(review.could_be_orange(None, False))
+
+    def test_round_state_gives_the_last_record_and_the_unfinished_round_from_one_listing(self):
+        with tempfile.TemporaryDirectory() as root:
+            rounds = Path(root)
+            (rounds / "1").mkdir()
+            (rounds / "1" / "review.json").write_text(json.dumps(record(head=HEAD)))
+            (rounds / "2").mkdir()
+            (rounds / "2" / "request.json").write_text(json.dumps({"head": HEAD}))
+            with mock.patch.object(review.os, "listdir", wraps=os.listdir) as listed:
+                last, unfinished = review.round_state(rounds)
+            self.assertEqual((last["head"], unfinished["round"]), (HEAD, 2))
+            self.assertEqual(listed.call_count, 1)
+
     def test_a_finding_key_splits_into_file_lines_and_classification(self):
         self.assertEqual(review.parse_key("a/b.py:12-20:silent-loss"), ("a/b.py", 12, 20, "silent-loss"))
         self.assertEqual(review.parse_key("a.py:7:crash"), ("a.py", 7, 7, "crash"))
@@ -1241,6 +1260,19 @@ class Claim(InRounds):
         self.assertEqual(ask(self.sources([])), self.folder(1) / "request.md")
         self.assertIn("reopened", self.log(1))
 
+    def test_a_reopen_removes_a_reviewer_that_is_not_a_live_claude_session_from_the_request(self):
+        self.claimed_round(pid=300, head=HEAD)
+        self.assertEqual(self.stored()["reviewer"]["pid"], 300)
+        ask(self.sources([self.reviewer_in_a_terminal(pid=999)]))
+        self.assertNotIn("reviewer", self.stored())
+        self.assertIn("dropped from the request", self.log(1))
+
+    def test_a_reopen_keeps_the_request_as_it_is_when_nobody_claimed_the_round(self):
+        ask(FakeSources(head=HEAD))
+        before = (self.folder(1) / "request.json").read_text()
+        ask(self.sources([]))
+        self.assertEqual((self.folder(1) / "request.json").read_text(), before)
+
     def test_restart_proceeds_when_the_claimed_pid_is_gone(self):
         self.claimed_round()
         path = ask(self.sources([]), restart=True)
@@ -1470,6 +1502,17 @@ class Lenses(unittest.TestCase):
         self.assertIn("The ticket `/gone.md` can't be read", unreadable)
         self.assertIn("| L1 Security |", unreadable)
 
+    def test_a_selected_lens_takes_a_capital_x_and_any_bullet(self):
+        text = "## Lenses\n- [X] L1 Security\n* [x] L3 Reliability\n+ [x] L8 Testability\n- [ ] L11 Retries\n"
+        self.assertEqual(review.selected_lenses(text),
+                         ["- [X] L1 Security", "* [x] L3 Reliability", "+ [x] L8 Testability"])
+
+    def test_a_selected_lens_with_no_row_is_named_under_the_table(self):
+        brief = review.lens_brief("/t.md", "## Lenses\n- [x] L1 Security\n- [x] L99 Unknown\n", [WRITER])
+        self.assertIn("| L1 Security |", brief)
+        self.assertNotIn("| L99", brief)
+        self.assertIn("No question found for L99", brief)
+
     def test_a_ticket_selecting_no_lens_says_the_fan_out_has_no_lens_legs(self):
         self.assertIn("selects no lens", review.lens_brief("/t.md", "## Lenses\n- [ ] L1 Security\n", [WRITER]))
 
@@ -1553,12 +1596,32 @@ class Advisories(InRounds):
         review.finish("SK-9", sources)
         self.assertEqual(len(sources.posts), 1)
 
-    def test_a_round_that_already_carried_its_advisory_does_not_post_it_again(self):
+    def test_a_round_that_already_carried_its_advisory_at_this_head_does_not_post_it_again(self):
         self.start([finding("f.py:3:crash")], [advisory()])
-        self.write(1, "posted.json", {"advised": True})
+        self.write(1, "posted.json", {"advisedHead": HEAD})
         sources = FakeSources()
         review.finish("SK-9", sources)
         self.assertNotIn(review.ADVISORY_MARKER, sources.posts[0]["body"])
+
+    def test_a_restarted_round_posts_the_new_head_s_advisories_though_an_older_head_carried_some(self):
+        self.start([finding("f.py:3:crash")], [advisory()])
+        self.write(1, "posted.json", {"advised": True, "advisedHead": OLD})
+        sources = FakeSources()
+        review.finish("SK-9", sources)
+        self.assertIn(review.ADVISORY_MARKER, sources.posts[0]["body"])
+
+    def test_a_review_carries_the_advisory_when_the_intent_had_none_or_its_body_has_the_marker(self):
+        self.assertTrue(review.carries_advisory({"body": "x"}, {"advisory": False}))
+        self.assertTrue(review.carries_advisory({"body": f"x {review.ADVISORY_MARKER}"}, {"advisory": True}))
+        self.assertFalse(review.carries_advisory({"body": "x"}, {"advisory": True}))
+
+    def test_a_posted_json_from_before_advisedHead_reads_as_advised_at_no_head(self):
+        self.start([finding("f.py:3:crash")], [advisory()])
+        self.write(1, "posted.json", {"advised": True})
+        self.assertIsNone(review.read_posted(self.folder(1))["advisedHead"])
+        sources = FakeSources()
+        review.finish("SK-9", sources)
+        self.assertIn(review.ADVISORY_MARKER, sources.posts[0]["body"])
 
 
 class FanOutPrompts(unittest.TestCase):

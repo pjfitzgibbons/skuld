@@ -504,6 +504,16 @@ class CmdReviewTests(unittest.TestCase):
     def test_a_jira_issue_s_ticket_is_its_page(self):
         self.assertEqual(cli.issueTicket(JIRA_ON, "CIAM-12"), "https://jira.example/browse/CIAM-12")
 
+    def test_the_review_arguments_name_the_flags_that_are_unknown_or_conflict(self):
+        self.assertEqual(cli.unknownFlags(["--restart", "--nope"]), ["--nope"])
+        self.assertEqual(cli.unknownFlags(["--restart", "--if-due"]), [])
+        self.assertTrue(cli.conflictingFlags(["--restart", "--if-due"]))
+        self.assertFalse(cli.conflictingFlags(["--restart"]))
+        self.assertEqual(cli.reviewArguments(["SK-1", "--if-due"]), ("SK-1", False, True))
+        for args in (["--restart", "--if-due"], ["--nope"], ["SK-1", "SK-2"]):
+            with self.assertRaisesRegex(RuntimeError, "usage: plan review"):
+                cli.reviewArguments(args)
+
     def test_a_round_the_script_refuses_starts_no_review(self):
         with mock.patch.object(cli.config_mod, "load", return_value=self.cfg), mock.patch.object(
             cli.reviews_mod, "requestRound", side_effect=RuntimeError("run plan review SK-0001 --restart")

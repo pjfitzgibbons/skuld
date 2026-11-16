@@ -62,7 +62,7 @@ class RobustnessTests(unittest.TestCase):
         self.assertEqual(reviews.reviewedKeys({"SK-1": "/w"}, lambda worktree, key: (broken, HEAD, False)), frozenset())
 
     def test_an_unreadable_worktree_has_no_review_state(self):
-        with mock.patch.object(reviews, "readRecord", side_effect=PermissionError("denied")):
+        with mock.patch.object(reviews, "readRounds", side_effect=PermissionError("denied")):
             self.assertEqual(reviews.readReviewState("/w", "SK-1"), (None, None, False))
 
     def test_review_py_is_loaded_on_first_use_and_once(self):
@@ -119,6 +119,22 @@ class ReadReviewStateTests(unittest.TestCase):
             self.assertEqual(reviews.readReviewState(settled, "SK-1"), (record(states=("Fixed",)), None, False))
         with mock.patch.object(reviews, "git", side_effect=AssertionError("no git")):
             self.assertEqual(reviews.readReviewState(self.worktree({}), "SK-1"), (None, None, False))
+
+    def test_one_read_lists_the_rounds_folder_once_and_resolves_review_py_once(self):
+        worktree = self.worktree({"1/review.json": json.dumps(record(states=("Fixed",))), "2/request.json": "{}"})
+        listdir, resolved = os.listdir, mock.Mock(wraps=reviews.review)
+        listed = []
+
+        def counting(path):
+            listed.append(str(path))
+            return listdir(path)
+
+        with mock.patch.object(reviews.os, "listdir", side_effect=counting), \
+                mock.patch.object(reviews, "review", resolved), \
+                mock.patch.object(reviews, "git", side_effect=AssertionError("no git")):
+            reviews.readReviewState(worktree, "SK-1")
+        self.assertEqual([path for path in listed if path.endswith("rounds")], [os.path.join(worktree, ".tmp", "SK-1", "rounds")])
+        self.assertEqual(resolved.call_count, 1)
 
     def test_round_zeros_review_without_a_head_is_not_a_review_of_the_pr(self):
         worktree = self.worktree({"0/review.json": json.dumps({"findings": [{"disposition": "open"}]})})

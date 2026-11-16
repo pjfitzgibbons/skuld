@@ -75,7 +75,9 @@ doesn't lose its work. `request` with an unfinished review whose head is HEAD re
 request.json are not rewritten. With one for an older head it refuses and names `--restart`, which
 restarts the review in its own folder at HEAD, unless the reviewer that `claim`ed the round is still
 a session in `claude agents --json`, whatever its state: then it refuses, and so does it when that
-list can't be read. A round nobody claimed, or whose reviewer's pid is gone, restarts. With none, and nothing due, it says why and writes
+list can't be read. A round nobody claimed, or whose reviewer's pid is gone, restarts, and a reopen
+removes the gone reviewer from request.json, so the plan window's pid check sees only a reviewer
+this script considers live. With none, and nothing due, it says why and writes
 nothing. `finish` is safe to rerun: posted.json in the round's folder records each posted id as soon
 as its POST succeeds, and a rerun skips what it names. Before each POST it writes an "intent" (the
 keys about to be sent) to posted.json; a rerun that finds an intent with no outcome, because the POST
@@ -132,7 +134,7 @@ LINES = re.compile(r"^(\d+)(?:-(\d+))?$")
 GLOBAL_WRITER = Path.home() / ".claude/agents/technical-writer.md"
 REPO_WRITER = Path("docs/agents/technical-writer.md")
 LENS_ROW = re.compile(r"^\|\s*(L\d+)\s[^|\n]*\|[^\n]*$", re.M)
-SELECTED_LENS = re.compile(r"^- \[x\] (L\d+)\b")
+SELECTED_LENS = re.compile(r"^[-*+] \[[xX]\] (L\d+)\b")
 MIN_RECURRENCE = 3  # a concern found more than twice is an advisory for a new lens
 ADVISORY_MARKER = "<!-- review-advisory -->"
 
@@ -241,7 +243,13 @@ def review_round(numbers, unfinished):
 
 def is_orange(record, head, round_unfinished):
     """A finished review of this head with unsettled findings waits for a person."""
-    return bool(record) and record.get("head") == head and not round_unfinished and bool(unsettled_findings(record))
+    return could_be_orange(record, round_unfinished) and record.get("head") == head
+
+
+def could_be_orange(record, round_unfinished):
+    """Everything is_orange needs but the head: a finished review with unsettled findings and no
+    round unfinished. A caller that must spend a `git rev-parse` to know the head asks this first."""
+    return bool(record) and not round_unfinished and bool(unsettled_findings(record))
 
 
 def parse_key(key):
@@ -637,9 +645,14 @@ def lens_rows(writer_texts):
 
 
 def lens_table(rows, ids):
+    """The rows of the lens ids, and a line naming the ids no writer table has a question for."""
     if not ids:
         return "(no lens table found)"
-    return "\n".join(["| Lens | Question |", "|---|---|"] + [rows[lens] for lens in ids if lens in rows])
+    table = "\n".join(["| Lens | Question |", "|---|---|"] + [rows[lens] for lens in ids if lens in rows])
+    unknown = [lens for lens in ids if lens not in rows]
+    if unknown:
+        table += f"\n\nNo question found for {', '.join(unknown)}: no lens table row names it; say so in the log."
+    return table
 
 
 def lens_brief(ticket, ticket_text, writer_texts):
@@ -722,9 +735,17 @@ def read_record(path):
         raise ReviewError(f"{path} is not valid JSON: {error}") from error
 
 
-def last_record(rounds):
-    """(round number, record) of the highest round whose review.json has a head, else (None, None)."""
-    for number in reversed(round_numbers(rounds)):
+def round_state(rounds):
+    """(last record or None, unfinished round or None), the rounds folder listed once: what a caller
+    that polls many issues needs."""
+    numbers = round_numbers(rounds)
+    return last_record(rounds, numbers)[1], unfinished_round(rounds, numbers)
+
+
+def last_record(rounds, numbers=None):
+    """(round number, record) of the highest round whose review.json has a head, else (None, None).
+    numbers are the rounds' numbers when the caller has listed them."""
+    for number in reversed(round_numbers(rounds) if numbers is None else numbers):
         try:
             record = read_record(round_dir(rounds, number) / "review.json")
         except ReviewError:
@@ -748,10 +769,11 @@ def withdrawn_round(rounds):
     return {"round": numbers[-1]}
 
 
-def unfinished_round(rounds):
+def unfinished_round(rounds, numbers=None):
     """{"round", "head"} of the highest round with a request.json and no review.json, or None. A
-    request.json that is unreadable leaves the head None."""
-    for number in reversed(round_numbers(rounds)):
+    request.json that is unreadable leaves the head None. numbers are the rounds' numbers when the
+    caller has listed them."""
+    for number in reversed(round_numbers(rounds) if numbers is None else numbers):
         folder = round_dir(rounds, number)
         if (folder / "request.json").exists() and not (folder / "review.json").exists():
             try:
@@ -1030,6 +1052,18 @@ def refuse_while_reviewer_runs(unfinished, key, sources, command):
                           f"close its Review {key} terminal, then run {command}")
 
 
+def drop_gone_reviewer(folder, unfinished):
+    """Removes the reviewer from request.json once refuse_while_reviewer_runs has passed it: its
+    session is gone, so the reopen's link must not meet the plan window's pid check on a pid some
+    other process now holds. Only a reviewer this script considers live stays on request.json."""
+    if not unfinished.get("reviewer"):
+        return
+    stored = json.loads((folder / "request.json").read_text())
+    stored.pop("reviewer", None)
+    write_atomically(folder / "request.json", json.dumps(stored) + "\n")
+    append_log(folder, f"reviewer (pid {unfinished['reviewer'].get('pid')}) is not a Claude session: dropped from the request")
+
+
 def write_request(key, root, rounds, sources, restart, prompts, if_due=False, lenses=""):
     """request's work, under the lock: the state is read, and due checked, with no other run able
     to change it. With if_due (`pr`'s call), a review that isn't due, an unfinished round for this
@@ -1044,6 +1078,7 @@ def write_request(key, root, rounds, sources, restart, prompts, if_due=False, le
         same_head = unfinished.get("head") == head
         if same_head and not restart and (folder / "request.md").exists():
             refuse_while_reviewer_runs(unfinished, key, sources, f"plan review {key}")
+            drop_gone_reviewer(folder, unfinished)
             append_log(folder, f"reopened: the request for {head} is unchanged")
             return Outcome(folder / "request.md", f"round {unfinished['round']}'s request reopened",
                            unfinished.get("token"), unfinished["round"])
@@ -1251,15 +1286,17 @@ def due(key, sources):
 def read_posted(folder):
     """What earlier runs of `finish` for this round had posted: {"reviews": [{"id", "keys"}],
     "comments": {key: comment id}, "bodies": {key: review id}, "intent": the POST in flight or None,
-    "advised": whether a review carried the round's advisory}. A round restarted at a new head
-    keeps it, so what was posted before isn't posted again."""
+    "advisedHead": the head a review carrying the round's advisories was posted at, or None}. A round
+    restarted at a new head keeps it, so what was posted before isn't posted again, and its advisories
+    are posted when that head differs. A posted.json from before advisedHead has "advised": true and no
+    advisedHead; it reads as advised at no particular head, so the advisories are posted once more."""
     try:
         posted = json.loads((folder / "posted.json").read_text())
     except FileNotFoundError:
         posted = {}
     except ValueError as error:
         raise ReviewError(f"{folder / 'posted.json'} is not valid JSON: {error}") from error
-    return {"comments": {}, "bodies": {}, "reviews": [], "missing": {}, "intent": None, "advised": False, **posted}
+    return {"comments": {}, "bodies": {}, "reviews": [], "missing": {}, "intent": None, "advisedHead": None, **posted}
 
 
 def post_findings(record, round_number, folder, pull_request, sources):
@@ -1276,7 +1313,7 @@ def post_findings(record, round_number, folder, pull_request, sources):
         inline_keys, body_keys = [f["key"] for f in placed["inline"]], [f["key"] for f in placed["body"]]
         intend(posted, folder, {"kind": "review", "inline": inline_keys, "body": body_keys, "advisory": bool(advisories)})
         review_id = post_review(record, round_number, placed, advisories, pull_request(), sources)
-        record_review(posted, review_id, inline_keys, body_keys, bool(advisories))
+        record_review(posted, review_id, inline_keys, body_keys, record["head"] if advisories else None)
         save_posted(folder, posted)
     collect_inline_comment_ids(posted, folder, pull_request, sources, {f["key"] for f in unsettled_findings(record)})
     try:
@@ -1292,8 +1329,12 @@ def post_findings(record, round_number, folder, pull_request, sources):
 
 
 def advisories_to_post(record, posted):
-    """The record's advisories, unless a review of this round already carried them."""
-    return [] if posted["advised"] else record.get("advisories", [])
+    """The record's advisories, unless a review at this head already carried them."""
+    return [] if advised_at(posted, record["head"]) else record.get("advisories", [])
+
+
+def advised_at(posted, head):
+    return posted["advisedHead"] is not None and posted["advisedHead"] == head
 
 
 def intend(posted, folder, intent):
@@ -1303,10 +1344,13 @@ def intend(posted, folder, intent):
     save_posted(folder, posted)
 
 
-def record_review(posted, review_id, inline_keys, body_keys, advised=False):
+def record_review(posted, review_id, inline_keys, body_keys, advised_head=None):
+    """Records a posted review; advised_head is the head it carried the advisories at, None when it
+    carried none."""
     posted["reviews"].append({"id": review_id, "keys": inline_keys})
     posted["bodies"].update({key: review_id for key in body_keys})
-    posted["advised"] = posted["advised"] or advised
+    if advised_head:
+        posted["advisedHead"] = advised_head
     posted["intent"] = None
 
 
@@ -1320,7 +1364,7 @@ def settle_intent(posted, folder, round_number, head, pull_request, sources):
     if intent["kind"] == "review":
         review_id = remote_review_id(posted, intent, round_number, head, pull_request(), sources)
         if review_id:
-            record_review(posted, review_id, intent["inline"], intent["body"], intent.get("advisory", False))
+            record_review(posted, review_id, intent["inline"], intent["body"], head if intent.get("advisory") else None)
     else:
         comment_id = remote_file_comment_id(posted, intent["key"], head, pull_request(), sources)
         if comment_id:
@@ -1342,9 +1386,14 @@ def remote_review_id(posted, intent, round_number, head, pull_request, sources):
             continue
         carried = marker_keys(candidate.get("body")) | {
             key for comment in sources.review_comments(pull_request, candidate["id"]) for key in marker_keys(comment.get("body"))}
-        if wanted <= carried and (ADVISORY_MARKER in (candidate.get("body") or "") or not intent.get("advisory")):
+        if wanted <= carried and carries_advisory(candidate, intent):
             return candidate["id"]
     return None
+
+
+def carries_advisory(candidate, intent):
+    """Whether a review on the PR carries the advisory the intent had; true when the intent had none."""
+    return not intent.get("advisory") or ADVISORY_MARKER in (candidate.get("body") or "")
 
 
 def remote_file_comment_id(posted, key, head, pull_request, sources):

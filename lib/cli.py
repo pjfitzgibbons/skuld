@@ -381,13 +381,21 @@ REVIEW_USAGE = "usage: plan review KEY [--restart | --if-due]"
 REVIEW_FLAGS = ("--restart", "--if-due")
 
 
+def unknownFlags(flags):
+    return [flag for flag in flags if flag not in REVIEW_FLAGS]
+
+
+# --restart and --if-due together contradict each other: one forces a restart, the other starts only when due.
+def conflictingFlags(flags):
+    return set(REVIEW_FLAGS) <= set(flags)
+
+
 # (key, restart, ifDue) of `plan review`'s arguments; a flag it doesn't know, a second word, or
 # --restart with --if-due is refused.
 def reviewArguments(args):
     flags = [arg for arg in args if arg.startswith("--")]
     words = [arg for arg in args if not arg.startswith("--")]
-    unknown = [flag for flag in flags if flag not in REVIEW_FLAGS]
-    if unknown or len(words) > 1 or set(REVIEW_FLAGS) <= set(flags):
+    if unknownFlags(flags) or len(words) > 1 or conflictingFlags(flags):
         raise RuntimeError(f"{REVIEW_USAGE} (given: {' '.join(args)})")
     return (words[0] if words else None), "--restart" in flags, "--if-due" in flags
 

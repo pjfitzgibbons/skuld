@@ -429,12 +429,13 @@ independent. `plan review KEY` (`lib/cli.py`, `cmdReview`):
    issue's ticket file or a Jira issue's page. From a ticket file, `request.md` copies the `[x]` lines
    of its `## Lenses` and, for each, its row of the lens table: the one in
    `~/.claude/agents/technical-writer.md`, with the repo's `docs/agents/technical-writer.md` adding
-   rows or overriding them. For a Jira issue it names the page, whose description's `## Lenses` the
+   rows or overriding them. A selected lens with no row in either table is named in a line under the table. A `[x]` or `[X]`
+   under a `-`, `*` or `+` bullet selects a lens. For a Jira issue it names the page, whose description's `## Lenses` the
    reviewer reads, and lists every lens. With no ticket, or one that can't be read, the reviewer uses
    every lens and says so in its log. With a
-   round unfinished for this HEAD it reopens that round as it is, rewriting nothing, unless the
-   round's claimed reviewer is still running: then it refuses and says to close its `Review KEY`
-   terminal first. With one for an
+   round unfinished for this HEAD it reopens that round as it is, rewriting only to remove a
+   claimed reviewer that is no longer a live Claude session from `request.json`, unless that
+   reviewer is still running: then it refuses and says to close its `Review KEY` terminal first. With one for an
    older head it refuses and names `--restart`, which writes the round again in its own folder at
    HEAD unless the round's reviewer is still running (see Restart below). With none unfinished and no review due, it prints "HEAD <short> was reviewed in round <n>"
    and opens nothing;
@@ -523,8 +524,9 @@ on the requested head, so a push made while the review runs doesn't refuse its w
 every page of the posted review's comments (`gh api --paginate --slurp`). Only then does it write
 `review.json` and delete the request files. A failure before that leaves no `review.json` and logs why.
 The record's advisories go in the body of the review `finish` posts, under a hidden
-`<!-- review-advisory -->` marker, once per round: with no finding left to post, `finish` posts a
-review for the advisory alone, and `posted.json` records that a review carried it.
+`<!-- review-advisory -->` marker, once per head: with no finding left to post, `finish` posts a
+review for the advisory alone, and `posted.json` records the head (`advisedHead`) a review carried it
+at, so a round restarted at a new head posts that head's advisories and a rerun at the same head doesn't.
 
 **`review.json`** holds `findings`, each `{file, line, summary, disposition}` plus `key`
 (`file:lines:classification`), `why` (why it matters) and `fixShows` (what a correct fix must show),
