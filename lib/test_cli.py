@@ -240,6 +240,24 @@ class CmdOpenTests(unittest.TestCase):
                     step.assert_not_called()
         self.assertEqual(os.listdir(self.tmp), [])
 
+    def test_start_and_open_with_no_key_print_their_usage_before_anything_changes(self):
+        for command in ("start", "open"):
+            with self.subTest(command=command), mock.patch.object(cli.config_mod, "load", return_value=self.cfg), mock.patch.object(
+                cli, "jiraFrom"
+            ) as jiraFrom, mock.patch.object(startLib, "start") as start, mock.patch.object(term_mod, "run") as run:
+                with self.assertRaises(RuntimeError) as raised:
+                    main([command])
+                self.assertEqual(str(raised.exception), f"usage: plan {command} KEY")
+                for step in (jiraFrom, start, run):
+                    step.assert_not_called()
+        self.assertEqual(os.listdir(self.tmp), [])
+
+    def test_a_malformed_key_still_gets_the_jira_key_error(self):
+        with mock.patch.object(cli.config_mod, "load", return_value=self.cfg), mock.patch.object(term_mod, "run") as run:
+            with self.assertRaisesRegex(RuntimeError, r'^Start needs a Jira key like CIAM-123, not "foo"$'):
+                main(["open", "foo"])
+            run.assert_not_called()
+
     def test_a_jira_issues_record_has_its_browse_url(self):
         self.runOpen("CIAM-1")
         self.assertEqual(self.issueSettings("CIAM-1")["plan.ticketUrl"], "https://cryoport.atlassian.net/browse/CIAM-1")

@@ -239,6 +239,8 @@ def cmdView(cfg, key):
 # terminal tool doesn't need two code paths. A wrong extension link stops it first
 # (term.checkExtensionLink), before anything changes.
 def cmdStart(cfg, key, command="start"):
+    if key is None:
+        raise RuntimeError(f"usage: plan {command} KEY")
     startLib.checkId(key, "Start")
     term_mod.checkExtensionLink(command, key)
     store = config_mod.issueStoreFrom(cfg)  # no store stops Start before anything changes
