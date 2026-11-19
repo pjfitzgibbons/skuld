@@ -4,7 +4,7 @@
 
 ## 1. Status
 
-Accepted.
+Superseded by [ADR 0005](../adr/0005-redmine-is-the-tracker.md).
 
 <a id="context"></a>
 

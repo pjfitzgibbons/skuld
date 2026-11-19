@@ -73,7 +73,8 @@ Each run touches up to three places, and each holds one kind of thing:
 
 - **Skuld** holds code and definitions: `lib/`, `bin/`, the helper scripts, the issue file spec
   (`docs/issue-format.md`), the issue template (`templates/issue.md`), and `store.yml`, which names
-  the store's projects and their repo remotes.
+  the store's projects and their repo remotes. An `issues/` folder in skuld is not part of skuld's
+  repo; skuld ignores it.
 - **The ticket store** holds data: `active/` and `archive/` for ticket files, `milestones/`, and
   `reviews/<KEY>/` for review rounds. It sits at the path the machine config's `issueStore` names,
   and has a git remote of its own. A watcher commits and pushes every change once the checker
@@ -88,6 +89,9 @@ writes no field for that.
 
 The machine config, `~/.config/skuld/config.json`, holds what differs per Mac: `issueStore`,
 `checkouts` (this Mac's main checkouts) and the Jira projects with their repo remotes.
+
+Each Mac clones the same ticket store. A work Mac's `issueStore` names a store whose remote may hold
+work data, never the home store.
 
 The Jira API token lives only in `~/.netrc` (machine `cryoport.atlassian.net`), read fresh by
 `lib/jira.py` on each call: never cached, never in an env var, never logged. Nothing in skuld or the
