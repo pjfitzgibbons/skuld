@@ -594,8 +594,9 @@ The store is a folder of Markdown files with YAML front matter, in a git repo of
 `queries/` holds saved DuckDB `.sql` files that read the review files and `plan list --json` output
 in place. DuckDB is an analysis tool only: it stores nothing, and the files stay the source of
 truth ([ADR 0006 §3.7](adr/0006-the-ticket-store-is-skulds-tracker.md#duckdb)). `INDEX.md` is a
-generated copy of the ticket list, for reading on GitHub. `scripts/index.py` writes it, and a
-pre-commit hook runs `scripts/index.py --check` so it stays current.
+generated copy of the ticket list, for reading on GitHub. `scripts/index.py` writes it: the
+watcher runs it before each commit and stages the result. A pre-commit hook runs
+`scripts/index.py --check` and refuses a commit whose `INDEX.md` is stale.
 
 `FileStore` is the `IssueStore` adapter for it. It answers for every prefix `store.yml` lists, and
 reads `active/` and `archive/` together. A ticket's front matter holds `key`, `title`, `status`
@@ -620,11 +621,13 @@ appends a dated line under `## Log`. `FileStore` answers in the same shapes `Jir
 Ship and Done have no store-specific branch.
 
 **The watcher.** `issue-watch` runs under launchd and watches `active/`, `archive/`, `milestones/`
-and `reviews/`. After a quiet period (`debounceSeconds` in `store.yml`), so a mass edit lands as one
-commit, it runs the checker. On failure it commits nothing, posts a macOS notification naming the
-file and rule, and logs the same. On success it commits every change with a generated message
-(`SK-0012: status in-progress`, `12 issues: ordinal`) and pushes, retrying a failed push after
-`pull --rebase`. The watcher watches the checkout that `issueStore` names.
+and `reviews/`. After a quiet period (`debounceSeconds` in `store.yml`), so a mass edit becomes
+one commit, it runs the checker. On failure it commits nothing, posts a macOS notification naming
+the file and rule, and logs the same. On success it runs `scripts/index.py`, commits every change
+and the regenerated `INDEX.md` in one commit with a generated message (`SK-0012: status
+in-progress`, `12 issues: ordinal`), and pushes, retrying a failed push after `pull --rebase`. A
+commit the pre-commit hook refuses is a failure like the checker's: nothing is committed, and the
+notification and log line name the hook. The watcher watches the checkout that `issueStore` names.
 
 <a id="server"></a>
 
@@ -641,23 +644,23 @@ pages:
   worktree, PR state, Claude state from the pulses file and latest round) and milestones (points
   progress, and open tickets in work order) and trends (points burned per week, findings per round),
   which run the store's saved `queries/*.sql` through DuckDB; the server takes a `duckdb`
-  dependency, and the files stay the source of truth. Today `/` lists the store's tickets in progress, and
-  `/health` reports the server's state. The sections are to be built.
-- **A ticket's page.** Every ticket has a read-only page at the ticket route, rendered from its file
-  (to be built, SK-0034).
-- **A round's report and review pages**, rendered from the round's files (to be built, SK-0033).
-  Their URLs and fallbacks are in §7.6.1.
+  dependency, and the files stay the source of truth.
+- **`/health`**, which reports the server's state.
+- **A ticket's page.** Every ticket has a read-only page at the ticket route, rendered from its file.
+- **A round's report and review pages**, rendered from the round's files. Their URLs and fallbacks
+  are in §7.6.1.
 
 **Live updates.** An `/events` route sends server-sent events. A watcher on the store clone and the
-pulses file drives it, and a page re-fetches only the section that changed (to be built).
+pulses file drives it, and a page re-fetches only the section that changed.
 
 **PR state.** The server reads a PR's state with `gh pr view`, cached, and polls only for tickets in
-flight (to be built).
+flight.
 
 **Links.** A dashboard row links to its server page and, through `vscode://` links, into the
 `plan-window` extension. `plan start` writes `host: <mac name>` into the ticket's front matter, which
 syncs through the store's git, and the dashboard and the extension read it to say a ticket's worktree
-is on the other Mac (to be built). The `start` link's handler is to be built ([ADR 0006 §3.6](adr/0006-the-ticket-store-is-skulds-tracker.md#links)).
+is on the other Mac. The extension handles the `start` link as it handles the others
+([ADR 0006 §3.6](adr/0006-the-ticket-store-is-skulds-tracker.md#links)).
 
 How each section is built, and its routes' exact shapes, are in the design, not here.
 

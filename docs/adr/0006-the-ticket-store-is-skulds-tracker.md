@@ -64,8 +64,10 @@ only that Mac's own store ([§3.5](#server)).
 ADR 0005 is tabled and supersedes nothing, so ADR 0001's store rules stand. This ADR adopts
 ADR 0001's decisions (`docs/adr/0001-file-ticket-store.md:26-36`, §3) as its own, amended by
 [§3.3](#layout) to [§3.6](#links): the layout gains `points:`, `queries/` and `INDEX.md`; `store.yml`
-names a key prefix and a list of repos; and every ticket has a web page ([§3.5](#server)). Every other rule of ADR 0001 holds as written: `store.yml` lives in skuld;
-the front matter is a restricted YAML subset and the repo stays stdlib-only; numbers never repeat;
+names a key prefix and a list of repos; and every ticket has a web page ([§3.5](#server)). The
+repo is no longer stdlib-only: the server depends on Flask, markdown-it-py, mdit-py-plugins and DuckDB
+([§3.5](#server), [§3.7](#duckdb)). Every other rule of ADR 0001 holds as written: `store.yml` lives
+in skuld; the front matter is a restricted YAML subset; numbers never repeat;
 one issue's work stays in one repo; Done never changes a status; a round's review files live in the
 store.
 
@@ -76,15 +78,17 @@ ADR 0001's Status reads "Accepted, amended by ADR 0006" and names these amendmen
 ### 3.3 The store's layout
 
 - `SK-*.md`: a ticket. The front matter adds `points:`, a Fibonacci number (1 2 3 5 8 13)
-  (`docs/plan-file-issue-store.md:303`), and `host:`, the name of the Mac holding the ticket's
+  (`docs/plan-file-issue-store.md:297`), and `host:`, the name of the Mac holding the ticket's
   worktree, which `plan start` writes ([§3.6](#links)).
 - `milestones/*.md`: a milestone, with `due`.
 - `store.yml`: names each project as a key prefix and a list of repos (SK-0021, SK-0022).
 - `reviews/<KEY>/round-N.jsonl`: one finding per line, one file per round, written once, plus the
   round's report files (SK-0014).
 - `queries/*.sql`: saved DuckDB queries ([§3.7](#duckdb)).
-- `INDEX.md`: a generated copy of the ticket list, for reading on GitHub. A pre-commit hook runs
-  `scripts/index.py --check` to keep it current.
+- `INDEX.md`: a generated copy of the ticket list, for reading on GitHub. `issue-watch` regenerates
+  it with `scripts/index.py` and stages it in the commit it makes ([§3.4](#writes)). A pre-commit
+  hook runs `scripts/index.py --check` and refuses a commit whose `INDEX.md` is stale, so a commit
+  made by hand keeps it current too.
 
 <a id="writes"></a>
 
@@ -93,7 +97,8 @@ ADR 0001's Status reads "Accepted, amended by ADR 0006" and names these amendmen
 The `plan` CLI, and `bin/issue_update`, is the only writer. `plan list --json` prints the tickets
 for readers other than the server. A checker rejects dependency cycles (SK-0019).
 
-Sync between Macs: `issue-watch` commits and pushes (SK-0026). Pulling is plain git.
+Sync between Macs: `issue-watch` commits and pushes (SK-0026), with `INDEX.md` regenerated in the
+same commit. Pulling is plain git.
 
 <a id="server"></a>
 
@@ -114,7 +119,7 @@ the work store, and Jira work stays in Jira, as ADR 0001 decides
 - The round report and review pages (SK-0033).
 
 **Live updates** are server-sent events from an `/events` route. A watcher on the store clone and
-the pulses file (`lib/config.py:71-73`, `:99`) drives it, and the page re-fetches only the section that
+the pulses file (`lib/config.py:72-73`, `:99`) drives it, and the page re-fetches only the section that
 changed.
 
 **PR state** comes from `gh pr view`, cached, and polled only for tickets in flight.
@@ -232,5 +237,5 @@ sweep.
 
 ### 5.3 Non-goals
 
-A board, a Gantt chart and a journal plugin stay non-goals
-(`docs/plan-file-issue-store.md:90-96`).
+A board and a Gantt chart stay non-goals (`docs/plan-file-issue-store.md:89-92`), and so does a
+journal plugin.
