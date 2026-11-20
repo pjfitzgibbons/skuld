@@ -1579,35 +1579,49 @@ class ScopeInTheRequest(InRounds):
         self.assertIn("No ticket was named, so no ticket line rules a finding out of scope", review.scope_brief(None, None))
         self.assertIn("The ticket `/gone.md` can't be read, so no ticket line", review.scope_brief("/gone.md", None))
 
-    def test_the_request_renders_the_round_s_notes_md_when_it_is_there(self):
+    def test_a_first_review_and_a_round_name_the_notes_path_beside_the_rounds_folder(self):
+        notes = str(self.rounds.parent / "notes.md")
+        self.assertEqual(notes, str(review.notes_path(self.rounds)))
+        self.assertIn(f"### The author's notes\n\nThe author's notes are in `{notes}`.", self.request_text())
         self.start_round_2()
-        self.write(2, review.AUTHOR_NOTES, "Round 2 leaves the tabled ADR alone.\n")
-        path = review.request("SK-9", FakeSources()).path
-        self.assertEqual(path, self.folder(2) / "request.md")
-        self.assertIn("### The author's notes for this round\n\nRound 2 leaves the tabled ADR alone.\n", path.read_text())
+        (self.folder(1) / "request.json").unlink(missing_ok=True)
+        self.assertIn(f"The author's notes are in `{notes}`.", self.request_text())
 
-    def test_the_request_says_none_when_the_round_has_no_notes(self):
-        self.assertIn("### The author's notes for this review\n\nNone.\n", self.request_text())
-        (self.folder(1) / "request.json").unlink()
-        self.start_round_2()
-        self.assertIn("### The author's notes for this round\n\nNone.\n", self.request_text())
+    def test_the_request_does_not_quote_the_notes_file(self):
+        (self.rounds.parent).mkdir(parents=True, exist_ok=True)
+        (self.rounds.parent / "notes.md").write_text("Leaves lib/ alone, said the author.")
+        self.assertNotIn("Leaves lib/ alone, said the author.", self.request_text())
+
+    def test_a_reopened_request_still_names_the_notes_path_and_is_unchanged(self):
+        before = ask(FakeSources()).read_text()
+        (self.rounds.parent / "notes.md").write_text("Written after the request.")
+        reopened = ask(FakeSources()).read_text()
+        self.assertEqual(reopened, before)
+        self.assertIn(f"`{self.rounds.parent / 'notes.md'}`", reopened)
+
+    def test_no_request_creates_a_folder_for_notes_and_notes_make_no_round(self):
+        (self.rounds.parent).mkdir(parents=True, exist_ok=True)
+        (self.rounds.parent / "notes.md").write_text("Notes.")
+        self.assertEqual(review.round_numbers(self.rounds), [])
+        self.assertEqual(review.request("SK-9", FakeSources()).round, 1)
 
     def test_the_rendered_prompts_leave_no_placeholder(self):
         ticket = Path.cwd() / "SK-9-thing.md"
         ticket.write_text(TICKET)
         self.assertNotRegex(self.request_text(str(ticket)), PLACEHOLDER_LEFT)
-        (self.folder(1) / "request.json").unlink()
+        (self.folder(1) / "request.json").unlink(missing_ok=True)
         self.start_round_2()
-        self.write(2, review.AUTHOR_NOTES, "Leaves lib/ alone.")
         self.assertNotRegex(self.request_text(str(ticket)), PLACEHOLDER_LEFT)
 
-    def test_a_placeholder_in_the_author_s_notes_is_left_as_written(self):
-        self.write(1, review.AUTHOR_NOTES, "The template's {{HEAD}} stays.")
-        self.assertIn("The template's {{HEAD}} stays.", self.request_text())
+    def test_a_placeholder_in_a_ticket_section_is_left_as_written_beside_the_notes_path(self):
+        """SCOPE_RULES is substituted before NOTES, so a sequential replace would fill this one."""
+        ticket = Path.cwd() / "SK-9-thing.md"
+        ticket.write_text(TICKET.replace(SCOPE_RULE, "- Never writes {{NOTES}} anywhere."))
+        self.assertIn("- Never writes {{NOTES}} anywhere.", self.request_text(str(ticket)))
 
     def test_render_never_reads_a_value_for_placeholders(self):
-        self.assertEqual(review.render("{{SCOPE_RULES}} {{AUTHOR_NOTES}}", {"SCOPE_RULES": "{{AUTHOR_NOTES}}", "AUTHOR_NOTES": "None."}),
-                         "{{AUTHOR_NOTES}} None.")
+        self.assertEqual(review.render("{{SCOPE_RULES}} {{NOTES}}", {"SCOPE_RULES": "{{NOTES}}", "NOTES": "/n/notes.md"}),
+                         "{{NOTES}} /n/notes.md")
 
 
 class OutOfScope(InRounds):
@@ -1620,9 +1634,33 @@ class OutOfScope(InRounds):
         self.round_2_answering(finding(commentId=7), finding(state="OutOfScope", commentId=7, scopeRule=SCOPE_RULE))
         sources = FakeSources()
         review.finish("SK-9", sources)
-        self.assertEqual((sources.posts, sources.file_comments), ([], []))
+        self.assertEqual(([post["comments"] for post in sources.posts], sources.file_comments), ([[]], []))
         saved = self.saved(2)["findings"][0]
         self.assertEqual((saved["disposition"], saved["scopeRule"]), ("OutOfScope", SCOPE_RULE))
+
+    def test_a_finding_ruled_out_when_first_raised_has_no_comment_posted_for_it(self):
+        ask(FakeSources())
+        ruled_out = finding(state="OutOfScope", scopeRule=SCOPE_RULE)
+        self.write(1, "review.next.json", record(head=HEAD, findings=[ruled_out]))
+        sources = FakeSources()
+        review.finish("SK-9", sources)
+        self.assertEqual(([post["comments"] for post in sources.posts], sources.file_comments), ([[]], []))
+        self.assertNotIn("its file isn't in the PR", sources.posts[0]["body"])
+
+    def test_the_review_body_lists_the_findings_that_became_out_of_scope_this_round(self):
+        self.round_2_answering(finding(commentId=7), finding(state="OutOfScope", commentId=7, scopeRule=SCOPE_RULE))
+        sources = FakeSources()
+        review.finish("SK-9", sources)
+        self.assertEqual((sources.posts[0]["comments"], sources.file_comments), ([], []))
+        self.assertIn("\nRuled out of scope this round; their threads need no answer\n"
+                      f"- **f.py:3-5:crash**: {SCOPE_RULE}", sources.posts[0]["body"])
+
+    def test_a_finding_already_out_of_scope_in_the_last_record_is_not_listed_again(self):
+        earlier = finding(state="OutOfScope", commentId=7, scopeRule=SCOPE_RULE)
+        self.round_2_answering(earlier, earlier)
+        sources = FakeSources()
+        review.finish("SK-9", sources)
+        self.assertEqual(sources.posts, [])
 
     def test_finish_refuses_an_out_of_scope_finding_without_its_scope_rule(self):
         self.round_2_answering(finding(commentId=7), finding(state="OutOfScope", commentId=7))
@@ -1660,9 +1698,10 @@ class ScopePrompts(unittest.TestCase):
             text = (review.PROMPTS / name).read_text()
             self.assertIn("## The PR's scope", text)
             self.assertIn("{{SCOPE_RULES}}", text)
-            self.assertIn("{{AUTHOR_NOTES}}", text)
+            self.assertIn("{{NOTES}}", text)
+            self.assertIn("read that file if it exists", " ".join(text.split()))
             self.assertIn('`"OutOfScope"`', text)
-            self.assertIn("the PR's scope section above, as it is", text)
+            self.assertIn("the PR's scope section above, and the notes file's text, as they are", " ".join(text.split()))
 
     def test_the_round_raises_new_findings_in_its_diff_and_up_to_two_steps_out_within_scope(self):
         rule = " ".join(round_rule(3).split())
@@ -1671,9 +1710,24 @@ class ScopePrompts(unittest.TestCase):
                       "this round's change materially changes that file's behaviour or breaks it", rule)
         self.assertIn("Two steps is the limit.", rule)
         self.assertIn("a break in a file the Guardrails or the author's notes rule out, or one further than two "
-                      "steps out, is not a finding but an advisory without a lens", rule)
+                      "steps out, is not a finding but an advisory of `\"kind\": \"break\"` with no `lens`", rule)
         self.assertIn("a regression (something that held at the last reviewed head and fails now), a silent loss "
                       "or a crash", rule)
+
+    def test_both_prompts_show_and_explain_the_break_kind_of_advisory(self):
+        for name in ("first-review.md", "review-round.md"):
+            text = (review.PROMPTS / name).read_text()
+            self.assertIn('"kind": "break"', text)
+            self.assertIn('neither a `lens` nor `"kind": "break"`', " ".join(text.split()))
+
+    def test_the_first_review_s_copy_list_names_scope_rule_for_an_out_of_scope_finding(self):
+        text = " ".join((review.PROMPTS / "first-review.md").read_text().split())
+        self.assertIn('(key, summary, fix, why, fixShows, disposition, and scopeRule for an `"OutOfScope"` finding)', text)
+
+    def test_the_round_s_record_lists_name_scope_rule_for_an_out_of_scope_finding(self):
+        text = " ".join((review.PROMPTS / "review-round.md").read_text().split())
+        self.assertIn('`"OutOfScope"` with its `scopeRule`', text)
+        self.assertIn('An `"OutOfScope"` finding keeps its `scopeRule`.', text)
 
     def test_the_round_judges_a_fix_over_the_same_two_step_reach(self):
         self.assertIn("the round's reach, the code one and two steps out from the change", " ".join(round_rule(1).split()))
@@ -1684,7 +1738,7 @@ def advisory(lens="L11 Retries", seen=("a.py:1", "b.py:2", "c.py:3")):
             "seen": list(seen)}
 
 
-OUTSIDE = {"concern": "docs/adr/0006.md still names lib/gone.py", "seen": ["docs/adr/0006.md:4"]}
+OUTSIDE = {"kind": "break", "concern": "docs/adr/0006.md still names lib/gone.py", "seen": ["docs/adr/0006.md:4"]}
 
 
 class Advisories(InRounds):
@@ -1695,14 +1749,39 @@ class Advisories(InRounds):
     def test_an_advisory_needs_a_concern_a_lens_and_three_places(self):
         self.assertEqual(review.advisory_problems(advisory()), [])
         self.assertIn("seen lists the 3 or more places", review.advisory_problems(advisory(seen=("a.py:1", "b.py:2")))[0])
-        self.assertIn("needs concern and lens", review.advisory_problems({"lens": "", "seen": ["a", "b", "c"]})[0])
+        self.assertIn("needs concern and lens", review.advisory_problems({"lens": "L", "seen": ["a", "b", "c"]})[0])
         self.assertIn("advisories is not a list",
                       review.record_problems({**record(head=HEAD), "advisories": {}}, 1, HEAD))
 
-    def test_an_advisory_without_a_lens_is_a_break_outside_the_diff_with_one_place_or_more(self):
+    def test_a_break_beyond_reach_has_kind_break_and_one_place_or_more(self):
         self.assertEqual(review.advisory_problems(OUTSIDE), [])
         self.assertIn("seen lists the places the break was found", review.advisory_problems({**OUTSIDE, "seen": []})[0])
-        self.assertIn("needs concern", review.advisory_problems({"seen": ["a.py:1"]})[0])
+        self.assertIn("needs concern", review.advisory_problems({"kind": "break", "seen": ["a.py:1"]})[0])
+
+    def test_a_break_whose_lens_is_null_or_blank_is_accepted_as_a_break(self):
+        for lens in (None, "", "  "):
+            with self.subTest(lens=lens):
+                self.assertEqual(review.advisory_problems({**OUTSIDE, "lens": lens}), [])
+
+    def test_a_lensless_advisory_without_kind_is_refused_naming_both_shapes(self):
+        for lensless in ({"concern": "retries", "seen": ["a:1", "b:2", "c:3"]},
+                         {"concern": "retries", "lens": None, "seen": ["a:1", "b:2", "c:3"]},
+                         {"concern": "retries", "lens": "", "seen": ["a:1"]}):
+            with self.subTest(advisory=lensless):
+                problems = review.advisory_problems(lensless)
+                self.assertEqual(len(problems), 1)
+                self.assertIn('set lens for a recurring concern, or "kind": "break"', problems[0])
+
+    def test_an_old_shape_recurring_concern_still_passes(self):
+        self.assertEqual(review.advisory_problems(advisory()), [])
+        self.assertEqual(review.advisory_problems({**advisory(), "kind": "break"}), [])
+
+    def test_each_advisory_heading_follows_a_blank_line_with_both_kinds(self):
+        lines = review.advisory_lines([advisory(), OUTSIDE])
+        first = lines.index("Advisory: concerns found more than twice, which could become lenses")
+        second = lines.index("Advisory: breaks beyond this round's reach or the PR's scope; not findings, nothing to answer")
+        self.assertEqual((lines[first - 1], lines[second - 1]), ("", ""))
+        self.assertEqual(review.advisory_lines([OUTSIDE])[1:3], [review.ADVISORY_MARKER, ""])
 
     def test_a_break_outside_the_diff_is_in_the_body_under_its_own_heading(self):
         self.start([], [advisory(), OUTSIDE])
@@ -1711,7 +1790,7 @@ class Advisories(InRounds):
         body = sources.posts[0]["body"]
         self.assertIn(review.ADVISORY_MARKER, body)
         self.assertIn("Advisory: concerns found more than twice, which could become lenses", body)
-        self.assertIn("Advisory: breaks beyond this round's reach or the PR's scope; not findings, nothing to answer\n"
+        self.assertIn("\n\nAdvisory: breaks beyond this round's reach or the PR's scope; not findings, nothing to answer\n"
                       "- docs/adr/0006.md still names lib/gone.py (at docs/adr/0006.md:4)", body)
 
     def test_the_advisory_is_in_the_body_of_the_review_with_the_findings(self):

@@ -33,14 +33,16 @@ differs from it, the working tree has moved on: read every file at that commit, 
 ## The PR's scope
 
 The ticket's Task and Guardrails declare what this PR does and what it leaves alone; the author's
-notes for this round add to them. Both bind this review, every leg of it, and override an earlier
+notes add to them. Both bind this review, every leg of it, and override an earlier
 finding's `fixShows`: what a scope line rules out is not asked of this PR, whatever `fixShows` says.
 
 {{SCOPE_RULES}}
 
-### The author's notes for this round
+### The author's notes
 
-{{AUTHOR_NOTES}}
+The author's notes are in `{{NOTES}}`. As your first step after `claim`, read that file if it exists, and
+treat its lines as binding scope, like the Guardrails; a `scopeRule` may quote one. Give each leg's
+brief its text, as part of the scope section.
 
 ## Unsettled findings from the last record
 
@@ -69,7 +71,7 @@ round's diff and the files above:
 
 - **One per selected lens.** Its brief: the lens, its note from the ticket and what the lens asks;
   the range, the commit and the rule to read files with `git show {{HEAD}}:<path>`; the files above;
-  the unsettled findings; the PR's scope section above, as it is. Through that lens it checks
+  the unsettled findings; the PR's scope section above, and the notes file's text, as they are. Through that lens it checks
   whether each change fixes its finding, and what the change breaks.
 - **One for the topic's overall concerns**, over the same diff and findings, with the same scope
   section.
@@ -87,7 +89,9 @@ its findings to the scope section when you merge. You own every finding you reco
 When a concern recurs, found more than twice across the legs, and deserves to become a lens of its
 own, record it as an advisory: `concern` (what recurs), `lens` (the lens it suggests, named, with
 the question it would ask), and `seen` (the three or more places it was found, as finding keys or
-`file:lines`).
+`file:lines`). A break beyond the round's reach or the PR's scope is an advisory of its own kind
+(rule 3): `"kind": "break"`, `concern` and `seen`, and no `lens`. `finish` refuses an advisory with
+neither a `lens` nor `"kind": "break"`.
 
 ## Rules
 
@@ -118,8 +122,8 @@ the question it would ask), and `seen` (the three or more places it was found, a
    this round's change materially changes that file's behaviour or breaks it: a fix in the diff
    can change what dependent code does. Two steps is the limit. The PR's scope still binds the
    reach: a break in a file the Guardrails or the author's notes rule out, or one further than two
-   steps out, is not a finding but an advisory without a lens: `concern` (what breaks) and `seen`
-   (its `file:lines`).
+   steps out, is not a finding but an advisory of `"kind": "break"` with no `lens`: `concern` (what
+   breaks) and `seen` (its `file:lines`).
 4. A finding in the same area as an earlier one is grouped with it under a named cause, in its
    `summary`. When a cause repeats a third time, write a Python check script in
    `{{DIR}}/` instead of finding another instance by hand, and put its path and output
@@ -127,7 +131,8 @@ the question it would ask), and `seen` (the three or more places it was found, a
 5. Do not commit, push, reply to a review thread or resolve one. Do not edit the code under
    review. You post findings only through the last step below.
 6. Copy every finding any leg reports into `{{RECORD}}`, however it was reported: the `code-review`
-   skill can report through the ReportFindings tool instead of as text. Skip none.
+   skill can report through the ReportFindings tool instead of as text. Skip none. An
+   `"OutOfScope"` finding keeps its `scopeRule`.
 7. Append a line to `{{LOG}}` as you finish each step, with `echo "..." >> {{LOG_ARG}}`.
 
 ## Last steps
@@ -137,7 +142,8 @@ the question it would ask), and `seen` (the three or more places it was found, a
    unchanged OK file keeps its earlier one), `findings` with every earlier unsettled finding and
    every new one, each with its `disposition` (`"open"`, `"Fixed"`, `"OutOfScope"` with its
    `scopeRule`, or `"New"`) and its `commentId` when it keeps its comment, `checks`, and
-   `advisories` (`[]` when no concern recurs and nothing breaks outside the diff or scope). Finding keys
+   `advisories` (`[]` when no concern recurs and nothing breaks outside the diff or scope; a break is
+   `"kind": "break"` with no `lens`). Finding keys
    stay `file:lines:classification`, and each finding has a `summary`. Copy each earlier finding's
    `why` and `fixShows` as they are (or as rule 1 rewrote them); the next round's reviewer reads
    them, not this conversation.

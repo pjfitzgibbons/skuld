@@ -13,7 +13,9 @@ review.next.json and runs `finish` as its last step.
 
 Rounds are numbered from 0, one folder each, the highest the latest. Round 0 is the author's change,
 reviewed with `/code-review medium`; each later round answers a review of the PR. A review after a
-push opens the next round: n is the latest round plus one, and at least 1. The author then answers
+push opens the next round: n is the unfinished round's own number, else a withdrawn round's own
+(a request whose review never started, taken back by `withdraw`), else the latest round plus one, and
+at least 1. The author then answers
 it in the same folder (report.md, replies/, commit.txt), which this script never writes. The
 folder's location is rounds_folder(); the rounds move to the store with the rest of an issue's
 files, and that function is the one place the path is written, but for the plan window's copy
@@ -28,8 +30,10 @@ A review's files, in rounds/<n>/:
                        "reviewer" ({"pid", "sessionId"}) added by `claim`; `finish` deletes it
     posted.json        the ids `finish` has posted so far; `finish` deletes it when it is done
     review.log         what the review did, one line per step
-    notes.md           the author's notes for this round's review, written by the author before the
-                       request; request.md quotes them, and they bind the review as the ticket's scope does
+
+`notes.md` is not in a round's folder: it is one file in the folder that holds rounds/ (.tmp/<KEY>/notes.md),
+which the author creates and edits whenever they like. request.md names its path, and the reviewer reads
+it at the start of every review, if it exists, so it binds the review as the ticket's Guardrails do.
 
 review.json, and review.next.json in the same shape (the reviewer leaves out file, line, range and
 call, which `finish` adds):
@@ -46,13 +50,16 @@ call, which `finish` adds):
      "checks": [{"script": "<path>", "output": "what it printed"}],
      "advisories": [{"concern": "what recurs", "lens": "the lens it suggests, and its question",
                      "seen": ["<finding key or file:lines>", ...]},
-                    {"concern": "what breaks beyond the round's reach or the PR's scope", "seen": ["<file:lines>"]}]}
+                    {"kind": "break", "concern": "what breaks beyond the round's reach or the PR's scope",
+                     "seen": ["<file:lines>"]}]}
 
-advisories (optional) are of two kinds. One with a lens is a concern found more than twice, three or
-more places in "seen", that could become a lens. One without is a break seen beyond the round's
-reach (its diff and the files up to two steps out from it) or outside the PR's scope, one or more
-places in "seen": a round raises findings only within its reach and scope. `finish` puts both in
-the body of the review it posts, once per round.
+advisories (optional) are of two kinds, told apart by value. One with a lens (text that isn't blank)
+is a concern found more than twice, three or more places in "seen", that could become a lens. One
+with "kind": "break" and no lens (absent, null or blank) is a break seen beyond the round's reach
+(its diff and the files up to two steps out from it) or outside the PR's scope, one or more places in
+"seen": a round raises findings only within its reach and scope. An advisory that is neither is
+refused. `finish` puts both in the body of the review it posts, once per round, and under them the
+findings that became OutOfScope this round, each with its key and scopeRule, which need no answer.
 
 findings and dispositions are the lists the local server's review page reads; the rest is extra. A
 review's findings include every earlier unsettled finding with its new disposition, so the latest
@@ -70,7 +77,7 @@ review after a push is a first review. A round is unfinished while its folder ha
 no review.json.
 
 A finding key is file:lines:classification, lines being "12" or "12-20". A finding is settled when
-Fixed, or OutOfScope: the ticket's Guardrails or the round's notes.md rule it out of the PR's scope,
+Fixed, or OutOfScope: the ticket's Guardrails or the author's notes.md rule it out of the PR's scope,
 and its scopeRule quotes that line. open and New are unsettled. `finish` posts each unsettled finding that has neither a commentId
 nor a reviewId, by where its lines are in the PR's diff, and records the id:
 
@@ -133,6 +140,7 @@ ROUND_PROMPT = "review-round.md"
 UNSETTLED = ("open", "New")
 STATES = ("open", "Fixed", "New", "OutOfScope")
 OUT_OF_SCOPE = "OutOfScope"
+BREAK_KIND = "break"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 ROUND_NAME = re.compile(r"^(0|[1-9][0-9]*)$")
 # lib/issuekeys.py's ISSUE_KEY_PATTERN, the one issue-key rule, which this script can't import; test_review.py
@@ -311,17 +319,25 @@ def advisory_problems(advisory):
         return ["an advisory is not an object"]
     if is_recurring_concern(advisory):
         return recurring_concern_problems(advisory)
-    return outside_break_problems(advisory)
+    if is_outside_break(advisory):
+        return outside_break_problems(advisory)
+    return [f"advisory {advisory.get('concern')!r}: set lens for a recurring concern, or \"kind\": \"break\" "
+            "(with no lens) for a break beyond the round's reach or the PR's scope"]
 
 
 def is_recurring_concern(advisory):
-    """An advisory with a lens; one without is a break seen beyond the round's reach or scope."""
-    return "lens" in advisory
+    """An advisory with a lens, text that isn't blank: a concern found more than twice."""
+    return is_text(advisory.get("lens"))
+
+
+def is_outside_break(advisory):
+    """An advisory marked "kind": "break" that carries no lens: a break seen beyond the round's reach or scope."""
+    return advisory.get("kind") == BREAK_KIND and not is_recurring_concern(advisory)
 
 
 def outside_break_problems(advisory):
     if not is_text(advisory.get("concern")):
-        return ["advisory without a lens: needs concern, what breaks beyond the round's reach or the PR's scope"]
+        return ["advisory of kind break: needs concern, what breaks beyond the round's reach or the PR's scope"]
     seen = advisory.get("seen")
     if not (isinstance(seen, list) and seen and all(is_text(place) for place in seen)):
         return [f"advisory {advisory['concern']!r}: seen lists the places the break was found"]
@@ -597,39 +613,55 @@ def body_line(finding):
     return f"- **{finding['key']}** (its file isn't in the PR): {finding['summary']} {marker(finding['key'])}"
 
 
-def advisory_lines(advisories):
-    """The body's advisory, under its marker: each recurring concern and the lens it suggests, then
-    each break seen beyond the round's reach or outside the PR's scope."""
-    if not advisories:
+def advisory_lines(advisories, ruled_out=()):
+    """The body's tail, under the advisory marker: each recurring concern and the lens it suggests,
+    each break seen beyond the round's reach or outside the PR's scope, then the findings ruled out of
+    scope this round. Each heading follows a blank line, so Markdown starts it as its own paragraph."""
+    if not (advisories or ruled_out):
         return []
-    return ["", ADVISORY_MARKER] + recurring_concern_lines(advisories) + outside_break_lines(advisories)
+    return (["", ADVISORY_MARKER] + recurring_concern_lines(advisories) + outside_break_lines(advisories)
+            + ruled_out_lines(ruled_out))
 
 
 def recurring_concern_lines(advisories):
     recurring = [advisory for advisory in advisories if is_recurring_concern(advisory)]
     if not recurring:
         return []
-    return ["Advisory: concerns found more than twice, which could become lenses"] + [
+    return ["", "Advisory: concerns found more than twice, which could become lenses"] + [
         f"- **{advisory['lens']}**: {advisory['concern']} (seen {len(advisory['seen'])} times: {', '.join(advisory['seen'])})"
         for advisory in recurring]
 
 
 def outside_break_lines(advisories):
-    outside = [advisory for advisory in advisories if not is_recurring_concern(advisory)]
+    outside = [advisory for advisory in advisories if is_outside_break(advisory)]
     if not outside:
         return []
-    return ["Advisory: breaks beyond this round's reach or the PR's scope; not findings, nothing to answer"] + [
+    return ["", "Advisory: breaks beyond this round's reach or the PR's scope; not findings, nothing to answer"] + [
         f"- {advisory['concern']} (at {', '.join(advisory['seen'])})" for advisory in outside]
 
 
-def review_payload(round_number, head, inline, in_body, advisories=()):
+def ruled_out_lines(ruled_out):
+    if not ruled_out:
+        return []
+    return ["", "Ruled out of scope this round; their threads need no answer"] + [
+        f"- **{finding['key']}**: {finding['scopeRule']}" for finding in ruled_out]
+
+
+def ruled_out_this_round(record, previous):
+    """The findings that are OutOfScope in record and were not in the previous round's record."""
+    already = {finding["key"] for finding in (previous or {}).get("findings", []) if finding["disposition"] == OUT_OF_SCOPE}
+    return [finding for finding in record["findings"]
+            if finding["disposition"] == OUT_OF_SCOPE and finding["key"] not in already]
+
+
+def review_payload(round_number, head, inline, in_body, advisories=(), ruled_out=()):
     """One review: the inline findings as comments, the findings whose file isn't in the PR as
-    lines of its body, then the advisory."""
+    lines of its body, then the advisory and the findings ruled out of scope this round."""
     lines = [f"Review round {round_number}: {len(inline) + len(in_body)} finding(s) in this review."]
     return {
         "commit_id": head,
         "event": "COMMENT",
-        "body": "\n".join(lines + [body_line(finding) for finding in in_body] + advisory_lines(advisories)),
+        "body": "\n".join(lines + [body_line(finding) for finding in in_body] + advisory_lines(advisories, ruled_out)),
         "comments": [inline_comment(finding) for finding in inline],
     }
 
@@ -666,7 +698,7 @@ PLACEHOLDER = re.compile(r"\{\{([A-Z_]+)\}\}")
 
 def render(template, values):
     """The template with each {{NAME}} of values replaced, in one pass: a value's own text (a ticket's
-    section, the author's notes) is never read for placeholders."""
+    section) is never read for placeholders."""
     return PLACEHOLDER.sub(lambda found: str(values.get(found.group(1), found.group(0))), template)
 
 
@@ -748,10 +780,10 @@ def ticket_section(ticket_text, name):
     return markdown_section(ticket_text, name) or "(none)"
 
 
-def author_notes(folder):
-    """The author's notes.md for the round in folder, or "None." when there are none."""
-    text = read_or_none(folder / AUTHOR_NOTES)
-    return text.strip() if text and text.strip() else "None."
+def notes_path(rounds):
+    """The author's notes.md, beside the rounds folder: one file, edited whenever the author likes, that
+    the reviewer reads at the start of every review."""
+    return rounds.parent / AUTHOR_NOTES
 
 
 def is_web_url(text):
@@ -1220,7 +1252,7 @@ def write_request(key, root, rounds, sources, restart, prompts, if_due=False, br
         "OK_FILES": ok_lines(record),
         "LENSES": briefs.lenses,
         "SCOPE_RULES": briefs.scope,
-        "AUTHOR_NOTES": author_notes(folder),
+        "NOTES": notes_path(rounds),
     }
     text = render((prompts / choose_prompt(record)).read_text(), values)
     folder.mkdir(parents=True, exist_ok=True)
@@ -1354,7 +1386,8 @@ def finish_locked(key, rounds, sources):
             raise ReviewError("review.next.json is refused: " + "; ".join(problems))
         record = with_locations(record, unfinished.get("range"), unfinished.get("call"))
         pull_request = functools.cache(lambda: unfinished.get("pr") or sources.pull_request()[0])
-        record = post_findings(record, round_number, folder, pull_request, sources)
+        ruled_out = ruled_out_this_round(record, last_record(rounds)[1])
+        record = post_findings(record, round_number, folder, pull_request, sources, ruled_out)
         write_atomically(folder / "review.json", json.dumps(record, indent=2) + "\n")
     except (ReviewError, OSError) as error:
         append_log(folder, f"failed: {error}; review.json is not written")
@@ -1392,21 +1425,24 @@ def read_posted(folder):
     return {"comments": {}, "bodies": {}, "reviews": [], "missing": {}, "intent": None, "advisedHead": None, **posted}
 
 
-def post_findings(record, round_number, folder, pull_request, sources):
+def post_findings(record, round_number, folder, pull_request, sources, ruled_out=()):
     """Posts what isn't posted yet, writing posted.json after each POST that succeeds, so a rerun
     after a failure, or the finish of a restarted round, posts only what is left. A round restarted
-    after a review was posted posts its new findings in a further review. pull_request() is the PR's
-    number, fetched once."""
+    after a review was posted posts its new findings in a further review. A finding ruled out of scope this
+    round (ruled_out) gets no comment; the review's body lists it, with the advisories. pull_request() is
+    the PR's number, fetched once."""
     posted = read_posted(folder)
     settle_intent(posted, folder, round_number, record["head"], pull_request, sources)
     todo = findings_to_post(record, posted)
     placed = placements(todo, diff_lines(sources.pr_diff(record["base"], record["head"]))) if todo else placements([], {})
     advisories = advisories_to_post(record, posted)
-    if placed["inline"] or placed["body"] or advisories:
+    listed_out = [] if advised_at(posted, record["head"]) else list(ruled_out)
+    has_closing = bool(advisories or listed_out)
+    if placed["inline"] or placed["body"] or has_closing:
         inline_keys, body_keys = [f["key"] for f in placed["inline"]], [f["key"] for f in placed["body"]]
-        intend(posted, folder, {"kind": "review", "inline": inline_keys, "body": body_keys, "advisory": bool(advisories)})
-        review_id = post_review(record, round_number, placed, advisories, pull_request(), sources)
-        record_review(posted, review_id, inline_keys, body_keys, record["head"] if advisories else None)
+        intend(posted, folder, {"kind": "review", "inline": inline_keys, "body": body_keys, "advisory": has_closing})
+        review_id = post_review(record, round_number, placed, (advisories, listed_out), pull_request(), sources)
+        record_review(posted, review_id, inline_keys, body_keys, record["head"] if has_closing else None)
         save_posted(folder, posted)
     collect_inline_comment_ids(posted, folder, pull_request, sources, {f["key"] for f in unsettled_findings(record)})
     try:
@@ -1522,10 +1558,11 @@ def collect_inline_comment_ids(posted, folder, pull_request, sources, needed):
             raise ReviewError(f"review {review['id']} was posted but GitHub returned no comment for {', '.join(absent)}")
 
 
-def post_review(record, round_number, placed, advisories, pull_request, sources):
-    """Posts the inline findings, the body's and the advisory as one review; returns its id."""
+def post_review(record, round_number, placed, closing, pull_request, sources):
+    """Posts the inline findings, the body's, the advisory and the ruled-out findings as one review;
+    closing is (advisories, ruled_out). Returns its id."""
     endpoint = f"repos/{{owner}}/{{repo}}/pulls/{pull_request}/reviews"
-    payload = review_payload(round_number, record["head"], placed["inline"], placed["body"], advisories)
+    payload = review_payload(round_number, record["head"], placed["inline"], placed["body"], *closing)
     return posted_id(sources.gh_api(endpoint, payload))
 
 
