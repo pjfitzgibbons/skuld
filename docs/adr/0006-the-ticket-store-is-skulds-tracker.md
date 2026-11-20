@@ -98,7 +98,8 @@ The `plan` CLI, and `bin/issue_update`, is the only writer. `plan list --json` p
 for readers other than the server. A checker rejects dependency cycles (SK-0019).
 
 Sync between Macs: `issue-watch` commits and pushes (SK-0026), with `INDEX.md` regenerated in the
-same commit. Pulling is plain git.
+same commit. After a `pull --rebase` it regenerates `INDEX.md` and commits it, and a rebase conflict
+confined to `INDEX.md` is resolved by regenerating it. Pulling is plain git.
 
 <a id="server"></a>
 

@@ -625,7 +625,10 @@ and `reviews/`. After a quiet period (`debounceSeconds` in `store.yml`), so a ma
 one commit, it runs the checker. On failure it commits nothing, posts a macOS notification naming
 the file and rule, and logs the same. On success it runs `scripts/index.py`, commits every change
 and the regenerated `INDEX.md` in one commit with a generated message (`SK-0012: status
-in-progress`, `12 issues: ordinal`), and pushes, retrying a failed push after `pull --rebase`. A
+in-progress`, `12 issues: ordinal`), and pushes, retrying a failed push after `pull --rebase`. After a
+`pull --rebase` it regenerates `INDEX.md` and commits it, so the pushed tree passes
+`scripts/index.py --check`. A rebase conflict confined to `INDEX.md` is resolved by regenerating
+it, with no person involved; a conflict in a ticket stops the sync and notifies. A
 commit the pre-commit hook refuses is a failure like the checker's: nothing is committed, and the
 notification and log line name the hook. The watcher watches the checkout that `issueStore` names.
 

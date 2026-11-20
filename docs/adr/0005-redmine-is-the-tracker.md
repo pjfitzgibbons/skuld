@@ -39,7 +39,22 @@ supersedes nothing: [ADR 0001](0001-file-ticket-store.md)'s store rules stand un
 in full. That includes the consequence "Each Redmine project is imported into the store under a key
 prefix, and Redmine is retired" ([ADR 0001 §5](0001-file-ticket-store.md#consequences)) and
 the alternative "Stay on Redmine" ([ADR 0001 §4](0001-file-ticket-store.md#alternatives)). The
-store's rules for the interim are this ADR's own ([§3.11](#adr-0001)).
+store's rules for the interim are this ADR's own ([§3.11](#adr-0001)). Until it is taken up, this
+Status governs: [§3.11](#adr-0001) and [§3.9](#interim-end) read as if this ADR were in force; it is
+not.
+
+A take-up resolves these first:
+
+- The backup drive. [§3.3](#credentials) says every Redmine backup is kept encrypted, and
+  [§5.1](#operations) says the home Mac's backup drive holds every issue body unencrypted, with
+  Redmine's API keys in it. Neither says which holds on that drive (key rotation is SK-0092; the
+  GitHub token is SK-0091).
+- The cites. Its line cites into `docs/architecture.md`, `docs/design.md` and
+  `docs/failure-modes.md` do not track the current files; read each by its section.
+- The restore. [§5.1](#operations)'s Ship step after a restore uploads a round that `pr` deleted
+  once it was sent, so no round source exists on that state. The step names none.
+- The suite. No interim end-to-end suite exists, though [§3.3](#credentials),
+  [§3.9](#interim-end) and [§5.2](#follow-ups) name one; it is written if this ADR is taken up.
 
 <a id="context"></a>
 
