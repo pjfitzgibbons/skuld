@@ -75,6 +75,8 @@ When a Claude is handed a review request (`<KEY> review: read <path of request.m
 describes.`), it follows request.md and nothing else: it never commits, pushes, replies
 to a thread or resolves one, and ends with `review.py finish <KEY>`.
 
+The PR's declared scope binds every review: the ticket's `## Task` and `## Guardrails`, and the author's notes for the round, `.tmp/<KEY>/rounds/<n>/notes.md`, n being the round the review opens (the latest round plus one, or for `--restart` the unfinished round's own). Write notes.md before `pr` runs `plan review <KEY>`, or before `plan review <KEY> --restart`: an unfinished request for the same HEAD reopens as it is, without reading notes.md again, while a request written anew (`--restart`, or a withdrawn round's) reads it. A finding the Guardrails or the notes rule out comes back `"OutOfScope"`, its `scopeRule` quoting that line, and is settled; a reply that only explains or defers settles nothing. A round raises new findings in its diff and in files up to two steps out from it (callers, dependents, symbols, docs) whose behaviour its change materially changes or breaks; a break further out, or out of scope, is in the review's body as an advisory, with nothing to answer.
+
 Fix the findings first. Then write each open thread's context into `.tmp/<KEY>/replies/`, one `<comment id>.md` each, and write the reply below it: "Fixed: …" saying what changed, or why not. The context, the path and line, the review comment and the last lines of the diff hunk it's on, is an HTML comment at the top, so Peter reads each reply against what it answers; `pr` strips it before posting. Run `--drafts` again after writing replies without it, and it adds the context above them.
 
 ```

@@ -30,6 +30,18 @@ whether it breaks something that held before. Nothing settled is read again.
 differs from it, the working tree has moved on: read every file at that commit, with
 `git show {{HEAD}}:<path>`, never from the working tree, and say so in the log.
 
+## The PR's scope
+
+The ticket's Task and Guardrails declare what this PR does and what it leaves alone; the author's
+notes for this round add to them. Both bind this review, every leg of it, and override an earlier
+finding's `fixShows`: what a scope line rules out is not asked of this PR, whatever `fixShows` says.
+
+{{SCOPE_RULES}}
+
+### The author's notes for this round
+
+{{AUTHOR_NOTES}}
+
 ## Unsettled findings from the last record
 
 Each carries the reasoning of the reviewer who raised it, who is not this conversation: why it
@@ -57,9 +69,10 @@ round's diff and the files above:
 
 - **One per selected lens.** Its brief: the lens, its note from the ticket and what the lens asks;
   the range, the commit and the rule to read files with `git show {{HEAD}}:<path>`; the files above;
-  the unsettled findings. Through that lens it checks whether each change fixes its finding, and
-  what the change breaks.
-- **One for the topic's overall concerns**, over the same diff and findings.
+  the unsettled findings; the PR's scope section above, as it is. Through that lens it checks
+  whether each change fixes its finding, and what the change breaks.
+- **One for the topic's overall concerns**, over the same diff and findings, with the same scope
+  section.
 - **The general-correctness leg** is this call, which you run yourself, exactly:
 
   `{{CALL}}`
@@ -68,7 +81,8 @@ Tell each subagent it reports findings only, in the record's shape (`key`, `summ
 `fixShows`), and
 never edits a file, commits, pushes or touches GitHub. Then merge what every leg reported under the
 rules below: one finding per defect, the duplicates folded into it, each checked against the code
-before you record it. You own every finding you record.
+and the PR's scope before you record it. The general-correctness call takes no brief, so you hold
+its findings to the scope section when you merge. You own every finding you record.
 
 When a concern recurs, found more than twice across the legs, and deserves to become a lens of its
 own, record it as an advisory: `concern` (what recurs), `lens` (the lens it suggests, named, with
@@ -79,21 +93,33 @@ the question it would ask), and `seen` (the three or more places it was found, a
 
 1. Judge each unsettled finding from three things: its reasoning above (`why`, `fixShows`), the
    author's reply in its review thread (`gh api repos/{owner}/{repo}/pulls/{{PR}}/comments`, the
-   replies under its `commentId`), and the part of the diff that answers it. Check the fix in
-   context: its `file:lines` and the code one and two steps out from the change (callers, symbols,
-   docs). Mark it `"Fixed"` when the fix shows what `fixShows` asks, or `"New"` when it doesn't or
-   the finding is back; a reply that only explains, defers or files a ticket doesn't fix it. A
-   finding without `fixShows` is judged from its summary and fix. A recommended fix the author
-   applied verbatim is `"Fixed"` without further check. For a finding marked `"New"`,
-   drop its `commentId` and its `reviewId`, so it gets a new comment, and rewrite `why` and
-   `fixShows` when the fix taught you what they missed.
+   replies under its `commentId`), and the part of the diff that answers it, all under the PR's
+   scope above. Check the fix in context, to judge whether it holds: its `file:lines` and the
+   round's reach, the code one and two steps out from the change (callers, dependents, symbols,
+   docs the changed code feeds; rule 3).
+   Mark it `"Fixed"` when the fix shows what `fixShows` asks; `"OutOfScope"` when the finding's
+   file or topic is out of scope by the ticket's Guardrails or the author's notes, with
+   `scopeRule` quoting the line that rules it out; or `"New"` when it is neither, or the finding
+   is back. A reply that only explains, defers or files a ticket doesn't
+   fix it; a reply that points to a Guardrails or notes line ruling the finding out does, as
+   `"OutOfScope"`, when the line says what the reply claims. A finding without `fixShows` is judged
+   from its summary and fix. A recommended fix the author applied verbatim is `"Fixed"` without
+   further check. For a finding marked `"New"`, drop its `commentId` and its `reviewId`, so it gets
+   a new comment, and rewrite `why` and `fixShows` when the fix taught you what they missed.
 2. Do not re-read a file marked OK whose blob is unchanged (`git rev-parse {{HEAD}}:<path>` against the
    blob above). A file listed as deleted, or no longer in the PR, gets a disposition whose blob is
    `"absent"`, and a verdict like any other file.
 3. Raise a new finding (`"disposition": "New"`, no `commentId` or `reviewId`, with its `why` and
    `fixShows` written as the first review writes them) only for what this
    round's changes introduce: a regression (something that held at the last reviewed head and fails
-   now), a silent loss or a crash. Nothing else is a finding in a round.
+   now), a silent loss or a crash. The round's reach is its diff, `git diff {{RANGE}}`, and the
+   files one and two steps out from it: the callers, dependents, symbols and docs the changed code
+   feeds. A new finding anchors on a line inside the diff, or in a file one or two steps out when
+   this round's change materially changes that file's behaviour or breaks it: a fix in the diff
+   can change what dependent code does. Two steps is the limit. The PR's scope still binds the
+   reach: a break in a file the Guardrails or the author's notes rule out, or one further than two
+   steps out, is not a finding but an advisory without a lens: `concern` (what breaks) and `seen`
+   (its `file:lines`).
 4. A finding in the same area as an earlier one is grouped with it under a named cause, in its
    `summary`. When a cause repeats a third time, write a Python check script in
    `{{DIR}}/` instead of finding another instance by hand, and put its path and output
@@ -109,8 +135,9 @@ the question it would ask), and `seen` (the three or more places it was found, a
 1. Write `{{RECORD}}` as JSON in the shape of the last review, `{{LAST_RECORD}}` (read it): `head`
    `{{HEAD}}`, `base` `{{BASE}}`, `round` {{ROUND}}, `dispositions` with every file's entry (an
    unchanged OK file keeps its earlier one), `findings` with every earlier unsettled finding and
-   every new one, each with its `disposition` (`"open"`, `"Fixed"` or `"New"`) and its `commentId`
-   when it keeps its comment, `checks`, and `advisories` (`[]` when no concern recurs). Finding keys
+   every new one, each with its `disposition` (`"open"`, `"Fixed"`, `"OutOfScope"` with its
+   `scopeRule`, or `"New"`) and its `commentId` when it keeps its comment, `checks`, and
+   `advisories` (`[]` when no concern recurs and nothing breaks outside the diff or scope). Finding keys
    stay `file:lines:classification`, and each finding has a `summary`. Copy each earlier finding's
    `why` and `fixShows` as they are (or as rule 1 rewrote them); the next round's reviewer reads
    them, not this conversation.
