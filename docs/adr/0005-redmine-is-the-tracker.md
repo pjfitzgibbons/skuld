@@ -19,7 +19,7 @@
   - [3.8 The interim](#interim)
   - [3.9 The end of the interim](#interim-end)
   - [3.10 The tickets' path into Redmine](#migration)
-  - [3.11 ADR 0001](#adr-0001)
+  - [3.11 ADR 0001 and the store's interim rules](#adr-0001)
   - [3.12 The Redmine setup moves into skuld](#redmine-folder)
   - [3.13 Where skuld departs from gh-plan ADRs 0011 and 0014](#departures)
   - [3.14 Open](#open)
@@ -32,11 +32,14 @@
 
 ## 1. Status
 
-Accepted. Supersedes the part of [ADR 0001](0001-file-ticket-store.md) that retired Redmine: the
-consequence "Each Redmine project is imported into the store under a key prefix, and Redmine is
-retired" ([ADR 0001 §5](0001-file-ticket-store.md#consequences)) and the alternative "Stay on
-Redmine" ([ADR 0001 §4](0001-file-ticket-store.md#alternatives)). The rest of ADR 0001 holds until
-the interim ends, and is then superseded in full ([§3.11](#adr-0001)).
+Tabled. [ADR 0006](0006-the-ticket-store-is-skulds-tracker.md) replaces it as skuld's tracker
+decision for now, and this ADR is kept unchanged so it can be taken up again. While it is tabled, it
+supersedes nothing: [ADR 0001](0001-file-ticket-store.md)'s store rules stand under ADR 0006
+([§3.2](0006-the-ticket-store-is-skulds-tracker.md#adr-0001)). If taken up again, it supersedes ADR 0001
+in full. That includes the consequence "Each Redmine project is imported into the store under a key
+prefix, and Redmine is retired" ([ADR 0001 §5](0001-file-ticket-store.md#consequences)) and
+the alternative "Stay on Redmine" ([ADR 0001 §4](0001-file-ticket-store.md#alternatives)). The
+store's rules for the interim are this ADR's own ([§3.11](#adr-0001)).
 
 <a id="context"></a>
 
@@ -60,7 +63,8 @@ what skuld has already decided ([§3.13](#departures)).
   the tracker a port with Redmine and Jira as equal adapters, and every key `PREFIX-number`
   (`0014:63-109`, §3 Decision). Its file reads "Proposed" (`0014:14`).
 
-In this ADR, `0011:` and `0014:` are line numbers in those two files.
+In this ADR, `0011:` and `0014:` are line numbers in those two files, and `survey.md:` is a line number in
+`docs/research/prior-art-survey.md`.
 
 <a id="leaving-redmine"></a>
 
@@ -77,8 +81,8 @@ This decision accepts the first two. Redmine stays a server on the home Mac, bou
 ([§5.1](#operations)). The instance's setup already does much of that work:
 
 - **Backup.** `redmine/backup.py` backs the database up nightly and checks its integrity
-  (`~/programming/gh-plan/redmine/README.md:51-63`, *Backup and export*).
-- **Upgrades.** The upgrade has written steps and a rollback (`README.md:343-388`, *Upgrading*).
+  (`~/programming/gh-plan/redmine/README.md:51-63`, _Backup and export_).
+- **Upgrades.** The upgrade has written steps and a rollback (`README.md:343-388`, _Upgrading_).
 - **Reach.** The work Mac does not need Redmine. Its issues are Jira's
   (`docs/adr/0001-file-ticket-store.md:29`, §3), and its Jira-centric arrangement is decided
   outside this ADR (SK-0089).
@@ -90,13 +94,13 @@ The third reason has three answers, though the text is no longer a file in git:
 - **The nightly export.** Each night every issue is written as JSON, journal included
   (`README.md:60`).
 - **The `review_findings` plugin.** It keeps review findings in one table that any `SELECT` can
-  answer (`README.md:221-227`, *Querying the findings*).
+  answer (`README.md:221-227`, _Querying the findings_).
 
 <a id="survey"></a>
 
 ### 2.3 The prior-art survey
 
-The survey (`issues/.tmp/prior-art/survey.md`, in the ticket store) ranks projects to build on by
+The survey (`docs/research/prior-art-survey.md`, in skuld) ranks projects to build on by
 their bones. Its URLs are in the round-2 reports it names (`survey.md:3-11`). Redmine's row is
 "strong | strong | adequate | adequate | adequate" for extension, data model, storage and ops, API
 and contribution (`survey.md:112`, §4). Redmine ranks second:
@@ -190,24 +194,24 @@ On the home Mac the tracker, the review store and the GitHub PR integration are 
 core's ports ([architecture §6.1](../architecture.md#front-ends)). Each is as thin and specific as
 the interface it meets needs: Redmine's plugin API for the first two, GitHub's PRs for the third.
 
-| Port | Adapter on the home Mac |
-| --- | --- |
-| `IssueStore` (`docs/architecture.md:165`) | `Redmine` |
-| `ReviewStore` (`:166`) | `review_findings` ([§3.6](#review-rounds)) |
-| `PullRequests` (`:167`) | GitHub |
+| Port                                      | Adapter on the home Mac                    |
+| ----------------------------------------- | ------------------------------------------ |
+| `IssueStore` (`docs/architecture.md:169`) | `Redmine`                                  |
+| `ReviewStore` (`:170`)                    | `review_findings` ([§3.6](#review-rounds)) |
+| `PullRequests` (`:171`)                   | GitHub                                     |
 
 `IssueStore` stays, with its operations: list Next up, read an issue, create, set fields,
 transition, append a log line, close note. `FileStore` is deprecated in favour of `Redmine`: it
 serves the store's tickets until the interim ends, and nothing new is built on it.
 
 `storeFor(cfg, key)` keeps picking the adapter by the key's prefix
-(`docs/architecture.md:170-171`). On the home Mac an `SK` key goes to `Redmine`. The work
+(`docs/architecture.md:174-175`). On the home Mac an `SK` key goes to `Redmine`. The work
 computer's tracker, its adapters and its routing are decided outside this ADR (SK-0089).
 
 The adapters are part of the Ruby core in skuld's Redmine plugin ([§3.7](#runtime)). No
 `Redmine` adapter is written in Python. Policy names no tool: adapters meet the ports, and the
 core wires them together (`0014:75-76`), as architecture §6.2 already requires
-(`docs/architecture.md:189`).
+(`docs/architecture.md:193`).
 
 An issue's type, and the branch prefix it gives, belong to the tracker's adapter, and every
 adapter maps one to the other by the same mechanism. Each tracker names its types its own way, so
@@ -224,8 +228,8 @@ per project and have no fixed branch convention, so its adapter keeps its `typeM
 only skuld's projects, so Redmine's journal tells skuld's automated changes apart from a person's.
 Redmine's API key belongs to one user and has no scopes, so a call made with it can do whatever
 that user can (survey `:135`; "using your API key which is a handy way to avoid putting a
-password in a script", <https://www.redmine.org/projects/redmine/wiki/Rest_api>, cited in
-`r2-bones.md:120-121`). The role is what limits it.
+password in a script", <https://www.redmine.org/projects/redmine/wiki/Rest_api>). The role is what
+limits it.
 
 **Calls from the Mac use Peter's own API key.** The VS Code extension, `plan` and `pr` call the
 core with Peter's own Redmine API key. Each of those calls is something Peter did on the Mac, so
@@ -235,11 +239,37 @@ the journal names him, as it does for what he does in the core's interface insid
 every repo (`0011:115-116`). Anything of skuld's that calls Redmine from outside Redmine reads its
 key from there on each call. It is never cached, never put in an env var and never logged: the
 same per-call rule architecture §3 sets for the Jira token, which lives in `~/.netrc`
-(`docs/architecture.md:92-94`). The instance's backup job reads its key the same way, from the
+(`docs/architecture.md:96-98`). The instance's backup job reads its key the same way, from the
 Keychain item `redmine-gh-plan` (`~/programming/gh-plan/redmine/backup.py:52`, `:154-159`).
 
-**The GitHub token lives in the plugin's settings.** The `PullRequests` adapter runs in skuld's
-Redmine plugin ([§3.2](#adapter)), so the token it uses is kept in that plugin's settings.
+**Two more secrets are in the Keychain, and the interim suite reads them** ([§3.9](#interim-end)).
+Peter's signed-in Redmine session cookie is the item `skuld-redmine-session`: the suite sends it as
+`_redmine_session` to read an issue page as Peter (check 7). The fixture repository's WS key is the
+item named by `repositoryKeyService` in `lib/interim_config.py`, `skuld-redmine-repository-key`:
+check 8 sends it as the `key` of its `fetch_changesets` call. Both follow the rule above: read from
+the Keychain on each use, never cached, never put in an env var, never logged. The session cookie
+acts as Peter's whole account, with no role to limit it as the bot user's role limits the bot's key.
+
+**A secret skuld presents to another service comes from the host's secret store, never from
+Redmine's database.** The Keychain on the Mac and the host's secret manager when hosted are that
+store. The GitHub token is one: the `PullRequests` adapter runs in skuld's Redmine plugin
+([§3.2](#adapter)), and the plugin reads the token from the host's secret store, so a copy of the
+database holds no GitHub token. Moving the token out of the plugin's settings is SK-0091
+([§5.2](#follow-ups)).
+
+**Redmine's own API keys are in its database, in plain text.** Redmine 7.0.2 stores each key as the
+`value` of a row in the `tokens` table, and looks a key up with `find_by(:action => action, :value =>
+key)` (`app/models/token.rb:124`,
+<https://github.com/redmine/redmine/blob/7.0.2/app/models/token.rb#L124>), so every copy of the
+database holds every user's key. Until Redmine stores API keys hashed, every Redmine backup is a
+secret: the host keeps it encrypted, with access limited to its owner, by whatever means that host
+provides. Redmine API keys are rotated on a schedule (SK-0092) and right after any suspected leak
+(OWASP, _Secrets Management Cheat Sheet_, §2.9 encrypt backups and §2.7.2 rotation,
+<https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html>). Redmine's
+patch "Fine-grained Personal Access Tokens" stores only the SHA-256 digest of a token and converts
+legacy plain-text keys to hashed tokens without invalidating them
+(<https://www.redmine.org/issues/44430>; New, a candidate for the next major release). When Redmine
+ships hashed tokens, skuld moves to them (SK-0093).
 
 **The core acts as a person, or as the bot user.** What a person does in skuld's interface inside
 Redmine, the core does as that person's signed-in Redmine user. A call from the Mac acts as the
@@ -257,7 +287,9 @@ author.
 and from the CLIs, is a network boundary with authentication, wherever Redmine runs. Redmine can
 move to a hosted service. With the link built as a network boundary from the start, that move
 changes the binding and where the instance runs, and leaves skuld's architecture as it is. The
-loopback binding is how the instance runs on the home Mac, and nothing in skuld depends on it.
+loopback binding is how the instance runs on the home Mac, and nothing in skuld depends on it. A
+hosted move also sends the database, the attachments and the credentials to the host, so it needs a
+decision of its own ([§3.14](#open)).
 
 <a id="keys"></a>
 
@@ -287,7 +319,7 @@ A `fixes <KEY>` keyword in the merge commit closes the issue when Redmine fetche
 (`0011:62-64`). That is the one place automation moves an issue (`0014:80-82`). Done and the rest of
 skuld never set a Redmine issue's status, so architecture §10 rule 2 holds for Redmine issues:
 Start's one move sets an issue in progress, and nothing else in skuld changes its status
-(`docs/architecture.md:661-663`).
+(`docs/architecture.md:665-667`).
 
 **A Redmine issue's Done boxes are ticked in Redmine,** and each tick is journaled, so the journal
 records who verified what. Skuld builds the checklist in its own Redmine plugin: a checklist model
@@ -305,7 +337,7 @@ checklist plugins were weighed and turned down because their ticks miss the jour
 ### 3.6 Review rounds
 
 Review findings have a port of their own, separate from the tracker's (`0014:83-84`). In skuld that
-port is `ReviewStore` (`docs/architecture.md:166`). After the interim its adapter is Redmine's
+port is `ReviewStore` (`docs/architecture.md:170`). After the interim its adapter is Redmine's
 `review_findings` plugin: a round, its findings and its files (the commit message, the PR body and
 the replies to review threads) are recorded in Redmine, beside the issue they belong to. Ship
 uploads a round as a draft, and `pr` marks it sent ([§3.7](#runtime)). The rounds in the store's
@@ -369,8 +401,8 @@ uploads a round as a draft, and `pr` marks it sent ([§3.7](#runtime)). The roun
   first authorship, its commit message and PR body, and every review-resolve round. The core
   knows the draft from `review_findings`, so no local report file is needed to tell it.
 - **The core and its interface are part of skuld's Redmine plugin, in Ruby.** Redmine's plugin API
-  is Ruby ([§3.1](#adopted)). Until the interim ends, ADR 0001's rule that the repo stays
-  stdlib-only holds for skuld's Python (`docs/adr/0001-file-ticket-store.md:32`).
+  is Ruby ([§3.1](#adopted)). Until the interim ends, the repo stays stdlib-only
+  for skuld's Python, one of the store's interim rules ([§3.11](#adr-0001)).
 
 <a id="interim"></a>
 
@@ -384,14 +416,13 @@ The interim lasts until skuld's Ruby core works inside Redmine: until every chec
    end-to-end task, the one issue the store does not hold. It lives in Redmine's skuld project, so
    the suite of [§3.9](#interim-end) runs on skuld's own tracker.
 2. **Who writes the store is unchanged.** Every writer, whether `plan`, a person or an agent,
-   produces files the checker accepts, and the watcher commits them
-   (`docs/adr/0001-file-ticket-store.md:31`, `:58`).
+   produces files the checker accepts, and the watcher commits them ([§3.11](#adr-0001)).
 3. **Skuld writes no store ticket to Redmine** except through the import
    ([§3.10](#migration)).
 4. **A ticket filed during the interim is an ordinary store ticket.** The import takes it with the
    rest, so no ticket is filed twice.
 5. **Status is set where the ticket lives.** A store ticket's status stays in its file. Start sets
-   it in progress, and a person closes it (`docs/architecture.md:481`, §7.3).
+   it in progress, and a person closes it (`docs/architecture.md:485`, §7.3).
 6. **Skuld's Python flow keeps working the store and Jira.** No Python `Redmine` adapter is built
    ([§3.2](#adapter)).
 
@@ -400,7 +431,7 @@ The interim lasts until skuld's Ruby core works inside Redmine: until every chec
 ### 3.9 The end of the interim
 
 The interim ends when every check below passes. The ticket store is then retired: no ticket is
-filed in it, and ADR 0001 is superseded in full ([§3.11](#adr-0001)).
+filed in it, and the store's interim rules ([§3.11](#adr-0001)) end.
 
 The checks are an end-to-end suite (SK-0070), run on the home Mac against the instance. It fails
 until the Ruby core works. It works on these:
@@ -509,24 +540,26 @@ task has no ticket file and no `Old ID`, so they never reach it, and its rounds 
 The store's tickets are imported into Redmine once, keeping each body. This is how 0011 brought in
 gh-plan's items, "with the old ID in a field" (`0011:120-121`), and the import uses the same fields:
 
-| Store | Redmine |
-| --- | --- |
+| Store               | Redmine                                                                                                                                   |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | The key (`SK-0012`) | A new Redmine number, so a new key `SK-<n>`; the old key goes in the `Old ID` custom field, which is searchable (`redmine/README.md:155`) |
-| `milestone` | A version in the parent project, shared with its tree (`0011:52-54`) |
-| `ordinal` | The `Ordinal` custom field, a whole number (`redmine/README.md:156`) |
-| `blocked_by` | A `blocks` relation from each blocker (`0011:55-57`) |
-| `status`, `type` | Redmine's status and tracker; the mapping is SK-0079's |
-| `## Done` boxes | The issue's checklist, ticked as in the file ([§3.5](#closing)) |
-| `## Log` lines | Journal notes |
-| `reviews/<KEY>/` | Rounds and findings in `review_findings` ([§3.6](#review-rounds)) |
+| `milestone`         | A version in the parent project, shared with its tree (`0011:52-54`)                                                                      |
+| `ordinal`           | The `Ordinal` custom field, a whole number (`redmine/README.md:156`)                                                                      |
+| `blocked_by`        | A `blocks` relation from each blocker (`0011:55-57`)                                                                                      |
+| `status`, `type`    | Redmine's status and tracker; the mapping is SK-0079's                                                                                    |
+| `## Done` boxes     | The issue's checklist, ticked as in the file ([§3.5](#closing))                                                                           |
+| `## Log` lines      | Journal notes                                                                                                                             |
+| `reviews/<KEY>/`    | Rounds and findings in `review_findings` ([§3.6](#review-rounds))                                                                         |
 
 <a id="adr-0001"></a>
 
-### 3.11 ADR 0001
+### 3.11 ADR 0001 and the store's interim rules
 
-ADR 0001's retirement of Redmine is superseded now: its consequence at
-`docs/adr/0001-file-ticket-store.md:57` and its alternative at `:42`. All of its decisions
-(`:26-36`) hold during the interim, namely:
+This ADR supersedes ADR 0001 in full. ADR 0001 retired Redmine (its consequence at
+`docs/adr/0001-file-ticket-store.md:57` and its alternative at `:42`), and this ADR keeps it as
+the tracker. The store stays skuld's tracker until the interim ends ([§3.8](#interim)), and these
+are the rules it runs under meanwhile. They are this ADR's own rules. ADR 0001's decisions
+(`docs/adr/0001-file-ticket-store.md:26-36`) are where they came from:
 
 - the store's layout
 - `FileStore`, deprecated in favour of `Redmine` ([§3.2](#adapter))
@@ -538,8 +571,8 @@ ADR 0001's retirement of Redmine is superseded now: its consequence at
 - Done that never changes a status
 - review files in `reviews/<KEY>/`
 
-When the interim ends, the store is retired and the whole of ADR 0001 is superseded. Milestones are
-Redmine versions ([§3.1](#adopted)), and review rounds are in `review_findings`
+When the interim ends, the store is retired and these rules end with it. Milestones are Redmine
+versions ([§3.1](#adopted)), and review rounds are in `review_findings`
 ([§3.6](#review-rounds)).
 
 <a id="redmine-folder"></a>
@@ -565,7 +598,7 @@ then the Redmine setup.
   (`0014:80`). Skuld keeps `storeFor` and the key's prefix ([§3.2](#adapter)).
 - **A helper's state.** 0014 maps `claude agents --json` to one `helper_state` and lets nothing past
   the adapter see the raw fields (`0014:94-96`). Skuld keeps Claude Code's hooks for a session's
-  state (`docs/architecture.md:361-362`), and they report it to the core, which keeps each
+  state (`docs/architecture.md:365-366`), and they report it to the core, which keeps each
   session's status ([§3.7](#runtime)).
 - **The core's language and packaging.** 0014 makes the core "one Python package, `plan/`, run with
   `uv`" on Python 3.14 (`0014:69-74`), and serves reports from one Flask server (`0014:97-99`,
@@ -596,7 +629,12 @@ then the Redmine setup.
 
 No question is open on the boundary between the core and the Mac ([§3.7](#runtime)). Where
 Redmine runs is not an architectural question: the link from the Mac to the core is a
-network boundary with authentication wherever it runs ([§3.3](#credentials)).
+network boundary with authentication wherever it runs ([§3.3](#credentials)). One question about
+data is open:
+
+- **Hosting Redmine.** OPEN, owner Peter. After the interim ticket data lives on the home Mac
+  ([§5.1](#operations)). A hosted move sends the database, the attachments and the credentials to
+  the host, and needs its own decision.
 
 <a id="alternatives"></a>
 
@@ -619,7 +657,7 @@ findings store and the key form (`0014:114-146`). These are the alternatives spe
   (`survey.md:119`, `:179-180`).
 - **Multica.** Its license restricts hosting for third parties and works as a CLA
   (`survey.md:162-167`, §5;
-  <https://github.com/multica-ai/multica/blob/main/LICENSE>, cited in `r2-bones.md:294`).
+  <https://github.com/multica-ai/multica/blob/main/LICENSE>).
 - **OpenProject.** Baselines are in the paid Enterprise tier, and no board groups by a custom field
   (`0011:85-86`). It requires a CLA, and its MCP server is reported to be Enterprise, which is
   unverified (`survey.md:142-143`; 🔍).
@@ -656,11 +694,16 @@ findings store and the key form (`0014:114-146`). These are the alternatives spe
 ### 5.1 Data, failure and operations
 
 - **Where data lives.** After the interim, tickets and review findings live in one Redmine database
-  on the home Mac: `redmine.db` in the volume `gh-plan-redmine_db`, with attachments in
-  `gh-plan-redmine_files` (`redmine/README.md:41-46`).
+  on the home Mac, and stay there: `redmine.db` in the volume `gh-plan-redmine_db`, with
+  attachments in `gh-plan-redmine_files` (`redmine/README.md:41-46`).
 - **Where data goes.** Ticket data leaves the database in the nightly backup and export to a USB
-  drive, which "holds every issue body, unencrypted" (`README.md:53-63`). PR bodies on GitHub carry
-  what they carry today. The store's remote stops receiving tickets when the interim ends.
+  drive, which "holds every issue body, unencrypted" (`README.md:53-63`). The backup copies the whole
+  database, so it holds Redmine's API keys, which Redmine stores in plain text
+  ([§3.3](#credentials)). It holds no GitHub token, since that comes from the host's secret store.
+  The backup is kept as a secret ([§3.3](#credentials)). PR bodies on GitHub carry what they carry
+  today. The store's remote stops receiving tickets when the interim ends.
+- **Hosting.** A hosted move sends the database, the attachments and the credentials to the host.
+  It is outside this decision's data boundary and needs its own decision ([§3.14](#open)).
 - **An outage.** Redmine is down when Docker is stopped or the Mac is off (`0011:111-112`). After
   the interim the core runs inside Redmine ([§3.7](#runtime)), so an outage stops the flow itself:
   no Next up, Start, Ship or Done from the plugin. Branches, worktrees, commits, pushes and PRs
@@ -670,9 +713,22 @@ findings store and the key form (`0014:114-146`). These are the alternatives spe
 - **A restore.** A restore puts the database back as it was at the backup. A restore during a
   failed upgrade "loses every change made since step 3's backup" (`README.md:379-380`). Status
   changes, journal notes and review rounds written since the backup are gone. Branches, worktrees,
-  PRs and merges are not.
-- **The store meanwhile.** Until the interim ends, every ticket's history is in the store's git
-  history, and Redmine holds none of it. This decision does not delete the store's repo.
+  PRs and merges are not, so the database then disagrees with git and GitHub. Each step reconciles
+  from the side that is still right:
+  - **Start.** The issue is back at its status from before Start, and its branch and worktree
+    exist. Start run again sends the transition, journals "Started" again and reuses the branch
+    left behind ([failure-modes §3](../failure-modes.md#start), the Branch and worktree row).
+  - **Ship.** A round that `pr` marked sent is a draft again or gone, though its commit and PR are
+    pushed. Ship uploads the round again as a draft, and `pr` updates the PR and marks the round
+    sent ([§3.7](#runtime)). Until then a draft round refuses Done
+    ([failure-modes §4](../failure-modes.md#done)).
+  - **Done.** The journal entry for the PR and its merge commit is gone, and so may be the `fixes`
+    close. Done run again journals what is missing ([failure-modes §4](../failure-modes.md#done)),
+    and Redmine closes the issue again when it next fetches the `fixes` commit 🔍.
+- **The store meanwhile.** Until the interim ends, every store ticket's history is in the store's
+  git history. Redmine holds none of it, apart from the end-to-end task, which each run resets
+  ([§3.9](#interim-end)). A restore during the interim leaves every store ticket intact. This
+  decision does not delete the store's repo.
 - **Operations.** Peter runs, backs up and upgrades the server: start and stop
   (`README.md:21-28`), the nightly backup LaunchAgent (`:78-90`), and the upgrade with its rollback
   (`:343-388`). Until the setup moves into skuld ([§3.12](#redmine-folder)) these run from where it
@@ -686,21 +742,30 @@ findings store and the key form (`0014:114-146`). These are the alternatives spe
 Each place this decision changes has a ticket in the store. The architecture tickets group sections
 that change for one reason.
 
-| Ticket | What changes |
-| --- | --- |
-| SK-0071 | Architecture §1 Purpose (`:40`), §2 Definitions (the Ticket store row, `:52`), §8 Failure modes, §9 Views and §10 rule 1 (`:659`) name Redmine as skuld's tracker and the store as the interim; GUIDE follows |
-| SK-0072 | Architecture §3 Storage (`:92-94`), §6.2 Process boundary (`:191`) and §10 rule 3: Peter's Redmine API key in the Keychain for calls from the Mac, the bot user's for skuld's automation, and the GitHub token in the plugin's settings |
-| SK-0073 | Architecture §6.1 Ports (`:165`, `:170`): the `Redmine` adapter in the `IssueStore` row, `FileStore` deprecated, and `storeFor` sending `SK` to `Redmine` |
-| SK-0074 | Architecture §5 Identity, §7 intro, §7.2 Ship, §7.3 Finish (`:481`) and §10 rule 2 (`:661-663`): `PREFIX-number` keys on Redmine numbers, `fixes <KEY>` as the one automated close, and Done boxes ticked in Redmine |
-| SK-0075 | Architecture §3 Storage, §6.1's `ReviewStore` row, §7.7 The ticket store (`:575`) and §10 rules 4 to 6: the store retired after the interim, milestones as versions, rounds and their files in `review_findings` |
-| SK-0076 | `docs/plan-file-issue-store.md`: its context, "Stay on Redmine" alternative and Redmine survey (§1, §7, §9) |
-| SK-0077 | `docs/failure-modes.md`: Redmine down, a restore, and a `fixes <KEY>` commit closing an issue |
-| SK-0079 | The import of the store's tickets, Done boxes and rounds into Redmine, checks 9 to 11 of [§3.9](#interim-end) |
-| SK-0080 | Redmine's skuld project with its prefix, versions and repos, the end-to-end task and a skuld bot user, check 12 of [§3.9](#interim-end) |
-| SK-0081 | The Redmine key plugin, checks 7 and 8 of [§3.9](#interim-end) |
-| SK-0082 | The Redmine setup moves into skuld ([§3.12](#redmine-folder)) |
-| SK-0084 | The core records rounds and their files in `review_findings`, check 4 of [§3.9](#interim-end) |
-| SK-0085 | Skuld's checklist for Done boxes, in its own plugin ([§3.5](#closing)), check 6 of [§3.9](#interim-end) |
-| SK-0086 | The core and the interface in the Redmine plugin in Ruby, the `vscode://` links for Start, Open and Done, which `plan` opens too, and their handlers in the extension, checks 1, 2 and 5 of [§3.9](#interim-end) |
+Until `docs/architecture.next.md` replaces it, `docs/architecture.md` is the architecture in force.
+It describes skuld with the ticket store and Jira as its trackers. `docs/architecture.next.md`
+describes skuld under this ADR, and the swap is SK-0071's. `docs/design.md` holds the design under
+`docs/architecture.next.md`.
+
+| Ticket  | What changes                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SK-0070 | This ADR; `docs/architecture.next.md`, `docs/design.md` and `docs/failure-modes.md` for Redmine and the core, and the interim-end suite. `docs/architecture.md` gains two sentences in §3 Storage: an `issues/` folder in skuld is not part of skuld's repo, and each Mac clones the same ticket store (`docs/architecture.md:76-77`, `:93-94`)                                                    |
+| SK-0071 | Review `docs/architecture.next.md` §1 Purpose, §2 Definitions, §8 Failure modes, §9 Views and §10 rule 1 against this ADR; once SK-0072 to SK-0075 have reviewed their sections, swap it in as `docs/architecture.md`; GUIDE names the trackers as the architecture does                                                                                                                           |
+| SK-0072 | Review `docs/architecture.next.md` §3.1 Credentials, §6.2 Process boundary and §10 rule 9 against [§3.3](#credentials): Peter's key, the bot user's key and the secret-store rule for the GitHub token                                                                                                                                                                                             |
+| SK-0073 | Review `docs/architecture.next.md` §6.1 Ports against [§3.2](#adapter): the `Redmine` adapter in the `IssueStore` row, `FileStore` deprecated, and `storeFor` sending `SK` to `Redmine`                                                                                                                                                                                                            |
+| SK-0074 | Review `docs/architecture.next.md` §5 Identity, §7.3 Ship, §7.4 Finish and §10 rule 2 against [§3.4](#keys) and [§3.5](#closing): `PREFIX-number` keys, `fixes <KEY>` as the one automated close, and Done boxes ticked in Redmine                                                                                                                                                                 |
+| SK-0075 | Review `docs/architecture.next.md` §3 Storage, §6.1's `ReviewStore` row, §7.6 Review rounds and §10 rules 4 to 6 against [§3.6](#review-rounds) and [§3.11](#adr-0001): milestones as versions, rounds and their files in `review_findings`, and no section that names the ticket store as a tracker                                                                                               |
+| SK-0076 | `docs/plan-file-issue-store.md`: its context, "Stay on Redmine" alternative and Redmine survey (§1, §7, §9)                                                                                                                                                                                                                                                                                        |
+| SK-0077 | `docs/failure-modes.md`: Redmine down, a restore (the three reconciliations of [§5.1](#operations)) and a `fixes <KEY>` commit closing an issue. Its Start, Done and Session status sections follow the core already                                                                                                                                                                               |
+| SK-0079 | The import of the store's tickets, Done boxes and rounds into Redmine, checks 9 to 11 of [§3.9](#interim-end)                                                                                                                                                                                                                                                                                      |
+| SK-0080 | Redmine's skuld project with its prefix, versions and repos, the end-to-end task and a skuld bot user, check 12 of [§3.9](#interim-end)                                                                                                                                                                                                                                                            |
+| SK-0081 | The Redmine key plugin, checks 7 and 8 of [§3.9](#interim-end)                                                                                                                                                                                                                                                                                                                                     |
+| SK-0082 | The Redmine setup moves into skuld ([§3.12](#redmine-folder))                                                                                                                                                                                                                                                                                                                                      |
+| SK-0084 | The core records rounds and their files in `review_findings`, check 4 of [§3.9](#interim-end)                                                                                                                                                                                                                                                                                                      |
+| SK-0085 | Skuld's checklist for Done boxes, in its own plugin ([§3.5](#closing)), check 6 of [§3.9](#interim-end)                                                                                                                                                                                                                                                                                            |
+| SK-0086 | The ADR for the plugin's design of the core and the interface (Rails, Stimulus/Turbo; the language, Ruby, is decided in [§3.7](#runtime)): the `vscode://` links for Start, Open and Done, which `plan` opens too, and their handlers in the extension, checks 1, 2 and 5 of [§3.9](#interim-end)                                                                                                  |
 | SK-0087 | Ship uploading the round as a draft, with a report page that tells a person to run `pr <KEY>`, Ship staging the round's changes, `pr` committing only what is staged, pushing on the Mac and marking the round sent, and the round produced at the end of the author's implementation step and of each review-resolve step: architecture §7.2 and the code, checks 3 and 4 of [§3.9](#interim-end) |
-| SK-0089 | The work computer's Jira-centric arrangement, decided outside this ADR ([§3.2](#adapter)) |
+| SK-0089 | The work computer's Jira-centric arrangement, decided outside this ADR ([§3.2](#adapter))                                                                                                                                                                                                                                                                                                          |
+| SK-0091 | The Redmine plugin reads the GitHub token from the host's secret store, and the token leaves the plugin's settings ([§3.3](#credentials))                                                                                                                                                                                                                                                          |
+| SK-0092 | Redmine API keys are rotated on a schedule and after a suspected leak ([§3.3](#credentials))                                                                                                                                                                                                                                                                                                       |
+| SK-0093 | Skuld moves to Redmine's hashed tokens when Redmine ships them ([§3.3](#credentials))                                                                                                                                                                                                                                                                                                              |

@@ -1,11 +1,17 @@
 # The interim suite's pure helpers: they read data the suite already fetched and answer one
 # question each, so lib/test_interim_e2e.py proves them with no Redmine, git or Keychain.
+import os
 import re
+import json
+import urllib.parse
 from html.parser import HTMLParser
 
+from . import fileissues
+
 KEY_SPLIT_RE = re.compile(r"[,\s]+")
-FRONTMATTER_RE = re.compile(r"^---\n(.*?\n)---\n?(.*)$", re.DOTALL)
+FINDINGS_FILE = "review.json"
 DONE_LINE_RE = re.compile(r"^- \[([ xX])\] (.*)$")
+SCP_REMOTE_RE = re.compile(r"^(?:[^@/]+@)?([^:/]+):(?!//)(.+)$")
 
 
 # ---- Redmine journals
@@ -32,29 +38,66 @@ def journalCount(issue):
     return len(issue.get("journals", []))
 
 
+def journalMentions(journal, text):
+    """True when any detail of the journal holds `text` in one of its values."""
+    return bool(journal) and any(text in str(v) for d in journal.get("details", []) for v in d.values())
+
+
 # ---- git state
 
+def remoteIdentity(url):
+    """One string per repo, whichever form its remote URL takes: `host/owner/repo` for ssh, scp-style
+    and https URLs, the real path for a local one."""
+    host, path = remoteHostAndPath(url.strip())
+    repoPath = path.strip("/").removesuffix(".git")
+    if not host:
+        return os.path.realpath(path.removesuffix(".git"))
+    return f"{host}/{repoPath}".lower()
+
+
+def remoteHostAndPath(url):
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme and parsed.scheme != "file":
+        return parsed.hostname or "", parsed.path
+    if parsed.scheme == "file":
+        return "", parsed.path
+    scp = SCP_REMOTE_RE.match(url)
+    return (scp.group(1), scp.group(2)) if scp else ("", url)
+
+
 def branchNames(branchListOutput):
-    return [line.strip().lstrip("*").strip() for line in branchListOutput.splitlines() if line.strip()]
+    """The names in `git branch --list --format=%(refname:short)` output, one per line. That format
+    carries no `*` or `+` marker for the current branch or one checked out in a linked worktree."""
+    return [line.strip() for line in branchListOutput.splitlines() if line.strip()]
 
 
-def worktreesOnBranches(porcelain, branches):
-    """The paths of `git worktree list --porcelain` entries whose branch is one of `branches`."""
+def worktreesOf(porcelain, branches, folderName):
+    """The paths of `git worktree list --porcelain` entries that belong to an issue: those on one of
+    `branches`, and those in a folder named `folderName` (Start's `<repo>.worktrees/<KEY>`) even
+    when Done left its HEAD detached and its branch deleted."""
     paths = []
     for entry in porcelain.strip().split("\n\n"):
         fields = dict(line.split(" ", 1) for line in entry.splitlines() if " " in line)
         branch = fields.get("branch", "").removeprefix("refs/heads/")
-        if branch in branches:
-            paths.append(fields["worktree"])
+        path = fields["worktree"]
+        if branch in branches or os.path.basename(path) == folderName:
+            paths.append(path)
     return paths
 
 
+def isDirectoryEntry(entry):
+    return entry.endswith("/")
+
+
+def isListed(path, manifest):
+    """True when the manifest names `path`, or a directory entry above it."""
+    return any(path == entry or (isDirectoryEntry(entry) and path.startswith(entry)) for entry in manifest)
+
+
 def compareStaged(staged, manifest):
-    """(listed but not staged, staged but not listed), both sorted. A manifest directory entry
-    (trailing "/") covers every staged path beneath it."""
-    covered = lambda path: any(path == m or (m.endswith("/") and path.startswith(m)) for m in manifest)
-    missing = sorted(m for m in manifest if not m.endswith("/") and m not in staged)
-    unexpected = sorted(path for path in staged if not covered(path))
+    """(listed but not staged, staged but not listed), both sorted."""
+    missing = sorted(entry for entry in manifest if not isDirectoryEntry(entry) and entry not in staged)
+    unexpected = sorted(path for path in staged if not isListed(path, manifest))
     return missing, unexpected
 
 
@@ -115,34 +158,27 @@ def roundsAdded(before, after):
 
 
 def fetchChangesetsPath(projectId, key):
-    return f"/sys/fetch_changesets?id={projectId}&key={key}"
+    return "/sys/fetch_changesets?" + urllib.parse.urlencode({"id": projectId, "key": key})
+
+
+def endsWithPrCommand(pageText, key):
+    """True when the report page's text ends with "run `pr <key>`"."""
+    return pageText.rstrip().endswith(f"run `pr {key}`")
 
 
 # ---- the ticket store
 
 def parseTicket(text):
-    """{"frontmatter", "title", "body", "done"} for a store ticket file. `body` is the text after
-    the title line; `done` is the `## Done` section's [{"text", "ticked"}], each item's wrapped
-    lines joined by one space."""
-    match = FRONTMATTER_RE.match(text)
-    if not match:
-        raise ValueError("a ticket file opens with a frontmatter block")
-    head, rest = match.groups()
-    title, _, body = rest.lstrip("\n").partition("\n")
-    return {
-        "frontmatter": frontmatterFields(head),
-        "title": title.removeprefix("# ").strip(),
-        "body": body.strip(),
-        "done": doneItems(body),
-    }
+    """{"frontmatter", "title", "body", "done"} for a store ticket file, read by skuld's own
+    parser (lib/fileissues.py). `body` is the text between the title and `## Log`; `done` is the
+    `## Done` section's [{"text", "ticked"}], each item's wrapped lines joined by one space."""
+    frontmatter, title, body, _log = fileissues._parse(text)
+    return {"frontmatter": frontmatter, "title": title, "body": body.strip(), "done": doneItems(body)}
 
 
-def frontmatterFields(head):
-    fields = {}
-    for line in head.splitlines():
-        name, _, value = line.partition(":")
-        fields[name.strip()] = value.strip()
-    return fields
+def ticketKey(fileName):
+    """The key a store file name carries (`SK-0012-slug.md` is SK-0012), or None for any other file."""
+    return fileissues._keyFromFilename(fileName)
 
 
 def blockerKeys(frontmatter):
@@ -196,6 +232,15 @@ def incomingBlockers(issue):
         for r in issue.get("relations", [])
         if r["relation_type"] == "blocks" and r["issue_to_id"] == issue["id"]
     ]
+
+
+def splitRound(files):
+    """(the round's files, its findings or None) from the files of a store round folder. The
+    findings are the `findings` array of its review.json, when it has one."""
+    named = {name: content for name, content in files.items() if name != FINDINGS_FILE}
+    if FINDINGS_FILE not in files:
+        return named, None
+    return named, json.loads(files[FINDINGS_FILE]).get("findings", [])
 
 
 def firstFailures(messages, limit=3):

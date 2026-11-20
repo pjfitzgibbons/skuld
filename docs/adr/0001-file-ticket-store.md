@@ -4,7 +4,7 @@
 
 ## 1. Status
 
-Superseded by [ADR 0005](../adr/0005-redmine-is-the-tracker.md).
+Accepted, amended by [ADR 0006](0006-the-ticket-store-is-skulds-tracker.md). ADR 0006 amends the layout to gain `points:`, `queries/` and `INDEX.md`, has `store.yml` name a key prefix and a list of repos, and gives every ticket a web page ([§3.2](0006-the-ticket-store-is-skulds-tracker.md#adr-0001)).
 
 <a id="context"></a>
 

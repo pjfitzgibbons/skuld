@@ -5,15 +5,22 @@
 # Run it with bin/test-interim-e2e.
 import os
 import sys
+from collections import namedtuple
 
 from . import interim_config as configuration
 from . import interim_probes as probes
 from . import interim_triggers as triggers
-from .interim_world import CheckFailed, Fixture, Redmine, keychainSecret
+from .config import load as loadSkuldsConfig
+from .interim_world import CheckFailed, Fixture, PendingTrigger, Redmine, keychainSecret
 
 TASK_SUBJECT = "End-to-end task"
 WRONG_PREFIX = "XX"
 UNLISTED_FILE = "e2e-unlisted.txt"
+STORE_TICKET_FOLDERS = ("", "active", "archive")
+
+
+class Unconfigured(CheckFailed):
+    """A setting the suite needs is not set: the check that needs it names it."""
 
 
 class World:
@@ -23,12 +30,13 @@ class World:
         self.settings = settings
         self.redmine = Redmine(settings["redmineUrl"], settings["botKeyService"], settings["sessionService"])
         self.state = {}
+        self.guardedFixture = None
 
     def need(self, key):
         try:
             return configuration.require(self.settings, key)
         except configuration.NotConfigured as error:
-            raise CheckFailed(str(error))
+            raise Unconfigured(str(error))
 
     @property
     def number(self):
@@ -40,13 +48,15 @@ class World:
 
     @property
     def fixture(self):
-        fixture = Fixture(self.need("fixtureRepo"))
-        fixture.requireNotSkuldsRepo()
-        return fixture
+        """The fixture repo, guarded once per run."""
+        if self.guardedFixture is None:
+            fixture = Fixture(self.need("fixtureRepo"))
+            fixture.requireNotSkuldsRepo()
+            self.guardedFixture = fixture
+        return self.guardedFixture
 
     def task(self, include=None):
         """The end-to-end task, read as the bot user. Also proves the instance and the task exist."""
-        self.redmine.requireReachable()
         params = {"include": include} if include else {}
         issue = self.redmine.get(f"/issues/{self.number}.json", **params)["issue"]
         if issue["subject"] != TASK_SUBJECT:
@@ -87,18 +97,38 @@ class World:
         return worktrees[0]
 
 
+
+
+def describeFailure(error):
+    """What a failure says: a CheckFailed's own text, any other error with its type named."""
+    if isinstance(error, CheckFailed):
+        return str(error)
+    return f"{type(error).__name__}: {error}"
+
+
+def raiseIfAny(problems):
+    if problems:
+        raise CheckFailed("; ".join(problems))
+
+
 # ---- the reset (§3.9, "Each run first resets it")
 
+ResetProblem = namedtuple("ResetProblem", "text blocksChecks")
+
+
 def reset(world):
-    """Restore the task to its starting state. Returns what could not be restored, each cause once."""
-    problems = []
+    """Restore the task to its starting state. Returns what could not be restored, each cause once.
+    A step that waits on unbuilt work (a PendingTrigger) or on a setting not yet made leaves nothing
+    in an unknown state, since nothing was written through it; any other failure blocks the checks."""
+    problems = {}
     for step in (resetTask, resetFixture):
         try:
             step(world)
-        except CheckFailed as error:
-            if str(error) not in problems:
-                problems.append(str(error))
-    return problems
+        except (PendingTrigger, Unconfigured) as error:
+            problems.setdefault(str(error), ResetProblem(str(error), False))
+        except Exception as error:  # noqa: BLE001 -- a bad reply or probe bug is a reset problem with its type named
+            problems.setdefault(describeFailure(error), ResetProblem(describeFailure(error), True))
+    return list(problems.values())
 
 
 def resetTask(world):
@@ -124,8 +154,7 @@ def start_as_signed_in_user(world):
     issue = world.task("journals")
     world.requireStatus(issue, world.need("inProgressStatus"))
     world.requirePersonsJournal(probes.newestStatusJournal(issue["journals"]), "the status change")
-    fixture = world.fixture
-    branches = fixture.branches(world.number)
+    branches = world.fixture.branches(world.number)
     if len(branches) != 1:
         raise CheckFailed(f"`git branch --list '*/SK-{world.number}-*'` lists {branches}, expected one branch")
     world.onlyWorktree()
@@ -135,89 +164,174 @@ def mismatched_prefix_is_refused(world):
     before = world.task("journals")
     refusal = triggers.startRefusal(f"{WRONG_PREFIX}-{world.number}")
     after = world.task("journals")
+    problems = []
     if not refusal:
-        raise CheckFailed("the plugin showed no refusal")
-    if after["status"] != before["status"] or probes.journalCount(after) != probes.journalCount(before):
-        raise CheckFailed(
-            f"status/journals changed: {before['status']['name']}/{probes.journalCount(before)} "
-            f"-> {after['status']['name']}/{probes.journalCount(after)}"
-        )
+        problems.append("the plugin showed no refusal")
+    problems += unchangedProblems(before, after)
+    problems += leftoverProblems(world.fixture, world.number, WRONG_PREFIX)
+    raiseIfAny(problems)
 
 
-def ship_stages_from_manifest(world):
+def unchangedProblems(before, after):
+    if after["status"] == before["status"] and probes.journalCount(after) == probes.journalCount(before):
+        return []
+    return [
+        f"status/journals changed: {before['status']['name']}/{probes.journalCount(before)} "
+        f"-> {after['status']['name']}/{probes.journalCount(after)}"
+    ]
+
+
+def leftoverProblems(fixture, number, prefix):
+    """The branches and worktrees the fixture holds for `<prefix>-<number>`, which a refusal leaves none of."""
+    problems = [f"branch {b} exists" for b in fixture.branches(number, prefix)]
+    problems += [f"worktree {w} exists" for w in fixture.worktrees(number, prefix)]
+    return problems
+
+
+def ship_uploads_the_round_as_a_draft(world):
     world.task()
     worktree = world.onlyWorktree()
     fixture = world.fixture
-    world.state["ledgerBeforeShip"] = readLedgerIfAny(world)
-    manifest = [writeChangedTrackedFile(fixture, worktree, world.key)]
+    sent = prepareRound(world, fixture, worktree)
+    triggers.ship(world.key, worktree, sent["manifest"])
+    sent["staged"] = fixture.staged(worktree)
+    problems = headProblems(fixture, worktree, sent["head"])
+    problems += stagedProblems(fixture, worktree, sent["manifest"])
+    problems += storedRoundProblems(world, sent, world.ledger())
+    raiseIfAny(problems)
+
+
+def prepareRound(world, fixture, worktree):
+    """Leave the worktree as the author's step does: a changed file, the manifest listing it, and
+    commit.txt and pr-body.md with known bytes. The copies kept in world.state are what checks 3 and
+    4 compare against."""
+    sent = {
+        "manifest": [writeChangedTrackedFile(fixture, worktree, world.key)],
+        "files": writeRoundFiles(worktree, world.key),
+        "head": fixture.head(worktree),
+        "ledgerBefore": readLedgerIfAny(world) or {},
+    }
     write(os.path.join(worktree, UNLISTED_FILE), f"not in the manifest of {world.key}\n")
-    headBefore = fixture.head(worktree)
-    triggers.ship(world.key, worktree, manifest)
-    report = os.path.join(worktree, ".tmp", world.key, "report.html")
+    world.state["round"] = sent
+    return sent
+
+
+def headProblems(fixture, worktree, headBefore):
+    return ["HEAD moved: Ship committed"] if fixture.head(worktree) != headBefore else []
+
+
+def stagedProblems(fixture, worktree, manifest):
     problems = []
-    if not os.path.exists(report):
-        problems.append(f"{report} does not exist")
     missing, unexpected = probes.compareStaged(fixture.staged(worktree), manifest)
     if missing or unexpected:
         problems.append(f"staged files differ from the manifest: missing {missing}, unexpected {unexpected}")
     if probes.porcelainStatusOf(fixture.porcelain(worktree), UNLISTED_FILE) != "??":
         problems.append(f"{UNLISTED_FILE} is no longer untracked")
-    if fixture.head(worktree) != headBefore:
-        problems.append("HEAD moved: Ship committed")
-    if problems:
-        raise CheckFailed("; ".join(problems))
+    return problems
 
 
-def round_is_recorded(world):
-    world.task()
-    ledger = world.ledger()
-    before = world.state.get("ledgerBeforeShip")
-    if before is None:
-        raise CheckFailed("check 3 did not record the rounds before Ship, so there is nothing to compare")
-    added = probes.roundsAdded(before, ledger)
+def storedRoundProblems(world, sent, ledger):
+    added = probes.roundsAdded(sent["ledgerBefore"], ledger)
     if added != 1:
-        raise CheckFailed(f"{added} rounds were added by Ship, expected 1")
+        return [f"{added} rounds were added by Ship, expected 1"]
     latest = ledger["review_rounds"][-1]
+    problems = roundFileMismatches(triggers.storedRoundFiles(ledger, latest), sent["files"])
+    status = triggers.roundStatus(ledger, latest)
+    if status != "draft":
+        problems.append(f"the round's status is {status!r}, expected 'draft'")
+    if not probes.endsWithPrCommand(triggers.reportPageText(ledger, latest), world.key):
+        problems.append(f"the round's report page does not end with \"run `pr {world.key}`\"")
+    return problems
+
+
+def pr_sends_the_round(world):
+    world.task()
+    sent = roundFromCheck3(world)
     worktree = world.onlyWorktree()
-    problems = roundFileMismatches(triggers.storedRoundFiles(ledger, latest), worktree, world.key)
-    if triggers.reportFindings(worktree) != triggers.storedFindings(ledger, latest):
-        problems.append("the round's findings differ from the report's")
-    if problems:
-        raise CheckFailed("; ".join(problems))
+    fixture = world.fixture
+    branch = fixture.branches(world.number)[0]
+    triggers.pr(world.key, worktree)
+    problems = committedProblems(fixture, worktree, sent)
+    problems += pushedProblems(fixture, worktree, branch)
+    problems += pullRequestProblems(fixture, branch, sent)
+    problems += sentProblems(world, sent)
+    raiseIfAny(problems)
+
+
+def roundFromCheck3(world):
+    sent = world.state.get("round")
+    if sent is None:
+        raise CheckFailed("check 3 did not prepare the round, so check 4 has no round to send")
+    return sent
+
+
+def committedProblems(fixture, worktree, sent):
+    problems = []
+    if fixture.head(worktree) == sent["head"]:
+        problems.append("HEAD did not move: `pr` committed nothing")
+    if fixture.headMessage(worktree) != sent["files"]["commit.txt"].decode("utf8").strip():
+        problems.append("the commit message is not the round's commit.txt")
+    if sorted(fixture.committedFiles(worktree)) != sorted(sent["staged"]):
+        problems.append(f"the commit holds {fixture.committedFiles(worktree)}, not the staged {sent['staged']}")
+    return problems
+
+
+def pushedProblems(fixture, worktree, branch):
+    if fixture.remoteHead(branch) != fixture.head(worktree):
+        return [f"origin's {branch} is not the new HEAD"]
+    return []
+
+
+def pullRequestProblems(fixture, branch, sent):
+    pullRequests = fixture.openPullRequests(branch)
+    if len(pullRequests) != 1:
+        return [f"{len(pullRequests)} open PRs on {branch}, expected 1"]
+    if pullRequests[0]["body"].strip() != sent["files"]["pr-body.md"].decode("utf8").strip():
+        return ["the PR body is not the round's pr-body.md"]
+    return []
+
+
+def sentProblems(world, sent):
+    ledger = world.ledger()
+    added = probes.roundsAdded(sent["ledgerBefore"], ledger)
+    if added != 1:
+        return [f"{added} rounds are new since before Ship, expected only check 3's"]
+    status = triggers.roundStatus(ledger, ledger["review_rounds"][-1])
+    return [] if status == "sent" else [f"the round's status is {status!r}, expected 'sent'"]
 
 
 def done_never_changes_status(world):
     before = world.task()
     worktree = world.onlyWorktree()
-    branch = world.fixture.branches(world.number)[0]
-    world.fixture.mergePullRequestOf(branch)
+    fixture = world.fixture
+    fixture.mergePullRequestOf(fixture.branches(world.number)[0])
     triggers.done(world.key)
     problems = []
-    if worktree in world.fixture.worktrees(world.number) or worktree in world.fixture.worktreeList():
+    if worktree in fixture.worktrees(world.number):
         problems.append(f"`git worktree list` still shows {worktree}")
     after = world.task()
     if after["status"] != before["status"]:
         problems.append(f"status went from {before['status']['name']!r} to {after['status']['name']!r}")
-    if problems:
-        raise CheckFailed("; ".join(problems))
+    raiseIfAny(problems)
 
 
 def ticked_done_box_is_journaled(world):
     world.task()
-    before = probes.journalCount(world.task("journals"))
-    item = triggers.createChecklistItem(world.number, "Suite item")
+    item = triggers.createChecklistItem(world.number, CHECKLIST_ITEM)
+    baseline = probes.journalCount(world.task("journals"))
     triggers.tickChecklistItem(world.key, item)
     issue = world.task("journals")
-    problems = []
-    if probes.journalCount(issue) != before + 1:
-        problems.append(f"journals went from {before} to {probes.journalCount(issue)}, expected one more")
     newest = probes.newestJournal(issue["journals"])
+    problems = []
+    if probes.journalCount(issue) != baseline + 1:
+        problems.append(f"journals went from {baseline} to {probes.journalCount(issue)}, expected one more")
     if probes.journalUserId(newest) != world.signedInUserId():
         problems.append(f"newest journal is by user {probes.journalUserId(newest)}, expected the signed-in user")
-    if not any(i["text"] == "Suite item" and i["ticked"] for i in triggers.checklistItems(world.number)):
+    if not probes.journalMentions(newest, CHECKLIST_ITEM):
+        problems.append(f"the newest journal does not name the ticked item {CHECKLIST_ITEM!r}")
+    if not any(i["text"] == CHECKLIST_ITEM and i["ticked"] for i in triggers.checklistItems(world.number)):
         problems.append("the checklist API does not read the item back as ticked")
-    if problems:
-        raise CheckFailed("; ".join(problems))
+    raiseIfAny(problems)
 
 
 def key_renders_as_link(world):
@@ -243,38 +357,70 @@ def fixes_closes_the_issue(world):
 def every_ticket_is_imported_once(world):
     world.task()
     tickets = storeTickets(world)
-    problems = []
-    for key in sorted(tickets):
-        total = lookupByOldId(world, key)["total_count"]
-        if total != 1:
-            problems.append(f"{key}: {total} issues carry it as Old ID")
+    problems = duplicateTicketProblems(storeFolder(world))
+    problems += collectProblems(tickets, lambda key, ticket: importCountProblems(world, key))
     if problems:
         raise CheckFailed(f"{len(problems)} of {len(tickets)} tickets: {probes.firstFailures(problems)}")
+
+
+def importCountProblems(world, key):
+    total = lookupByOldId(world, key)["total_count"]
+    return [f"{total} issues carry it as Old ID"] if total != 1 else []
 
 
 def import_keeps_every_field(world):
     world.task()
     tickets = storeTickets(world)
     botUserId = world.redmine.get("/users/current.json")["user"]["id"]
-    problems = []
-    for key in sorted(tickets):
-        problems += [f"{key} {m}" for m in importDifferences(world, key, tickets[key], botUserId)]
+    problems = collectProblems(tickets, lambda key, ticket: importDifferences(world, key, ticket, botUserId))
     if problems:
         raise CheckFailed(f"{len(problems)} differences: {probes.firstFailures(problems)}")
 
 
 def every_round_is_imported(world):
     world.task()
-    problems = []
-    for key, files in storeRoundFiles(world).items():
-        issue = importedIssue(world, key)
-        ledger = world.ledger(issue["id"])
-        stored = [triggers.storedRoundFiles(ledger, row) for row in ledger.get("review_rounds", [])]
-        for name, content in files.items():
-            if not any(round_.get(name) == content for round_ in stored):
-                problems.append(f"{key}: {name} is on no imported round")
+    problems = collectProblems(storeRoundFiles(world), lambda key, files: roundImportProblems(world, key, files))
     if problems:
         raise CheckFailed(probes.firstFailures(problems))
+
+
+def roundImportProblems(world, key, storeFiles):
+    """What differs between a store round folder and the imported issue's rounds: its files and its findings."""
+    files, findings = probes.splitRound(storeFiles)
+    ledger = world.ledger(importedIssue(world, key)["id"])
+    rows = [(row, triggers.storedRoundFiles(ledger, row)) for row in ledger.get("review_rounds", [])]
+    problems = [
+        f"{name} is on no imported round"
+        for name, content in files.items()
+        if not any(stored.get(name) == content for _, stored in rows)
+    ]
+    if findings is not None and not problems:
+        problems += findingsProblems(ledger, findings, roundHoldingFiles(rows, files))
+    return problems
+
+
+def roundHoldingFiles(rows, files):
+    """The imported round whose stored files all equal the store round's, or None."""
+    for row, stored in rows:
+        if holdsOnly(stored, files):
+            return row
+    return None
+
+
+def holdsOnly(stored, files):
+    """True when the round stored some files and each equals the store round's. An empty round
+    matches no store round."""
+    return bool(stored) and all(files.get(name) == content for name, content in stored.items())
+
+
+def findingsProblems(ledger, findings, row):
+    if row is None:
+        return ["no imported round holds its files, so its findings cannot be compared"]
+    imported = triggers.storedFindings(ledger, row)
+    if imported == findings:
+        return []
+    missing = [f for f in findings if f not in imported]
+    return [f"findings differ: missing {missing}, store has {len(findings)} and the round {len(imported)}"]
 
 
 def bot_reaches_skuld_projects_only(world):
@@ -286,6 +432,23 @@ def bot_reaches_skuld_projects_only(world):
 
 
 # ---- helpers the checks share
+
+CHECKLIST_ITEM = "Suite item"
+ROUND_FILES = ("commit.txt", "pr-body.md")
+
+
+def collectProblems(items, examine):
+    """Run `examine(key, item)` on every item, each key's problems named by key. Any failure for
+    one key is that key's problem, with its type named when it is not a CheckFailed, so the rest are
+    still examined."""
+    problems = []
+    for key in sorted(items):
+        try:
+            problems += [f"{key}: {message}" for message in examine(key, items[key])]
+        except Exception as error:  # noqa: BLE001 -- a malformed reply is that key's problem
+            problems.append(f"{key}: {describeFailure(error)}")
+    return problems
+
 
 def write(path, text):
     with open(path, "w", encoding="utf8") as f:
@@ -302,6 +465,20 @@ def writeChangedTrackedFile(fixture, worktree, key):
     return tracked[0]
 
 
+def writeRoundFiles(worktree, key):
+    """Write commit.txt and pr-body.md into the worktree's .tmp/<key>/ and return {name: bytes}."""
+    folder = os.path.join(worktree, ".tmp", key)
+    os.makedirs(folder, exist_ok=True)
+    files = {
+        "commit.txt": f"Change made by the interim suite for {key}\n".encode(),
+        "pr-body.md": f"The round the interim suite made for {key}.\n".encode(),
+    }
+    for name, content in files.items():
+        with open(os.path.join(folder, name), "wb") as f:
+            f.write(content)
+    return files
+
+
 def readLedgerIfAny(world):
     try:
         return world.ledger()
@@ -309,48 +486,79 @@ def readLedgerIfAny(world):
         return None
 
 
-def roundFileMismatches(stored, worktree, key):
-    problems = []
-    for name in ("commit.txt", "pr-body.md"):
-        with open(os.path.join(worktree, ".tmp", key, name), "rb") as f:
-            if stored.get(name) != f.read():
-                problems.append(f"{name} on the round is not the file's bytes")
-    return problems
+def roundFileMismatches(stored, kept):
+    return [f"{name} on the round is not the file's bytes" for name in ROUND_FILES if stored.get(name) != kept[name]]
 
 
 def storeFolder(world):
-    store = world.settings["issueStore"]
-    if not store:
-        from .config import load
-        store = load().get("issueStore")
-    if store:
-        store = os.path.expanduser(store)
-    if not store or not os.path.isdir(store):
+    folder = os.path.expanduser(configuredStore(world) or "")
+    if not folder or not os.path.isdir(folder):
         raise CheckFailed("no ticket store: set issueStore in the suite's config or skuld's")
-    return store
+    return folder
+
+
+def configuredStore(world):
+    return world.settings["issueStore"] or skuldsStore()
+
+
+def skuldsStore():
+    return loadSkuldsConfig().get("issueStore")
 
 
 def storeTickets(world):
-    """{old key: parsed ticket} for every SK-*.md file in the store."""
-    folder = storeFolder(world)
-    names = sorted(n for n in os.listdir(folder) if n.startswith("SK-") and n.endswith(".md"))
-    if not names:
-        raise CheckFailed(f"the store {folder} holds no ticket files")
-    tickets = {}
-    for name in names:
-        with open(os.path.join(folder, name), encoding="utf8") as f:
-            tickets[name.split("-")[0] + "-" + name.split("-")[1]] = probes.parseTicket(f.read())
-    return tickets
+    """{old key: parsed ticket} for every ticket file in the store, open and closed."""
+    paths = storeTicketPaths(storeFolder(world))
+    if not paths:
+        raise CheckFailed(f"the store {storeFolder(world)} holds no ticket files")
+    return {key: parseTicketFile(path) for key, path in sorted(paths.items())}
+
+
+def storeTicketPaths(folder):
+    """{key: path} for the ticket files in the store's root, active/ and archive/. A key in more
+    than one place keeps its first path; duplicateTicketProblems names the rest."""
+    return {key: found[0] for key, found in ticketPathsByKey(folder).items()}
+
+
+def ticketPathsByKey(folder):
+    """{key: [every path holding it]}, the root first, then active/, then archive/."""
+    paths = {}
+    for sub in STORE_TICKET_FOLDERS:
+        where = os.path.join(folder, sub)
+        for name in sorted(os.listdir(where)) if os.path.isdir(where) else []:
+            key = probes.ticketKey(name)
+            if key:
+                paths.setdefault(key, []).append(os.path.join(where, name))
+    return paths
+
+
+def duplicateTicketProblems(folder):
+    """One problem for each key the store holds in more than one file, naming every path."""
+    return [
+        f"{key}: in the store twice, at {' and '.join(found)}"
+        for key, found in sorted(ticketPathsByKey(folder).items())
+        if len(found) > 1
+    ]
+
+
+def parseTicketFile(path):
+    return probes.parseTicket(readBytes(path).decode("utf8"))
 
 
 def storeRoundFiles(world):
-    """{old key: {file name: bytes}} for every reviews/<KEY>/ folder in the store."""
+    """{old key: {path under the folder: bytes}} for every reviews/<KEY>/ folder in the store."""
     reviews = os.path.join(storeFolder(world), "reviews")
-    rounds = {}
-    for key in sorted(os.listdir(reviews)) if os.path.isdir(reviews) else []:
-        folder = os.path.join(reviews, key)
-        rounds[key] = {n: readBytes(os.path.join(folder, n)) for n in sorted(os.listdir(folder))}
-    return rounds
+    keys = sorted(os.listdir(reviews)) if os.path.isdir(reviews) else []
+    return {key: roundFilesIn(os.path.join(reviews, key)) for key in keys if os.path.isdir(os.path.join(reviews, key))}
+
+
+def roundFilesIn(folder):
+    """Every file under `folder`, replies/ included, keyed by its relative path."""
+    files = {}
+    for where, _, names in os.walk(folder):
+        for name in names:
+            path = os.path.join(where, name)
+            files[os.path.relpath(path, folder)] = readBytes(path)
+    return files
 
 
 def readBytes(path):
@@ -359,16 +567,20 @@ def readBytes(path):
 
 
 def lookupByOldId(world, oldKey):
-    field = world.need("oldIdFieldId")
-    return world.redmine.get(
-        "/issues.json", project_id=world.need("skuldProject"), status_id="*", **{f"cf_{field}": oldKey}
-    )
+    """The issues carrying `oldKey` as Old ID, asked once per run."""
+    lookups = world.state.setdefault("oldIdLookups", {})
+    if oldKey not in lookups:
+        field = world.need("oldIdFieldId")
+        lookups[oldKey] = world.redmine.get(
+            "/issues.json", project_id=world.need("skuldProject"), status_id="*", **{f"cf_{field}": oldKey}
+        )
+    return lookups[oldKey]
 
 
 def importedIssue(world, oldKey):
     found = lookupByOldId(world, oldKey)
     if found["total_count"] != 1:
-        raise CheckFailed(f"{oldKey}: {found['total_count']} issues carry it as Old ID, expected 1")
+        raise CheckFailed(f"{found['total_count']} issues carry it as Old ID, expected 1")
     return found["issues"][0]
 
 
@@ -383,10 +595,10 @@ def importDifferences(world, key, ticket, botUserId):
 # ---- the gate
 
 CHECKS = [
-    (1, "Start, as the signed-in user", "SK-0086", start_as_signed_in_user),
+    (1, "Start, from the issue's `vscode://` link", "SK-0086", start_as_signed_in_user),
     (2, "A mismatched prefix is refused", "SK-0086", mismatched_prefix_is_refused),
-    (3, "Ship stages from the manifest", "SK-0087, SK-0086", ship_stages_from_manifest),
-    (4, "The round is recorded", "SK-0084", round_is_recorded),
+    (3, "Ship uploads the round as a draft", "SK-0087, SK-0086", ship_uploads_the_round_as_a_draft),
+    (4, "`pr` sends the round and marks it sent", "SK-0087, SK-0084", pr_sends_the_round),
     (5, "Done never changes the status", "SK-0086", done_never_changes_status),
     (6, "A ticked Done box is journaled", "SK-0085", ticked_done_box_is_journaled),
     (7, "A key renders as a link", "SK-0081", key_renders_as_link),
@@ -397,6 +609,8 @@ CHECKS = [
     (12, "The bot user reaches skuld's projects only", "SK-0080", bot_reaches_skuld_projects_only),
 ]
 
+NOT_RUN = "not run: the reset left the task in an unknown state"
+
 
 def causeOf(check, world, loadError):
     """None when the check passes, else what it saw."""
@@ -404,10 +618,8 @@ def causeOf(check, world, loadError):
         return loadError
     try:
         check(world)
-    except CheckFailed as error:
-        return str(error)
     except Exception as error:  # noqa: BLE001 -- a probe bug or an unexpected reply is a failure with its type named
-        return f"{type(error).__name__}: {error}"
+        return describeFailure(error)
     return None
 
 
@@ -419,12 +631,14 @@ def run(configPath=configuration.CONFIG_FILE, out=sys.stdout):
         loadError = str(error)
     problems = [] if loadError else reset(world)
     for problem in problems:
-        print(f"RESET  {problem}", file=out)
+        print(f"RESET  {problem.text}", file=out)
+    resetBlocked = any(problem.blocksChecks for problem in problems)
     failed = 0
     for number, title, owner, check in CHECKS:
-        cause = causeOf(check, world, loadError)
+        cause = NOT_RUN if resetBlocked else causeOf(check, world, loadError)
         failed += cause is not None
-        print(f"{'PASS' if cause is None else 'FAIL'}  {number:>2}. {title} [{owner}]" + (f": {cause}" if cause else ""), file=out)
+        label = "PASS" if cause is None else "SKIP" if cause == NOT_RUN else "FAIL"
+        print(f"{label}  {number:>2}. {title} [{owner}]" + (f": {cause}" if cause else ""), file=out)
     print(f"{len(CHECKS) - failed} of {len(CHECKS)} checks passed", file=out)
     return 1 if failed or problems else 0
 

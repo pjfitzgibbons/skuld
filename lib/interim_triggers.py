@@ -28,6 +28,12 @@ def ship(key, worktree, manifest):
     pending("SK-0086", "plugin trigger")
 
 
+def pr(key, worktree):
+    """Peter's user runs `pr <key>` in `worktree`: it commits what Ship staged, pushes, opens the PR
+    and marks the round sent. Today's `pr` commits, pushes and opens the PR but sends no round."""
+    pending("SK-0087", "`pr` sending the round")
+
+
 def done(key):
     """Peter's user runs Done on `key`."""
     pending("SK-0086", "plugin trigger")
@@ -59,9 +65,14 @@ def storedRoundFiles(ledger, roundRow):
     pending("SK-0084", "round-file storage")
 
 
-def reportFindings(worktree):
-    """The findings in `worktree`'s .tmp/<KEY>/report.html, as the round stores them."""
-    pending("SK-0084", "report-to-round mapping")
+def roundStatus(ledger, roundRow):
+    """The round's status, "draft" or "sent"."""
+    pending("SK-0084", "round status")
+
+
+def reportPageText(ledger, roundRow):
+    """The visible text of the round's report page, which tells a person to run `pr <KEY>`."""
+    pending("SK-0087", "round report page")
 
 
 def storedFindings(ledger, roundRow):

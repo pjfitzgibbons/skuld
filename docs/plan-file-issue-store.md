@@ -21,14 +21,13 @@
 - [6. Open questions](#open-questions)
 - [7. Alternatives considered](#alternatives)
 - [8. Cross-cutting concerns](#lenses)
-- [9. Redmine survey: what carries over](#redmine-survey)
 
 <a id="context"></a>
 
 ## 1. Context and scope
 
-`plan` and `pr` exist twice. In gh-plan they run against Redmine, through a VS Code extension, the gh-issues scripts and
-a `plan` package that [ADR 0014](../../gh-plan/docs/adr/0014-terminal-client.md) starts ([#185](http://127.0.0.1:3010/issues/185)). In this repo they run
+`plan` and `pr` exist twice. In gh-plan they run through a VS Code extension, the gh-issues scripts and
+a `plan` package that [ADR 0014](../../gh-plan/docs/adr/0014-terminal-client.md) starts. In this repo they run
 against Jira Cloud as a terminal CLI (`lib/`), with `pr` still a shell script in `skills/jira-issues/scripts/pr.sh`.
 
 This repo also already has a small file tracker: `lib/fileissues.py` stores `JP-<n>` issues as Markdown with front
@@ -36,8 +35,8 @@ matter in `issues/` ([architecture §7.7](architecture.md#file-backed-issues)). 
 bodies, `fields.status.statusCategory`), so `start.py`, `ship.py` and `done.py` never see the difference.
 
 This plan makes a file store the tracker `plan` works against first: Markdown issue files in a folder that lives outside
-every development repo, later a git repo of its own, committed and pushed by a watcher. Jira and Redmine become adapters
-behind the same port.
+every development repo, later a git repo of its own, committed and pushed by a watcher. Jira is an adapter
+behind the same port; the store is skuld's tracker ([ADR 0006](adr/0006-the-ticket-store-is-skulds-tracker.md#tracker)).
 
 Each run touches up to three places:
 
@@ -50,12 +49,12 @@ Each run touches up to three places:
 - **The configured repo** is the development repo `plan` or `pr` runs in. Its branches, worktrees and PRs are what the
   commands change there; the tickets and reviews they write go to the store.
 
-gh-plan kept issues as files once. [ADR 0001](../../gh-plan/docs/adr/0001-git-is-the-database.md) and
-[ADR 0008](../../gh-plan/docs/adr/0008-file-native-items.md) kept items as files inside each repo, and
-[ADR 0011](../../gh-plan/docs/adr/0011-redmine-is-the-tracker.md) moved to Redmine because of what _inside the repo_
-cost: a direct commit to the default branch on every start, and `ready.yml` conflicts between branches. A store in its
-own repo has neither cost. The third cost ADR 0011 named, owning what a tracker gives for free (web page, board, cycle
-checks), stays, and the scope below keeps that list short.
+gh-plan kept issues as files inside each repo ([ADR 0001](../../gh-plan/docs/adr/0001-git-is-the-database.md) and
+[ADR 0008](../../gh-plan/docs/adr/0008-file-native-items.md)). Files inside the repo cost a direct commit to the
+default branch on every start, and `ready.yml` conflicts between branches. A store in its own repo has neither cost.
+What a hosted tracker gives for free (a web page, a board, cycle checks) the store provides only in part: the checker
+refuses cycles, the local server gives every ticket a page ([ADR 0006 §3.5](adr/0006-the-ticket-store-is-skulds-tracker.md#server)),
+and the scope below keeps the rest of that list short.
 
 <a id="principles"></a>
 
@@ -83,16 +82,15 @@ Goals:
 - `plan list`, the picker, `view`, `start`, `ship` and `done` work against the file store as soon as the store exists.
 - One issue format, specified in one place, checked by one script.
 - The store can move from a plain folder to a git repo with a remote without changing a file.
-- Jira (work) and Redmine (home, while it lasts) keep working as adapters.
+- Jira (work) keeps working as an adapter; the store is the home tracker ([ADR 0006](adr/0006-the-ticket-store-is-skulds-tracker.md#tracker)).
 - Review files live in the store beside the tickets, so they are committed and pushed the same way and no longer sit in
   each repo's ignored `.tmp/`.
 
 Non-goals, for now:
 
-- A web page per issue, a board or a Gantt. Files open in nvim; the picker is the list.
+- A board or a Gantt chart. Files open in nvim; the picker is the list. Every ticket has a read-only web page
+  ([ADR 0006 §3.5](adr/0006-the-ticket-store-is-skulds-tracker.md#server)).
 - Multi-user editing. One person, two Macs at most.
-- Migrating Redmine's history. Open issues may be imported ([§5](#phases), phase 8); closed ones stay in Redmine's
-  backup.
 
 <a id="design"></a>
 
@@ -106,7 +104,7 @@ Four interfaces, each a module under `lib/` (later the `plan` package) with one 
 
 | Port           | Does                                                                                       | Adapters                                                |
 | -------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
-| `IssueStore`   | list next up, read an issue, create, set fields, transition, append a log line, close note | `FileStore` (first), `Jira` (exists), `Redmine` (later) |
+| `IssueStore`   | list next up, read an issue, create, set fields, transition, append a log line, close note | `FileStore` (first), `Jira` (exists)               |
 | `ReviewStore`  | record a round, its findings and outcomes; read them back                                  | files under `<store>/reviews/<KEY>/` (first), SQLite    |
 | `PullRequests` | open or update a PR, read its state and threads, post replies                              | `gh`                                                    |
 | `GitRemote`    | fetch, push, rebase onto the base, worktree add and remove                                 | `git`                                                   |
@@ -231,11 +229,10 @@ builds.
 
 ### 4.4 Milestones and ordinal
 
-Milestones organize the work, and `ordinal` orders it, as Redmine's versions and `Ordinal` field do in gh-plan.
+Milestones organize the work, and `ordinal` orders it.
 
 A milestone is a file, `milestones/<id>.md`, with front matter and a Markdown body for its exit criterion. Milestones
-belong to the store, not to a project, so one milestone can span projects, the way gh-plan's versions are shared across
-the `plan` tree:
+belong to the store, not to a project, so one milestone can span projects:
 
 ```markdown
 ---
@@ -256,7 +253,7 @@ field; the JP files' `rank:` values carry over as `ordinal:`.
 Plan order, which the picker, `plan list` and `plan next` all use:
 
 1. Issues in a milestone first, by the milestone's `ordinal`; issues with no milestone after them.
-2. Within a milestone, open issues that block others first ([#114](http://127.0.0.1:3010/issues/114)), then by the issue's `ordinal`, then unordered issues
+2. Within a milestone, open issues that block others first, then by the issue's `ordinal`, then unordered issues
    by number.
 3. A store issue with `after: <JIRA-KEY>` still sorts right after that Jira issue in the merged picker, as today.
 
@@ -266,12 +263,10 @@ Plan order, which the picker, `plan list` and `plan next` all use:
 
 <a id="blockers"></a>
 
-**Blockers.** An issue records what blocks it in `blocked_by: [SK-0004, SK-0007]`, the store's form of Redmine's `blocks`
-relation and Jira's issue links. Only the blocked side is written; "blocks" is derived by reading every file, so the two
+**Blockers.** An issue records what blocks it in `blocked_by: [SK-0004, SK-0007]`, the store's form of Jira's issue links. Only the blocked side is written; "blocks" is derived by reading every file, so the two
 directions can't disagree. The relation is tracked end to end:
 
-- The checker refuses a `blocked_by` key that exists in neither `active/` nor `archive/`, and any cycle, as Redmine
-  refuses one.
+- The checker refuses a `blocked_by` key that exists in neither `active/` nor `archive/`, and any cycle.
 - A blocker counts as cleared when its status is `done` or `wontfix`; an archived blocker is closed, so archiving never
   breaks a relation.
 - `FileStore.blockers(issue)` returns the open ones, so Start lists them and asks before it goes on, exactly as it
@@ -299,7 +294,7 @@ ordinal: 300 # optional; steps of 100
 after: # optional; a Jira key to sort after in the merged picker
 parent: # optional key
 blocked_by: [] # keys, flow list; see Blockers
-points: # optional: 1 2 3 5 8 13
+points: # optional: 1 2 3 5 8 13 (Fibonacci story points; ADR 0006 §3.3)
 ---
 
 ## Task
@@ -346,10 +341,10 @@ the whole store. Rules:
   cycle ([Blockers](#blockers)).
 - Every repo remote in `store.yml` appears under one project only.
 - `closed` is set exactly when `status` is `done` or `wontfix`; an issue in `archive/` is closed.
-- `milestone` names a file in `milestones/`; an open issue isn't in a closed milestone (Redmine refuses the same); a
+- `milestone` names a file in `milestones/`; an open issue isn't in a closed milestone; a
   milestone's `id` matches its file name.
 - The body passes `outline.py`; `## Log` is last and every line is `- YYYY-MM-DD: text`.
-- Reality checks as they come (gh-plan [#21](http://127.0.0.1:3010/issues/21)): `points` above 5 on an issue in a milestone, for one.
+- Reality checks as they come: `points` above 5 on an issue in a milestone, for one.
 
 `FileStore` runs the same checks on every file it writes, before the write, so `plan` can't produce a file the watcher
 would refuse. The checker is the module; `issue-check` is its command line.
@@ -404,7 +399,6 @@ Each phase is usable on its own, and the files written in phase 1 stay valid thr
 | 5   | Archive                       | `plan archive` and its schedule                                                                                                                                                                                                                                                                          | —                                   |
 | 6   | Git store                     | the store as its own repo with a remote; `plan` refuses nothing new, it only reads and writes files                                                                                                                                                                                                      | —                                   |
 | 7   | Watcher                       | `issue-watch`, launchd plist, debounce, checker gate, loud failure, push                                                                                                                                                                                                                                 | —                                   |
-| 8   | Redmine import                | `plan import redmine <project>`: each open issue to a file under a prefix, its description already in the outline; each open version to a milestone file, Redmine's `Ordinal` to `ordinal`, and each `blocks` relation to the blocked issue's `blocked_by`                                               | gh-issues' `redmine.py`             |
 
 Phases 1 to 3 are the short path: after them `plan` runs against a folder.
 
@@ -433,7 +427,7 @@ Each has a recommendation; none blocks phase 1 except the first two.
 7. **Work reviews and the store's remote.** Reviews of `CIAM` PRs land in the work Mac's store, while work issues stay
    in Jira. _Recommend:_ the work Mac's `issueStore` is a store whose remote work data may go to, never the home one.
 
-The code's home is settled: skuld. gh-plan's [#185](http://127.0.0.1:3010/issues/185) starts a `plan` package with the same ports, so [#185](http://127.0.0.1:3010/issues/185) and [#186](http://127.0.0.1:3010/issues/186) are re-pointed to this work or closed ([§9](#redmine-survey)).
+The code's home is settled: skuld.
 
 <a id="alternatives"></a>
 
@@ -443,8 +437,6 @@ The code's home is settled: skuld. gh-plan's [#185](http://127.0.0.1:3010/issues
   branches conflict on shared plan files. A separate repo removes both.
 - **An orphan branch per repo** (gh-plan ADR 0010). Removes the commit-to-main cost, adds a worktree and a symlink per
   item worktree, and still scatters the plan across repos.
-- **Stay on Redmine.** It works, and it is a server to run, back up and upgrade ([#191](http://127.0.0.1:3010/issues/191), [#119](http://127.0.0.1:3010/issues/119), [#133](http://127.0.0.1:3010/issues/133)), reachable only from
-  the home Mac, and its data isn't text an agent can grep.
 - **Folders per status** (`open/`, `in-progress/`, `done/`). Every transition is a move, which makes history harder to
   follow; status is one field, and only the archive is a folder.
 - **Commit from `plan` instead of a watcher.** Exact messages, but a person's or an agent's hand edit wouldn't be
@@ -466,38 +458,3 @@ The code's home is settled: skuld. gh-plan's [#185](http://127.0.0.1:3010/issues
 | L8 Testability                 | The checker and `FileStore` test against a fixture store in a temp dir; the watcher's debounce and gate test with a fake clock and a temp repo. No network.                                                                                                                                                                                                                                                                                               |
 | L9 Operations and cost         | One launchd agent, stdlib Python, git. The store needs no server.                                                                                                                                                                                                                                                                                                                                                                                         |
 | L10 Docs impact                | `docs/architecture.md` §3 and §7.7, `GUIDE.md` §2 and §4, `issues/README.md` (replaced by the store's spec), the jira-issues skill's issue section.                                                                                                                                                                                                                                                                                                       |
-
-<a id="redmine-survey"></a>
-
-## 9. Redmine survey: what carries over
-
-Redmine at `127.0.0.1:3010`, project `plan` and its subprojects: 102 open issues on 2026-11-07. Ulysses ([#96](http://127.0.0.1:3010/issues/96)–[#101](http://127.0.0.1:3010/issues/101)) and
-tempotag ([#75](http://127.0.0.1:3010/issues/75), [#76](http://127.0.0.1:3010/issues/76)) are other products and stay where they are. Of the GH Plan issues, these bear on this plan.
-
-**Reuse, re-scoped to this plan:**
-
-| Issue | Subject                                                                  | Becomes                                                                                               |
-| ----- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| #185  | Run next, status and worktrees from a plan command                       | Phase 3's read commands; its "policy names no tool" is principle 1                                    |
-| #186  | Run Start, Open, Go, Ship and Done from the plan command                 | Phase 3 for the store, phase 4 for `pr` in Python; most of its scope already runs here                |
-| #42   | cli.py: query commands with --json                                       | Fold into #185: `list`, `show`, `next`, `validate` over `FileStore`                                   |
-| #44   | Write commands: new, set, ice, schedule                                  | Phase 3's `plan new` (template) and `plan set` (all or nothing, checked)                              |
-| #63   | Pre-commit hook that runs plan validate                                  | Phase 7's checker gate in the watcher, and a pre-commit hook in the store repo                        |
-| #64   | Dockerfile running plan validate in CI                                   | The store repo's CI runs `issue-check` (no Docker needed)                                             |
-| #34   | End-to-end test over the fixture tree                                    | The fixture store for phases 1–3                                                                      |
-| #51   | plan init: create a tracker, or register the current repo with one       | `plan init-store <path>`: `store.yml`, `active/`, `archive/`, and the `issueStore` config key         |
-| #37   | plan.py: duration, lane heads, next/ready/why, schedule                  | `next` and `ready` in plan order ([§4.4](#milestones)); duration later                                |
-| #36   | Design 0001: next/ready without lane heads; repo scope                   | Its repo-scope rule answers open question 4                                                           |
-| #114  | Show Next up in plan order, by milestone and with blockers first         | Plan order over the store: milestone `ordinal`, blockers first, issue `ordinal` ([§4.4](#milestones)) |
-| #111  | Keep each issue's Done ticks in Redmine and render them into the PR body | Simpler with files: the ticks live in the issue's `## Done`, and `pr` renders them into the PR body  |
-| #21   | Reality checks in the Redmine plugin                                     | Checker rules ([§4.6](#checker))                                                                      |
-| #173  | Reference Redmine issues as gh-plan#n                                    | Settled by `PREFIX-number` keys; close once the store's keys are in use                               |
-| #61   | Post-merge hook reports closes                                           | Open question 5: `plan done` closes a file-store issue after a confirmed merge                        |
-
-**Unchanged by the store, still wanted (port to this repo's `plan`):** [#167](http://127.0.0.1:3010/issues/167) worktrees view, [#141](http://127.0.0.1:3010/issues/141) `plan switch`, [#140](http://127.0.0.1:3010/issues/140) and [#179](http://127.0.0.1:3010/issues/179) session state, [#178](http://127.0.0.1:3010/issues/178) `pending`, [#177](http://127.0.0.1:3010/issues/177) setup on every Start and Open, [#103](http://127.0.0.1:3010/issues/103) worktree folder names, [#187](http://127.0.0.1:3010/issues/187) and [#190](http://127.0.0.1:3010/issues/190) the report server, [#145](http://127.0.0.1:3010/issues/145) docs for the terminal client [#138](http://127.0.0.1:3010/issues/138) kebab-case command names. The review work in M1 ([#107](http://127.0.0.1:3010/issues/107), [#108](http://127.0.0.1:3010/issues/108), [#127](http://127.0.0.1:3010/issues/127)–[#129](http://127.0.0.1:3010/issues/129), [#136](http://127.0.0.1:3010/issues/136), [#137](http://127.0.0.1:3010/issues/137), [#146](http://127.0.0.1:3010/issues/146)–[#166](http://127.0.0.1:3010/issues/166) [#169](http://127.0.0.1:3010/issues/169), [#174](http://127.0.0.1:3010/issues/174), [#176](http://127.0.0.1:3010/issues/176), [#180](http://127.0.0.1:3010/issues/180), [#181](http://127.0.0.1:3010/issues/181)) sits behind the `ReviewStore` port and doesn't depend on this plan.
-
-**Later, reading the store:** [#24](http://127.0.0.1:3010/issues/24) estimate against tracked time, [#27](http://127.0.0.1:3010/issues/27) Timewarrior adapter, [#57](http://127.0.0.1:3010/issues/57) velocity, [#43](http://127.0.0.1:3010/issues/43)
-planned-vs-actual, [#33](http://127.0.0.1:3010/issues/33) focus, [#39](http://127.0.0.1:3010/issues/39) terminal board, [#70](http://127.0.0.1:3010/issues/70) freeze (baselines as committed values, as ADR 0001 had them).
-
-**Superseded or Redmine-only, to close or leave:** [#41](http://127.0.0.1:3010/issues/41) (the orphan branch, replaced by the store's own repo), [#55](http://127.0.0.1:3010/issues/55) drag
-to reorder, [#23](http://127.0.0.1:3010/issues/23) and [#49](http://127.0.0.1:3010/issues/49) (plan-board extension), [#35](http://127.0.0.1:3010/issues/35) (VS Code tree views), [#92](http://127.0.0.1:3010/issues/92), [#135](http://127.0.0.1:3010/issues/135) and [#143](http://127.0.0.1:3010/issues/143) (VS Code frames, already frozen by ADR 0014), [#194](http://127.0.0.1:3010/issues/194), [#191](http://127.0.0.1:3010/issues/191), [#133](http://127.0.0.1:3010/issues/133), [#132](http://127.0.0.1:3010/issues/132), [#119](http://127.0.0.1:3010/issues/119), [#101](http://127.0.0.1:3010/issues/101) (Redmine operations), [#29](http://127.0.0.1:3010/issues/29) (gh-plan's requirements doc).

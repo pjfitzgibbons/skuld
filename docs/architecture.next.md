@@ -1,5 +1,9 @@
 # Architecture
 
+Tabled with [ADR 0005](adr/0005-redmine-is-the-tracker.md). [docs/architecture.md](architecture.md),
+under [ADR 0006](adr/0006-the-ticket-store-is-skulds-tracker.md), describes the system. This
+document is kept unchanged so it can be taken up again.
+
 ## Contents
 
 - [1. Purpose](#purpose)
@@ -94,7 +98,7 @@ Each kind of thing has one home:
 | The issue's worktree | The round until Ship uploads it: its commit message, PR body and replies, and the reviewer's files for each round |
 | The Mac | The local files that `plan-window` writes (the issues file and the workspace files) and the machine config |
 
-Tracking data lives in Redmine's database, and the journal is the record of every change. Data leaves the database in a nightly backup and a nightly export. The export holds every issue as JSON, journal included, and it is how someone with no Redmine account reads the issues. An agent reads issues through Redmine's REST API.
+Tracking data lives in Redmine's database, and the journal is the record of every change. Data leaves the database in a nightly backup and a nightly export. The backup holds Redmine's API keys, which Redmine stores in plain text, so every backup is a secret: the host keeps it encrypted, with access limited to its owner. Redmine API keys are rotated on a schedule and right after any suspected leak. The export holds every issue as JSON, journal included, and it is how someone with no Redmine account reads the issues. An agent reads issues through Redmine's REST API.
 
 <a id="credentials"></a>
 
@@ -102,7 +106,7 @@ Tracking data lives in Redmine's database, and the journal is the record of ever
 
 A call from the Mac, from `plan-window`, `plan`, `pr` or Claude Code's hooks, carries the person's own Redmine API key. Skuld's automation carries the bot user's key, and the bot user's role, which reaches only skuld's projects, is what limits it. Both keys live in the macOS Keychain. Anything of skuld's that uses one reads it from there on each call, and never caches it, puts it in an env var or logs it.
 
-The GitHub token that the `PullRequests` adapter uses lives in the settings of skuld's Redmine plugin, in Redmine.
+A secret skuld presents to another service comes from the host's secret store, never from Redmine's database. The GitHub token that the `PullRequests` adapter uses is one: skuld's Redmine plugin reads it from the host's secret store.
 
 What a person does in the core's interface, the core does as that person's signed-in Redmine user. A call from the Mac acts as the user whose key it carries. Skuld's own automation acts as the bot user. The journal names whoever acted. A `fixes <KEY>` close is Redmine's own, and Redmine journals it as the commit's author.
 
@@ -197,7 +201,7 @@ The boundary is drawn around outside systems. A client runs local programs such 
 | Bridge | TypeScript, in the `plan-window` extension |
 | Client | VS Code, with one plan window for all issues and the `plan-window` extension; `plan` and `pr` in a terminal |
 | Backup | A nightly backup of Redmine's database with an integrity check, and a nightly export of every issue as JSON |
-| Auth | The person's own Redmine API key in the macOS Keychain, read per call, for calls from the Mac; the bot user's key, kept the same way, for skuld's automation; the signed-in user's Redmine session for actions in the core's interface; the GitHub token in skuld's Redmine plugin's settings; an authenticated link from the Mac to the core |
+| Auth | The person's own Redmine API key in the macOS Keychain, read per call, for calls from the Mac; the bot user's key, kept the same way, for skuld's automation; the signed-in user's Redmine session for actions in the core's interface; the GitHub token, which skuld's Redmine plugin reads from the host's secret store; an authenticated link from the Mac to the core |
 | Browser | The plan window's integrated browser |
 | Pages | Skuld's Redmine plugin, rendering an issue's pages from the issue's data (§7.8) |
 | Pull requests | GitHub; Redmine links commits to an issue through the repo's registration and the key plugin |
@@ -210,7 +214,7 @@ What Redmine does not do for skuld is a plugin on Redmine's plugin API. Skuld's 
 
 | Plugin | Holds |
 | --- | --- |
-| Skuld's own plugin | The core, its interface, the checklist of Done boxes, the pages, the project field that carries the key prefix, and the GitHub token in its settings |
+| Skuld's own plugin | The core, its interface, the checklist of Done boxes, the pages, the project field that carries the key prefix, and the use of the GitHub token from the host's secret store |
 | `review_findings` | `ReviewStore`'s adapter: a ledger of each issue's review rounds and findings (§7.6) |
 | The key plugin | Reads keys in text and in commits and renders them as links (§5) |
 
