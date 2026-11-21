@@ -5,6 +5,7 @@
 import shutil
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 from lib.fileissues import FileIssues, canonicalKey, isFileBacked
@@ -198,19 +199,45 @@ class FileIssuesTests(unittest.TestCase):
         row = self.fi.list()[0]
         self.assertEqual(row["after"], "CIAM-163")
 
-    # --- browseUrl / closeNote -----------------------------------------------------------------
+    # --- browseUrl -----------------------------------------------------------------
 
     def test_browseUrl_is_the_absolute_file_path(self):
         path = writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
         self.assertEqual(self.fi.browseUrl("SK-0001"), str(path.resolve()))
 
-    def test_closeNote_names_the_file_not_a_jira_url(self):
-        writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
-        note = self.fi.closeNote("SK-0001")
-        self.assertIn("SK-0001", note)
-        self.assertIn(self.dir, note)
-        self.assertNotIn("atlassian", note)
+    # --- close() / reindex() (Done's steps 4 and 6) ------------------------------------------------
 
+    def test_close_sets_status_done_and_closed_today(self):
+        path = writeIssue(self.dir, "SK-0002-a-task-already-underway.md", IN_PROGRESS_TASK)
+        line = self.fi.close("SK-0002")
+        self.assertTrue(line.startswith("ran:"))
+        text = path.read_text(encoding="utf8")
+        self.assertIn("status: done\n", text)
+        self.assertIn(f"closed: {date.today().isoformat()}\n", text)
+
+    def test_close_keeps_a_closed_date_already_set(self):
+        path = writeIssue(self.dir, "SK-0003-x.md", DONE_QUESTION.replace("status: done", "status: in-progress"))
+        self.fi.close("SK-0003")
+        self.assertIn("closed: 2026-11-03\n", path.read_text(encoding="utf8"))
+
+    def test_close_on_a_closed_ticket_writes_nothing(self):
+        path = writeIssue(self.dir, "SK-0003-x.md", DONE_QUESTION)
+        self.assertTrue(self.fi.close("SK-0003").startswith("skipped:"))
+        self.assertEqual(path.read_text(encoding="utf8"), DONE_QUESTION)
+
+    def test_reindex_runs_the_stores_index_script_once_and_then_finds_it_current(self):
+        (Path(self.dir) / "scripts").mkdir()
+        writeIssue(
+            Path(self.dir) / "scripts",
+            "index.py",
+            "import sys, pathlib\n"
+            "index = pathlib.Path(__file__).resolve().parent.parent / 'INDEX.md'\n"
+            "if '--check' in sys.argv: sys.exit(0 if index.exists() else 1)\n"
+            "index.write_text('x')\n",
+        )
+        self.assertTrue(self.fi.reindex().startswith("ran:"))
+        self.assertTrue((Path(self.dir) / "INDEX.md").exists())
+        self.assertTrue(self.fi.reindex().startswith("skipped:"))
 
     # --- list(): ordinal order -------------------------------------------------------------------
 

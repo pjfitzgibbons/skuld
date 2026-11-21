@@ -707,18 +707,25 @@ clean, holds no ignored files outside `disposable` (a refusal names each ignored
 it; no round files are left unsent; the worktree isn't locked; the main checkout's base can
 fast-forward to `origin/<base>`.
 
-The changes: fast-forward the base, `git worktree remove`, delete the workspace file (a warning if it won't go), delete every
+The changes run in this order. First Done closes the issue's terminals: `Shell <KEY>`, then
+`Claude <KEY>` and `Review <KEY>` by a clean close, Ctrl-C twice and never a kill, and the PR's
+browser tab. The plan window's `done` link handler does this, requested with `code --open-url`.
+Then: fast-forward the base, `git worktree remove`, delete the workspace file (a warning if it won't go), delete every
 branch named for the issue whose tip is in the PR, note the PR and merge commit on the issue (an ADF
 comment in Jira, a `## Log` line in a ticket), remove the issue's lines from the issues file and the pulses file and its folder from the plan
-workspace (the ticket store's folder stays), and print the close note:
+workspace (the ticket store's folder stays). For a store ticket, Done sets `status: done` and
+`closed: <today>`, closes the ticket's editor tab and runs the store's `scripts/index.py`. For a
+Jira issue it closes the Jira page's tab and prints the close note:
 
 ```text
 Close CIAM-123 in Jira: https://cryoport.atlassian.net/browse/CIAM-123
 ```
 
-For a store ticket, the note names the file to set `status: done` in.
+Done refuses, before any change, when the current working directory is inside the issue's
+worktree; run it from the main checkout. With VS Code unreachable, Done prints the window steps it
+skipped and still does the ticket and the reindex.
 
-**Done never changes an issue's status.** `lib/done.py` has no call to a transition, and the
+**Done never changes a Jira issue's status.** `lib/done.py` has no call to a transition, and the
 `no_terminal_jira_transition.py` hook refuses any Bash command that looks like it moves a Jira
 issue to a terminal status. Done accepts an issue that is in progress or already closed.
 

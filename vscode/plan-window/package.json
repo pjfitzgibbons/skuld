@@ -1,7 +1,7 @@
 {
   "name": "plan-window",
   "displayName": "plan window",
-  "description": "In the plan window only, shows plan's issues in the Explorer, opens an issue's Claude terminal, shell and ticket, starts plan review's review in a Review terminal, and opens plan browse's pages in the integrated browser. Other windows ignore it.",
+  "description": "In the plan window only, shows plan's issues in the Explorer, opens an issue's Claude terminal, shell and ticket, starts plan review's review in a Review terminal, and opens plan browse's pages in the integrated browser, and closes a finished issue's terminals and tabs when plan done asks. Other windows ignore it.",
   "publisher": "skuld",
   "version": "0.0.1",
   "private": true,

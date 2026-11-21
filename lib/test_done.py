@@ -16,9 +16,11 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from datetime import date
 from unittest import mock
 
 from lib import done as done_mod
+from lib.fileissues import FileIssues
 from lib import pulses, term
 from lib.done import DISPOSABLE, branchForKey, doneNote, finish
 from lib.start import worktreeDir
@@ -98,8 +100,11 @@ class FakeJira:
         self.transitioned.append([key, target])
         raise RuntimeError("finish() must never call jira.transition -- decision #5")
 
+    def browseUrl(self, key):
+        return f'{self.settings["baseUrl"]}/browse/{key}'
+
     def closeNote(self, key):
-        return f'Close {key} in Jira: {self.settings["baseUrl"]}/browse/{key}'
+        return f'Close {key} in Jira: {self.browseUrl(key)}'
 
 
 def inProgressIssue(key=KEY):
@@ -108,7 +113,7 @@ def inProgressIssue(key=KEY):
 
 # Real git: a bare "origin", a clone simulating GitHub's side where the PR gets squash-merged, and
 # the main checkout with the issue's worktree, exactly as the source's sandbox() does.
-def sandbox(merged=True):
+def sandbox(merged=True, key=KEY):
     root = tempfile.mkdtemp(prefix="jira-plan-done-")
     bare = os.path.join(root, "origin.git")
     checkout = os.path.join(root, "demo")
@@ -131,8 +136,8 @@ def sandbox(merged=True):
     git(checkout, "config", "user.email", "t@example.com")
     git(checkout, "config", "user.name", "T")
 
-    branch = f"feat/{KEY}-go-requests"
-    dir = worktreeDir(checkout, KEY)
+    branch = f"feat/{key}-go-requests"
+    dir = worktreeDir(checkout, key)
     os.makedirs(os.path.dirname(dir), exist_ok=True)
     git(checkout, "worktree", "add", "--quiet", "-b", branch, dir, "origin/main")
     with open(os.path.join(dir, "b.txt"), "w") as f:
@@ -153,7 +158,7 @@ def sandbox(merged=True):
         git(github, "config", "user.name", "T")
         git(github, "fetch", "-q", "origin", branch)
         git(github, "merge", "-q", "--squash", f"origin/{branch}")
-        git(github, "commit", "-q", "-m", f"feature work (#1) ({KEY})")
+        git(github, "commit", "-q", "-m", f"feature work (#1) ({key})")
         git(github, "push", "-q", "origin", "main")
         mergeCommit = git(github, "rev-parse", "HEAD").strip()
 
@@ -166,7 +171,7 @@ def sandbox(merged=True):
     pr = {
         "url": f"https://github.com/{repoPart}/pull/1",
         "number": 1,
-        "title": f"feature work ({KEY})",
+        "title": f"feature work ({key})",
         "headRefName": branch,
         "headRefOid": headRefOid,
         "baseRefName": "main",
@@ -185,7 +190,7 @@ def sandbox(merged=True):
         "branch": branch,
         "pr": pr,
         "view": view,
-        "checkouts": {"CIAM": checkout},
+        "checkouts": {key.split("-")[0]: checkout},
     }
 
 
@@ -214,12 +219,23 @@ class FinishTests(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
 
+        # The plan window is never reached: askWindow records each ask and answers with self.answer.
+        self.asked = []
+        self.answer = lambda route, key: [f"ran: window did {route}"]
+        patch = mock.patch.object(term, "askWindow", side_effect=lambda route, key, workspaceDir=None: self.ask(route, key))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def ask(self, route, key):
+        self.asked.append(route)
+        return self.answer(route, key)
+
     def tearDown(self):
         for d in self._dirs:
             shutil.rmtree(d, ignore_errors=True)
 
-    def sandbox(self, merged=True):
-        s = sandbox(merged)
+    def sandbox(self, merged=True, key=KEY):
+        s = sandbox(merged, key)
         self._dirs.append(s["root"])
         return s
 
@@ -340,6 +356,173 @@ class FinishTests(unittest.TestCase):
         self.assertEqual(len(jira.comments), 1)
         self.assertEqual(jira.transitioned, [])
         self.assertIsNone(result["dir"])  # nothing left to remove
+
+    # --- the teardown of the issue's windows and ticket (SK-0108) ---
+
+    STORE_TICKET = "---\nstatus: in-progress\ntype: task\nopened: 2026-11-21\nclosed:\n---\n\n# A ticket\n"
+    STORE_KEY = "SK-0108"
+
+    def storeSandbox(self):
+        s = self.sandbox(key=self.STORE_KEY)
+        store = tempfile.mkdtemp(prefix="skuld-done-store-")
+        self._dirs.append(store)
+        s["ticket"] = os.path.join(store, f"{self.STORE_KEY}-a-ticket.md")
+        with open(s["ticket"], "w") as f:
+            f.write(self.STORE_TICKET)
+        s["store"] = FileIssues({"dir": store})
+        return s
+
+    def ticketText(self, s):
+        with open(s["ticket"]) as f:
+            return f.read()
+
+    def finishStore(self, s, **kwargs):
+        return finish(s["store"], s["checkouts"], self.STORE_KEY, view=s["view"], cwd=s["checkout"], **kwargs)
+
+    def test_a_store_issue_is_torn_down_in_order_terminals_pr_tab_worktree_ticket_tab_index(self):
+        s = self.storeSandbox()
+        events = []
+        term.writeWorkspaceFile(term.workspaceFilePath(self.STORE_KEY), {"settings": {"plan.key": self.STORE_KEY}})
+
+        def answer(route, key):
+            workspace = term.readPlanWorkspace(term.workspaceFilePath(key))
+            events.append((route, os.path.exists(s["dir"]), "status: done" in self.ticketText(s), workspace["settings"].get("plan.prUrl")))
+            return [f"ran: {route}"]
+
+        self.answer = answer
+        with mock.patch.object(FileIssues, "reindex", lambda store: events.append("reindex") or "ran: indexed"):
+            result = self.finishStore(s)
+        prUrl = s["pr"]["url"]
+        self.assertEqual(events, [("done", True, False, prUrl), ("done-tab", False, True, prUrl), "reindex"])
+        notes = result["notes"]
+        order = ["ran: done", "Removed the worktree", "ran: set SK-0108 to status: done", "ran: done-tab", "ran: indexed"]
+        positions = [next(i for i, n in enumerate(notes) if n.startswith(o) or o in n) for o in order]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn(f"closed: {date.today().isoformat()}", self.ticketText(s))
+
+    def test_a_terminal_that_wont_exit_is_reported_and_the_later_steps_still_run(self):
+        s = self.storeSandbox()
+        self.answer = lambda route, key: (
+            [f"failed: Claude {key} is still running after Ctrl-C twice; left open, close it by hand"] if route == "done" else ["ran: tab"]
+        )
+        with mock.patch.object(FileIssues, "reindex", lambda store: "ran: indexed"):
+            result = self.finishStore(s)
+        self.assertIn(f"failed: Claude {self.STORE_KEY} is still running after Ctrl-C twice; left open, close it by hand", result["notes"])
+        self.assertEqual(self.asked, ["done", "done-tab"])
+        self.assertFalse(os.path.exists(s["dir"]))
+        self.assertIn("status: done", self.ticketText(s))
+        self.assertIn("ran: indexed", result["notes"])
+
+    def test_a_second_done_changes_nothing_and_raises_nothing(self):
+        s = self.storeSandbox()
+        with mock.patch.object(FileIssues, "reindex", lambda store: "skipped: current"):
+            self.finishStore(s)
+            first = self.ticketText(s)
+            self.answer = lambda route, key: ["skipped: already closed"]
+            result = self.finishStore(s)
+        self.assertEqual(self.ticketText(s), first)
+        self.assertIn(f"skipped: {self.STORE_KEY} is already done and closed {date.today().isoformat()}.", result["notes"])
+        self.assertIsNone(result["dir"])
+
+    def test_with_vs_code_unreachable_each_window_step_is_skipped_by_name_and_the_ticket_is_still_closed(self):
+        s = self.storeSandbox()
+
+        def unreachable(route, key):
+            raise RuntimeError("VS Code wasn't reached (no code)")
+
+        self.answer = unreachable
+        events = []
+        with mock.patch.object(FileIssues, "reindex", lambda store: events.append("reindex") or "ran: indexed"):
+            result = self.finishStore(s)
+        skipped = [n for n in result["notes"] if n.startswith("skipped:") and "VS Code wasn't reached" in n]
+        self.assertEqual(len(skipped), 5)  # Shell, Claude, Review, the PR tab, the ticket tab
+        self.assertTrue(all("by hand" in n or "close the tab" in n for n in skipped))
+        self.assertIn("status: done", self.ticketText(s))
+        self.assertEqual(events, ["reindex"])
+        self.assertFalse(os.path.exists(s["dir"]))
+
+    def test_a_window_that_didnt_answer_is_waited_for_once(self):
+        s = self.storeSandbox()
+
+        def silent(route, key):
+            raise RuntimeError("the plan window didn't answer within 60 seconds")
+
+        self.answer = silent
+        with mock.patch.object(FileIssues, "reindex", lambda store: "ran: indexed"):
+            result = self.finishStore(s)
+        self.assertEqual(self.asked, ["done"])  # done-tab is skipped without a second wait
+        self.assertEqual(len([n for n in result["notes"] if n.startswith("skipped:") and "didn't answer" in n]), 5)
+
+    def test_a_second_done_after_a_finished_one_says_so_and_runs_the_tail(self):
+        s = self.storeSandbox()
+        events = []
+        with mock.patch.object(FileIssues, "reindex", lambda store: events.append("reindex") or "skipped: current"):
+            self.finishStore(s)
+            # the PR's branch is gone from origin too, as GitHub's delete-on-merge and fetch --prune leave it
+            git(s["checkout"], "update-ref", "-d", f"refs/remotes/origin/{s['branch']}")
+            self.asked.clear()
+            result = self.finishStore(s)
+        self.assertIn(f"{self.STORE_KEY} is already done; its worktree and branch are gone.", result["notes"])
+        self.assertIn(f"skipped: {self.STORE_KEY} is already done and closed {date.today().isoformat()}.", result["notes"])
+        self.assertEqual(self.asked, ["done-tab"])
+        self.assertEqual(events, ["reindex", "reindex"])
+
+    def test_a_jira_issue_with_dones_note_and_no_branch_is_already_done_one_without_is_not_shipped(self):
+        s = self.sandbox()
+        git(s["checkout"], "worktree", "remove", s["dir"])
+        git(s["checkout"], "branch", "-D", s["branch"])
+        git(s["checkout"], "update-ref", "-d", f"refs/remotes/origin/{s['branch']}")
+        issue = inProgressIssue()
+        with self.assertRaisesRegex(RuntimeError, "Ship it first"):
+            finish(FakeJira(issue), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        issue["fields"]["comment"]["comments"].append({"body": {"text": "Done: [o#1](u) merged as [abcdef1](c)."}})
+        result = finish(FakeJira(issue), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        self.assertIn(f"{KEY} is already done; its worktree and branch are gone.", result["notes"])
+        self.assertEqual(self.asked, ["done-tab"])
+
+    def test_an_unknown_store_key_is_still_an_error(self):
+        s = self.storeSandbox()
+        with self.assertRaisesRegex(RuntimeError, "no issue file for SK-0999"):
+            finish(s["store"], s["checkouts"], "SK-0999", view=s["view"], cwd=s["checkout"])
+
+    def test_a_jira_issue_has_its_windows_closed_and_no_status_or_index_written(self):
+        s = self.sandbox()
+        result = finish(FakeJira(inProgressIssue()), s["checkouts"], KEY, view=s["view"], cwd=s["checkout"])
+        self.assertEqual(self.asked, ["done", "done-tab"])  # FakeJira has no close() or reindex() to call
+        self.assertTrue(any(f"Close {KEY} in Jira" in n for n in result["notes"]))
+        self.assertTrue(any(n.startswith("skipped: no store index") for n in result["notes"]))
+
+    def test_a_done_stopped_after_the_terminals_is_finished_by_the_next(self):
+        s = self.storeSandbox()
+
+        class Stopped(Exception):
+            pass
+
+        def stop(route, key):
+            raise Stopped()
+
+        self.answer = stop
+        with self.assertRaises(Stopped):
+            self.finishStore(s)
+        self.assertTrue(os.path.exists(s["dir"]))
+        self.assertNotIn("status: done", self.ticketText(s))
+        self.answer = lambda route, key: [f"ran: {route}"]
+        with mock.patch.object(FileIssues, "reindex", lambda store: "ran: indexed"):
+            result = self.finishStore(s)
+        self.assertFalse(os.path.exists(s["dir"]))
+        self.assertIn("status: done", self.ticketText(s))
+        self.assertEqual(self.asked, ["done", "done", "done-tab"])
+        self.assertIn("ran: indexed", result["notes"])
+
+    def test_refuses_from_inside_the_issues_worktree_changing_nothing(self):
+        s = self.storeSandbox()
+        before = self.ticketText(s)
+        with self.assertRaisesRegex(RuntimeError, re.escape(f"inside {self.STORE_KEY}'s worktree {os.path.realpath(s['dir'])}")):
+            finish(s["store"], s["checkouts"], self.STORE_KEY, view=s["view"], cwd=os.path.join(s["dir"], "sub", ".."))
+        self.assertEqual(self.asked, [])
+        self.assertTrue(os.path.exists(s["dir"]))
+        self.assertIn(s["branch"], git(s["checkout"], "branch", "--list", s["branch"]))
+        self.assertEqual(self.ticketText(s), before)
 
     def test_refuses_pr_that_hasnt_merged_changing_nothing(self):
         s = self.sandbox(merged=False)
