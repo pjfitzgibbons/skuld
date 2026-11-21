@@ -428,7 +428,10 @@ independent. `plan review KEY` (`lib/cli.py`, `cmdReview`):
 3. runs `review.py request KEY --ticket <ticket>`, which writes `request.md` in the round's folder
    (below): the first-review or round prompt (`skills/jira-issues/prompts/`) filled with the PR, the
    exact `/code-review` call, the round number, the worktree root, the paths of the log and the record,
-   the unsettled findings, the OK files with their blob SHAs, and the PR's lenses. The ticket is a store
+   the unsettled findings, the OK files with their blob SHAs, the PR's scope and the PR's lenses. The
+   scope section, "The PR's scope", holds the ticket's `## Task` and `## Guardrails` (for a Jira
+   issue, a pointer to the description's two sections, which `review.py` does not fetch) and the
+   path of the author's `notes.md` (below). The ticket is a store
    issue's ticket file or a Jira issue's page. From a ticket file, `request.md` copies the `[x]` lines
    of its `## Lenses` and, for each, its row of the lens table: the one in
    `~/.claude/agents/technical-writer.md`, with the repo's `docs/agents/technical-writer.md` adding
@@ -497,12 +500,19 @@ are reviewed elsewhere, and without `ultra` the text after the level and flags i
 The subagents report findings and edit nothing. The reviewer merges what every leg reported into one
 finding per defect, checks each against the code, and records it. A concern found more than twice
 across the legs that deserves a lens of its own goes in the record's `advisories`, each with the
-`concern`, the `lens` it suggests and the three or more places it was `seen`.
+`concern`, the `lens` it suggests and the three or more places it was `seen`. A break the round finds
+further than two steps out from its diff, or in what the PR's scope rules out, is the other kind of
+advisory: `"kind": "break"`, the `concern` (what breaks) and one or more `seen` places, with no lens.
+An advisory with a non-blank `lens` is a recurring concern, one with `"kind": "break"` is a break,
+and `finish` refuses one that is neither.
 
 **Where it is kept.** An issue's rounds are numbered from 0, one folder each,
 `.tmp/<KEY>/rounds/<n>/` in the worktree, the highest `n` the latest. Round 0 is the author's change,
 reviewed with `/code-review medium`; each later round answers a review of the PR. Claude's review
-after a push opens the next round: `n` is the latest round plus one, and at least 1. The author then
+after a push opens the next round. `n` is the unfinished round's own number; else a withdrawn
+round's own number; else the latest round plus one, and at least 1. A withdrawn round is the highest
+round folder with neither `request.json` nor `review.json`. Only a request creates a round folder.
+The author then
 answers it in the same folder (`report.md`, `replies/`, `commit.txt`). The folder is
 `rounds_folder()` in `review.py`; the rounds move to the store with the rest of an issue's files, and
 that function is the one place the path changes. The review's files in `rounds/<n>/`:
@@ -530,14 +540,27 @@ The record's advisories go in the body of the review `finish` posts, under a hid
 `<!-- review-advisory -->` marker, once per head: with no finding left to post, `finish` posts a
 review for the advisory alone, and `posted.json` records the head (`advisedHead`) a review carried it
 at, so a round restarted at a new head posts that head's advisories and a rerun at the same head doesn't.
+A break advisory is under its own heading in that body, apart from the recurring concerns, and has
+nothing to answer. `finish` posts no comment for an `OutOfScope` finding: the body lists the findings
+that became `OutOfScope` in that round, each with its `scopeRule`, under their own heading, and their
+threads need no answer.
+
+**`notes.md`** is the author's note on the PR's scope: one file, `.tmp/<KEY>/notes.md`, in the
+folder that holds `rounds/` (it moves with the round files), which the author creates and edits at
+any time. The request's "The PR's scope" section names its path, not its text, and the reviewer reads
+the file at the start of every review, first review and rounds alike. Its lines bind like the
+Guardrails, and a finding's `scopeRule` may quote one. There are no per-round notes.
 
 **`review.json`** holds `findings`, each `{file, line, summary, disposition}` plus `key`
 (`file:lines:classification`), `why` (why it matters) and `fixShows` (what a correct fix must show),
 optional `fix`, `commentId` and `reviewId`, and `dispositions`, each
 `{path, blob, passes, verdict}` (OK, or the list of finding keys), plus `head`, `base`, `round`,
-`range`, `call`, `checks` and `advisories`. The local server's review page reads `findings` and `dispositions`;
+`range`, `call`, `checks` and `advisories`. A finding that is `OutOfScope` also has `scopeRule`. The local server's review page reads `findings` and `dispositions`;
 the rest is extra. A finding's disposition is `open` when first raised, `Fixed` when it held, `New`
-when it's back or newly raised in a round; `open` and `New` are unsettled. A review's findings
+when it's back or newly raised in a round, `OutOfScope` when the PR's scope rules it out; `open` and
+`New` are unsettled, `Fixed` and `OutOfScope` are settled. `OutOfScope` needs `scopeRule`, the
+Guardrails or `notes.md` line that rules the finding out, quoted; `finish` refuses one without it. A
+review's findings
 include every earlier unsettled finding with its new disposition, so the latest review is complete
 on its own. Each round's reviewer is a new conversation, so `why` and `fixShows` carry the reasoning
 of the reviewer who raised the finding: `finish` refuses a finding it is about to post without them,
@@ -559,10 +582,13 @@ the round prompt, exactly `/code-review medium --max-findings all <last-head>..<
 scoped to the round's changes, each checked for whether it fixes its finding and what it breaks. Each
 unsettled finding is judged from its `why` and `fixShows`, the author's reply in its thread and the
 diff that answers it, checked in context (its `file:lines` and the code one and two steps out), and
-marked Fixed when the fix shows what `fixShows` asks, else New; a reply that only explains or defers
-fixes nothing; a recommended fix applied verbatim is Fixed without
+marked Fixed when the fix shows what `fixShows` asks, OutOfScope when a Guardrails or notes line rules
+it out, else New; a reply that only explains or defers settles nothing, while one that points to a
+scope line settles the finding as OutOfScope; a recommended fix applied verbatim is Fixed without
 further check; an OK file whose blob is unchanged is not read again; a new finding is raised only
-for what the round's changes introduce, a regression, a silent loss or a crash; repeats are grouped under a named cause, and a third repeat becomes a
+for what the round's changes introduce, a regression, a silent loss or a crash, in the round's diff
+and in files up to two steps out from it (callers, dependents, symbols, docs) whose behaviour the
+change materially changes or breaks; a break further out, or out of scope, is a break advisory; repeats are grouped under a named cause, and a third repeat becomes a
 check script. A PR whose Copilot threads are still open gets no last review until Claude's first
 one, and `pr_threads.py` lists and answers those threads with the rest.
 

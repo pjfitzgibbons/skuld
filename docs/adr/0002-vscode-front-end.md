@@ -26,7 +26,7 @@ An earlier attempt to work in VS Code was dropped for two reasons:
   so the editor, the tracker and the code shared one tree and one history.
 
 Since then the tracker has moved to a ticket store of its own, behind the `IssueStore` port
-([ADR 0001](0001-file-ticket-store.md)).
+([ADR 0006](0006-the-ticket-store-is-skulds-tracker.md)).
 
 <a id="decision"></a>
 
