@@ -11,11 +11,14 @@
 #  2. Writes edit the file: Start's transition sets frontmatter `status: in-progress`, then reads
 #     it back (transition()), the same refuse-if-it-didn't-take guard Jira's own transition()
 #     uses. Every addComment call appends a dated `- YYYY-MM-DD: <text>` line under a `## Log`
-#     heading at the end of the file (created if absent). Done never changes status -- same hard
-#     rule as Jira (docs/architecture.md §7.3); the human sets `status: done` by hand.
+#     heading at the end of the file (created if absent). Done closes a store ticket itself
+#     (close(): `status: done`, `closed: <today>`) and then runs the store's index (reindex());
+#     it never changes a Jira issue's status (docs/architecture.md §7.3).
 #  3. `plan list`/the picker merge Jira's JQL results with every SK file whose status is `open` or
 #     `in-progress` (lib/cli.py's issueRows()).
 import re
+import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -302,7 +305,27 @@ class FileIssues:
     def browseUrl(self, key):
         return str(self._path(key))
 
-    # What Done prints instead of "Close KEY in Jira: <url>" -- there is no Jira transition to ask
-    # for; the human sets status: done in the file by hand (decision #2).
-    def closeNote(self, key):
-        return f"{key} is file-backed: set status: done in {self._path(key)} when it's settled."
+    # Done's step 4: `status: done`, and `closed: <today>` unless `closed:` is already set, so a
+    # second Done writes nothing. Returns the line Done prints.
+    def close(self, key):
+        path = self._path(key)
+        text = path.read_text(encoding="utf8")
+        front = _parse(text)[0]
+        if front.get("status") == "done" and front.get("closed"):
+            return f"skipped: {key} is already done and closed {front['closed']}."
+        text = _setField(text, "status", "done")
+        if not front.get("closed"):
+            text = _setField(text, "closed", date.today().isoformat())
+        path.write_text(text, encoding="utf8")
+        return f"ran: set {key} to status: done in {path}."
+
+    # Done's step 6: the store's scripts/index.py, the only writer of INDEX.md. --check first, so an
+    # index already current is left alone.
+    def reindex(self):
+        script = [sys.executable, str(self.dir / "scripts" / "index.py")]
+        if subprocess.run([*script, "--check"], cwd=self.dir, capture_output=True).returncode == 0:
+            return "skipped: INDEX.md is already current."
+        done = subprocess.run(script, cwd=self.dir, capture_output=True, text=True)
+        if done.returncode != 0:
+            raise RuntimeError(f"scripts/index.py failed: {done.stderr.strip()}")
+        return "ran: scripts/index.py rewrote INDEX.md."

@@ -576,5 +576,51 @@ class BrowseTests(unittest.TestCase):
 
 
 
+class DoneWindowTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="skuld-term-done-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+
+    def test_the_done_link_carries_the_key_only(self):
+        link = term.doneLink("done", "SK-9")
+        self.assertEqual(urllib.parse.unquote(link), "vscode://skuld.plan-window/done?key=SK-9")
+
+    def test_the_pr_url_is_recorded_in_the_workspace_file_and_a_missing_file_is_left_alone(self):
+        term.recordPrUrl("SK-9", "https://github.com/o/r/pull/5", self.dir)
+        self.assertFalse(os.path.exists(term.workspaceFilePath("SK-9", self.dir)))
+        term.writeWorkspaceFile(term.workspaceFilePath("SK-9", self.dir), {"settings": {"plan.key": "SK-9"}})
+        term.recordPrUrl("SK-9", "https://github.com/o/r/pull/5", self.dir)
+        with open(term.workspaceFilePath("SK-9", self.dir)) as f:
+            self.assertEqual(json.load(f)["settings"], {"plan.key": "SK-9", "plan.prUrl": "https://github.com/o/r/pull/5"})
+
+    def test_askWindow_returns_the_lines_the_window_writes(self):
+        def send(command, args, cwd):
+            if args[0] == "--open-url":
+                with open(term.doneResultPath("SK-9", self.dir), "w") as f:
+                    json.dump({"route": "/done", "lines": ["ran: closed"]}, f)
+
+        with mock.patch.object(term, "run", side_effect=send):
+            self.assertEqual(term.askWindow("done", "SK-9", self.dir, wait=2), ["ran: closed"])
+        self.assertFalse(os.path.exists(term.doneResultPath("SK-9", self.dir)))
+
+    def test_askWindow_ignores_a_late_answer_to_another_route(self):
+        def send(command, args, cwd):
+            if args[0] == "--open-url":
+                with open(term.doneResultPath("SK-9", self.dir), "w") as f:
+                    json.dump({"route": "/done", "lines": ["ran: late"]}, f)
+
+        with mock.patch.object(term, "run", side_effect=send):
+            with self.assertRaisesRegex(RuntimeError, "didn't answer"):
+                term.askWindow("done-tab", "SK-9", self.dir, wait=0.3)
+
+    def test_askWindow_raises_when_code_fails_or_the_window_stays_silent(self):
+        with mock.patch.object(term, "run", side_effect=RuntimeError("no code")):
+            with self.assertRaisesRegex(RuntimeError, "VS Code wasn't reached"):
+                term.askWindow("done", "SK-9", self.dir, wait=0)
+        with mock.patch.object(term, "run"):
+            with self.assertRaisesRegex(RuntimeError, "didn't answer"):
+                term.askWindow("done", "SK-9", self.dir, wait=0.3)
+
+
 if __name__ == "__main__":
     unittest.main()

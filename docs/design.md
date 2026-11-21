@@ -109,7 +109,7 @@ Only the plan window acts. The window on the plan workspace file sets the contex
 
 The plan workspace's settings tell the extension where things are: `plan.issuesFile` and `plan.workspaceDir`, and `workbench.browser.openLocalhostLinks`, which opens a localhost link clicked in one of the window's terminals in its integrated browser.
 
-The issue workspace file, `<workspaceDir>/<KEY>.code-workspace`, is the issue's record of its key, worktree, prompt and page: `plan.key`, `plan.worktree`, `plan.prompt` and `plan.ticketUrl`, the issue page. It lives outside every repo. Start rewrites it each time, and the extension reads it to open the issue.
+The issue workspace file, `<workspaceDir>/<KEY>.code-workspace`, is the issue's record of its key, worktree, prompt and page: `plan.key`, `plan.worktree`, `plan.prompt` and `plan.ticketUrl`, the issue page, and `plan.prUrl`, the issue's PR, which Done writes before it closes the issue's windows. It lives outside every repo. Start rewrites it each time, and the extension reads it to open the issue.
 
 VS Code places the plan window. `code <plan workspace>` opens the plan workspace in a window, or raises the window already showing it, wherever that window is. A window is known by its workspace file's path, so a second plan window is never opened. A plan window closed by hand opens again with every issue's folder on the next Start or Open, and opening an issue that has no terminal there starts one. A plan window on another display is raised where it is.
 
@@ -121,7 +121,11 @@ Opening an issue brings up its Claude. A click on the issue's item in the Issues
 
 Claude comes after the page and the shell so that focus ends on it. Both terminals get `PLAN_KEY` in their environment, so a command run in either knows its issue. Both unset every `CLAUDE*` session variable the window inherited. A window opened by `code` from inside a Claude session carries that session's `CLAUDE_CODE_CHILD_SESSION` and `CLAUDE_PID`, and a Claude started with them never registers, so `claude agents --json` wouldn't list it. `CLAUDE_CONFIG_DIR` is kept: it says where Claude keeps its config and conversations, and the check for an earlier session reads it.
 
-The window never closes an issue's terminals. When a key leaves the issues file, the issue leaves the Issues view, and its terminals stay until a person closes them, since Done is often run in one of them.
+The window closes an issue's terminals and tabs only on two links, `vscode://skuld.plan-window/done?key=<KEY>` and `vscode://skuld.plan-window/done-tab?key=<KEY>`, which Done sends with `code --open-url` ([§3.6.5](#done)). Each carries the key only, and the handler acts only in the plan window. `/done` closes the issue's terminals and the PR's tab, and `/done-tab` closes the issue's own tab. The handler finds the terminals by their `<Kind> <KEY>` names and closes `Shell <KEY>`, `Claude <KEY>` and `Review <KEY>`, never one whose name merely resembles them. For each Claude terminal it sends Ctrl-C twice, then waits up to 10 seconds for the terminal's shell to have no child process, and removes the terminal once it has none. It never kills one: a terminal still busy after the wait stays open and the handler says so.
+
+The PR's tab is found by the PR's URL, which Done writes into the issue workspace file as `plan.prUrl` before it sends `/done`, since the link carries no URL. The issue's tab is found by the ticket path or the Jira page in the same file: the ticket's editor tab for a store ticket, the Jira page's integrated-browser tab for a Jira issue. A terminal or tab already gone is skipped without an error.
+
+The handler reports what it did to Done in `<workspaceDir>/<KEY>.done-result.json`, one line per step, each starting `ran:`, `skipped:` or `failed:`. Done removes any old result before it sends a link and waits up to 60 seconds for the new one. A window that stays silent for that long counts as unreachable, as does a failed `code --open-url`.
 
 Pages open in the plan window's integrated browser, through `workbench.action.browser.open`, and never in the default browser ([§3.6.7](#pages)). A page link is the `/browse` `vscode://` link, which the extension opens at the page's Redmine URL wherever Redmine runs, so a page never depends on `workbench.browser.openLocalhostLinks`.
 
@@ -284,9 +288,22 @@ A person runs `pr <KEY>` on the Mac. It takes the issue's lock, commits only wha
 
 Done is [architecture §7.4](architecture.next.md#finish)'s. It shows once the `PullRequests` adapter finds a PR for the issue's branch and it is merged. It accepts an issue that is in progress or already closed, since Redmine may have closed it from the merge commit before Done runs, and it ignores parent issues. It refuses, before it changes anything, while a round is unsent, and names the round. Done calls the core first, and a refusal leaves the Mac untouched. It checks everything before it changes anything, and Done again finishes what a stopped one left ([failure-modes.md, *Done*](failure-modes.md#done)).
 
-Done removes the issue's worktree and its issue workspace file, brings the main checkout's default branch up to the merge, deletes the branch, and journals the PR and its merge commit on the issue. It removes the key from the issues file, and the worktree from the plan workspace file. The issue leaves the Issues view, and its terminals stay until a person closes them.
+Done refuses when the current working directory is inside the issue's worktree, naming the worktree. The refusal is one of the checks before any change.
 
-Done never changes an issue's status and never opens a page. Its last step reads the issue back and prints its close note: "closed by <commit>" when Redmine has closed it from the merge commit, or a warning that Redmine has not closed it yet.
+Done's steps run in this order, each printing one line when it runs, is skipped or cannot run:
+
+1. Remove the terminal `Shell <KEY>`.
+2. Remove the terminals `Claude <KEY>` and `Review <KEY>`, each by a clean close: Ctrl-C twice, then removal once the process has exited. No kill.
+3. Remove the PR's browser tab.
+4. For a store ticket, set `status: done` and `closed: <today>`, leaving `closed:` as it is when already set.
+5. Remove the issue's tab: the ticket's editor tab for a store ticket, the Jira page's browser tab for a Jira issue.
+6. For a store ticket, run the store's `scripts/index.py`.
+
+Steps 1 to 3 and 5 are the `done` link handler's work ([§3.3.2](#plan-window)). Steps 1 to 3 run before the worktree is removed, since a terminal in a removed folder keeps running there. Step 4 follows the journal line. The worktree, branch, issues file, pulses file and plan workspace removals follow as before. With VS Code unreachable, Done prints each window step it skipped, naming what to close by hand, and still does steps 4 and 6. A terminal or tab already gone, a ticket already done and an index already current are skipped without an error.
+
+The issue leaves the Issues view once its key leaves the issues file.
+
+Done never changes a Jira issue's status and never opens a page, and a Jira issue gets steps 1 to 3 and 5 only. A store ticket's status and `closed:` are set by Done's step 4. A Jira issue's status is left to the human, and Done prints a close note naming the issue and its browse URL.
 
 <a id="next-up"></a>
 
@@ -332,7 +349,7 @@ The architectural alternatives (a Mac daemon, a status engine in the extension, 
 - **L4 Performance and limits.** A hook makes one call to the core per session event. The Issues view and `plan agents` read session status from the core.
 - **L5 Observability.** The Issues view shows an issue orange while its session waits and green while its draft round waits for `pr`, and `plan agents` lists every session. Every refusal names its cause, and the round's report page names the `pr <KEY>` to run. A failed `/open` prints one line on stderr. Done reports "closed by <commit>" or warns that Redmine has not closed the issue yet. The journal names who made each change.
 - **L6 Compatibility and migration.** Keys are unpadded Redmine numbers; an imported ticket's store key stays in `Old ID` ([ADR 0005 §3.10](adr/0005-redmine-is-the-tracker.md#migration)). The plan workspace's first folder is skuld's main checkout ([§3.3.2](#plan-window)). Moving Redmine to a hosted service changes its binding and where it runs.
-- **L7 Usability and accessibility.** Opening an issue ends with focus on its Claude, the page in the first editor group and Claude in the second, and never opens a second tab or a second Claude. The window never closes an issue's terminals. A failed `/open` says to click the issue in the Issues view.
+- **L7 Usability and accessibility.** Opening an issue ends with focus on its Claude, the page in the first editor group and Claude in the second, and never opens a second tab or a second Claude. The window closes an issue's terminals only when Done asks ([§3.3.2](#plan-window)). A failed `/open` says to click the issue in the Issues view.
 - **L8 Testability.** A test on each side of the bridge asserts `ISSUE_KEY_PATTERN`'s exact value. The core's session status is driven by hook calls, so recorded calls test it without Claude Code. The interim-end suite runs against the instance with a fixture GitHub repo ([ADR 0005 §3.9](adr/0005-redmine-is-the-tracker.md#interim-end)). Pages are tested by scripted browser tests outside the plan window.
 - **L9 Operations and cost.** Redmine runs in Docker, and a person runs, backs up and upgrades it from skuld's main checkout. The key plugin is checked again on each Redmine upgrade. Nothing runs on the Mac outside VS Code for skuld's flow: no page server and no engine process. VS Code must be running for Start, Open and Done, from `plan` too. The extension checks its link into skuld's main checkout when it activates ([§3.6.2](#start)).
 - **L10 Docs impact.** The architecture links here for its design detail. `failure-modes.md` keeps each command's failure table. [GUIDE.md §7](../GUIDE.md) describes the local page server and `plan serve` (`GUIDE.md:702-720`), and this design has neither.
