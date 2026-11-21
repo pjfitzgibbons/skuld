@@ -22,6 +22,7 @@
   - [7.5 Archiving](#archiving)
   - [7.6 Next up](#ready-file)
   - [7.7 The ticket store](#file-backed-issues)
+  - [7.8 The local server](#server)
 - [8. Failure modes](#failure-modes)
 - [9. Views](#views)
 - [10. Rules](#invariants)
@@ -73,9 +74,10 @@ Each run touches up to three places, and each holds one kind of thing:
 
 - **Skuld** holds code and definitions: `lib/`, `bin/`, the helper scripts, the issue file spec
   (`docs/issue-format.md`), the issue template (`templates/issue.md`), and `store.yml`, which names
-  the store's projects and their repo remotes.
+  the store's projects and their repo remotes. An `issues/` folder in skuld is not part of skuld's
+  repo; skuld ignores it.
 - **The ticket store** holds data: `active/` and `archive/` for ticket files, `milestones/`, and
-  `reviews/<KEY>/` for review rounds. It sits at the path the machine config's `issueStore` names,
+  `reviews/<KEY>/` for review rounds, `queries/` for saved DuckDB queries, and `INDEX.md`. It sits at the path the machine config's `issueStore` names,
   and has a git remote of its own. A watcher commits and pushes every change once the checker
   passes (§7.7).
 - **The configured repo** holds code. Its branches, worktrees and pull requests are what `plan` and
@@ -88,6 +90,9 @@ writes no field for that.
 
 The machine config, `~/.config/skuld/config.json`, holds what differs per Mac: `issueStore`,
 `checkouts` (this Mac's main checkouts) and the Jira projects with their repo remotes.
+
+Each Mac clones the ticket store its `issueStore` names. The home Macs share one store; a work
+Mac's is a store whose remote may hold work data, never the home store.
 
 The Jira API token lives only in `~/.netrc` (machine `cryoport.atlassian.net`), read fresh by
 `lib/jira.py` on each call: never cached, never in an env var, never logged. Nothing in skuld or the
@@ -216,7 +221,7 @@ through its adapter.
 | Issues view | The `plan-window` extension's view `plan.issues`, contributed under `contributes.views.explorer`, so it shows in the plan window's Explorer: one item per key in the issues file, in file order, labelled with the key. It watches the issues file and the pulses file, and tints an item orange or green from the pulses file. Clicking an item opens the issue (§7.1) |
 | Claude status | `lib/agents.py`, run every few seconds by a LaunchAgent as `plan agents tick --watch`, and at once when a waiting marker changes: reads `claude agents --json`, the waiting markers in `~/.cache/plan/waiting` that the Claude Code hook `bin/claude-waiting` keeps, the issues file and git, each listed issue's review rounds and HEAD, and writes an issue's colour to the pulses file only when it changes (§7.1) |
 | Browser | The plan window's integrated browser, reached by `showUrl()` (§7.6.1) and by opening a Jira issue (§7.1); never system `open`. Browser automation and browser tests run in Chrome, never in the plan window |
-| Pages | One local Flask server on `127.0.0.1`, run by a LaunchAgent from login and controlled by `plan serve start\|stop\|restart\|status`, rendering an issue's pages from Jinja templates (§7.6.1) |
+| Pages | One local Flask server on `127.0.0.1`, run by a LaunchAgent from login and controlled by `plan serve start\|stop\|restart\|status`, rendering an issue's pages from Jinja templates (§7.6.1, §7.8) |
 | Pull requests | `gh`; Jira linkage through Jira's development panel, not a custom field |
 | Jira writes | `/rest/api/3/*`, ADF for descriptions and comments |
 
@@ -582,12 +587,21 @@ The store is a folder of Markdown files with YAML front matter, in a git repo of
   active/<KEY>-<slug>.md
   archive/<KEY>-<slug>.md
   reviews/<KEY>/
+  queries/<name>.sql
+  INDEX.md
 ```
+
+`queries/` holds saved DuckDB `.sql` files that read the review files and `plan list --json` output
+in place. DuckDB is an analysis tool only: it stores nothing, and the files stay the source of
+truth ([ADR 0006 §3.7](adr/0006-the-ticket-store-is-skulds-tracker.md#duckdb)). `INDEX.md` is a
+generated copy of the ticket list, for reading on GitHub. `scripts/index.py` writes it: the
+watcher runs it before each commit and stages the result. A pre-commit hook runs
+`scripts/index.py --check` and refuses a commit whose `INDEX.md` is stale.
 
 `FileStore` is the `IssueStore` adapter for it. It answers for every prefix `store.yml` lists, and
 reads `active/` and `archive/` together. A ticket's front matter holds `key`, `title`, `status`
 (`open`, `in-progress`, `done`, `wontfix`), `type`, `opened`, `closed`, `milestone`, `ordinal`,
-`after`, `parent`, `blocked_by` and `points`; its body is the house outline (Task, Guardrails,
+`after`, `parent`, `blocked_by`, `host` and `points`, a Fibonacci story-point estimate (1 2 3 5 8 13); its body is the house outline (Task, Guardrails,
 Lenses, Done), then `## Log`, one dated line per thing `plan` did. `docs/issue-format.md` is the
 spec.
 
@@ -607,11 +621,51 @@ appends a dated line under `## Log`. `FileStore` answers in the same shapes `Jir
 Ship and Done have no store-specific branch.
 
 **The watcher.** `issue-watch` runs under launchd and watches `active/`, `archive/`, `milestones/`
-and `reviews/`. After a quiet period (`debounceSeconds` in `store.yml`), so a mass edit lands as one
-commit, it runs the checker. On failure it commits nothing, posts a macOS notification naming the
-file and rule, and logs the same. On success it commits every change with a generated message
-(`SK-0012: status in-progress`, `12 issues: ordinal`) and pushes, retrying a failed push after
-`pull --rebase`. The watcher watches the checkout that `issueStore` names.
+and `reviews/`. After a quiet period (`debounceSeconds` in `store.yml`), so a mass edit becomes
+one commit, it runs the checker. On failure it commits nothing, posts a macOS notification naming
+the file and rule, and logs the same. On success it runs `scripts/index.py`, commits every change
+and the regenerated `INDEX.md` in one commit with a generated message (`SK-0012: status
+in-progress`, `12 issues: ordinal`), and pushes, retrying a failed push after `pull --rebase`. After a
+`pull --rebase` it regenerates `INDEX.md` and commits it, so the pushed tree passes
+`scripts/index.py --check`. A rebase conflict confined to `INDEX.md` is resolved by regenerating
+it, with no person involved; a conflict in a ticket stops the sync and notifies. A
+commit the pre-commit hook refuses is a failure like the checker's: nothing is committed, and the
+notification and log line name the hook. The watcher watches the checkout that `issueStore` names.
+
+<a id="server"></a>
+
+### 7.8 The local server
+
+Each Mac runs one Flask server (`lib/server.py`) from a LaunchAgent, bound to `127.0.0.1`. Its
+routes only read; every page is rendered from the store's files and Jinja templates on request, and
+the server writes nothing ([ADR 0006 §3.5](adr/0006-the-ticket-store-is-skulds-tracker.md#server)).
+It makes no Jira call, and it reads only its own Mac's store, the one the machine config's
+`issueStore` names: the work Mac's dashboard shows the work store, and Jira work stays in Jira. Its
+pages:
+
+- **The dashboard, `/`.** Its sections refresh independently: work in flight (each ticket's
+  worktree, PR state, Claude state from the pulses file and latest round) and milestones (points
+  progress, and open tickets in work order) and trends (points burned per week, findings per round),
+  which run the store's saved `queries/*.sql` through DuckDB; the server takes a `duckdb`
+  dependency, and the files stay the source of truth.
+- **`/health`**, which reports the server's state.
+- **A ticket's page.** Every ticket has a read-only page at the ticket route, rendered from its file.
+- **A round's report and review pages**, rendered from the round's files. Their URLs and fallbacks
+  are in §7.6.1.
+
+**Live updates.** An `/events` route sends server-sent events. A watcher on the store clone and the
+pulses file drives it, and a page re-fetches only the section that changed.
+
+**PR state.** The server reads a PR's state with `gh pr view`, cached, and polls only for tickets in
+flight.
+
+**Links.** A dashboard row links to its server page and, through `vscode://` links, into the
+`plan-window` extension. `plan start` writes `host: <mac name>` into the ticket's front matter, which
+syncs through the store's git, and the dashboard and the extension read it to say a ticket's worktree
+is on the other Mac. The extension handles the `start` link as it handles the others
+([ADR 0006 §3.6](adr/0006-the-ticket-store-is-skulds-tracker.md#links)).
+
+How each section is built, and its routes' exact shapes, are in the design, not here.
 
 <a id="failure-modes"></a>
 
@@ -630,7 +684,7 @@ they share:
 | A key's work is found in more than one repo | The command can't tell which repo holds it | Refused, naming each repo (§7.0) |
 | A `checkouts` path's remote is listed by no project | The checkout serves nothing | Reported as a config error, naming the path and its remote |
 | A ticket fails the checker | The watcher would push a bad file | The watcher commits nothing, notifies and logs file and rule, and tries again on the next change; `FileStore` refuses to write such a file at all |
-| The store's push fails (offline, or behind) | The remote lags the local store | The watcher retries after `pull --rebase`; a conflict stops it, loudly, until a person resolves it |
+| The store's push fails (offline, or behind) | The remote lags the local store | The watcher retries after `pull --rebase` and regenerates `INDEX.md`; a conflict confined to `INDEX.md` is resolved by regenerating it, and a conflict in a ticket stops the sync and notifies (§7.7) |
 | Two Macs take the same number offline | Two tickets share a key | The checker's duplicate-key rule refuses the second; it is renumbered by hand |
 | Two invocations start or finish one issue | Both would change the same worktree | A lock file per issue refuses the second |
 | The Jira description is edited after `issue.md` is written | The ticks would overwrite the edit | `checklist.py` refuses any difference beyond box state, and keeps the file |
