@@ -33,9 +33,9 @@ store rules of [ADR 0001](0001-file-ticket-store.md) as amended here
 
 [ADR 0005](0005-redmine-is-the-tracker.md) chose Redmine as skuld's tracker and kept the ticket
 store as the interim. Its own alternatives section says skuld's three plugins "are what Redmine
-needs for skuld's flow" (`docs/adr/0005-redmine-is-the-tracker.md:664-667`, §4), and that path
+needs for skuld's flow" (`docs/adr/0005-redmine-is-the-tracker.md:679-682`, §4), and that path
 needs a Ruby core, an import, and a server to run, back up and upgrade
-(`docs/adr/0005-redmine-is-the-tracker.md:69-98`, §2.2; §5.1).
+(`docs/adr/0005-redmine-is-the-tracker.md:86-113`, §2.2; §5.1).
 
 What skuld's owner needs from a tracker is milestones, several repos per project, PR linking,
 estimates, and progress over months, for small and medium tickets. The store already holds
@@ -145,7 +145,7 @@ extension. The link builders exist in `lib/term.py` (`browseLink` :421, `openLin
 `plan start` writes `host: <mac name>` into the ticket's front matter, and the change syncs through
 the store's git like any edit ([§3.4](#writes)). The dashboard and the extension read `host:` to say
 a ticket's worktree is on the other Mac. The Mac's name comes from the machine config; the machine
-config has no field for it yet, and its name is left to design.
+config has no field for it yet; SK-0107 adds it.
 
 <a id="duckdb"></a>
 
@@ -171,7 +171,7 @@ dependency. DuckDB stores nothing; the files are the source of truth.
 ## 4. Alternatives considered
 
 - **Redmine (ADR 0005), tabled.** ADR 0005 says the three plugins and the core "are what Redmine
-  needs for skuld's flow" (`docs/adr/0005-redmine-is-the-tracker.md:664-667`, §4). Without them,
+  needs for skuld's flow" (`docs/adr/0005-redmine-is-the-tracker.md:679-682`, §4). Without them,
   Redmine core covers the owner's needs. With them, the path requires the plugins, a Ruby core, an
   import and a server to run, back up and upgrade (0005 [§2.2](0005-redmine-is-the-tracker.md#leaving-redmine),
   [§5.1](0005-redmine-is-the-tracker.md#operations)). The store meets the owner's needs with small

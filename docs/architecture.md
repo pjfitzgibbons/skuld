@@ -91,8 +91,8 @@ writes no field for that.
 The machine config, `~/.config/skuld/config.json`, holds what differs per Mac: `issueStore`,
 `checkouts` (this Mac's main checkouts) and the Jira projects with their repo remotes.
 
-Each Mac clones the same ticket store. A work Mac's `issueStore` names a store whose remote may hold
-work data, never the home store.
+Each Mac clones the ticket store its `issueStore` names. The home Macs share one store; a work
+Mac's is a store whose remote may hold work data, never the home store.
 
 The Jira API token lives only in `~/.netrc` (machine `cryoport.atlassian.net`), read fresh by
 `lib/jira.py` on each call: never cached, never in an env var, never logged. Nothing in skuld or the
@@ -684,7 +684,7 @@ they share:
 | A key's work is found in more than one repo | The command can't tell which repo holds it | Refused, naming each repo (§7.0) |
 | A `checkouts` path's remote is listed by no project | The checkout serves nothing | Reported as a config error, naming the path and its remote |
 | A ticket fails the checker | The watcher would push a bad file | The watcher commits nothing, notifies and logs file and rule, and tries again on the next change; `FileStore` refuses to write such a file at all |
-| The store's push fails (offline, or behind) | The remote lags the local store | The watcher retries after `pull --rebase`; a conflict stops it, loudly, until a person resolves it |
+| The store's push fails (offline, or behind) | The remote lags the local store | The watcher retries after `pull --rebase` and regenerates `INDEX.md`; a conflict confined to `INDEX.md` is resolved by regenerating it, and a conflict in a ticket stops the sync and notifies (§7.7) |
 | Two Macs take the same number offline | Two tickets share a key | The checker's duplicate-key rule refuses the second; it is renumbered by hand |
 | Two invocations start or finish one issue | Both would change the same worktree | A lock file per issue refuses the second |
 | The Jira description is edited after `issue.md` is written | The ticks would overwrite the edit | `checklist.py` refuses any difference beyond box state, and keeps the file |
