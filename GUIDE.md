@@ -48,8 +48,8 @@ the ticked checklist into `<store>/reviews/<KEY>/`. The human reads them and run
 A run touches up to three places: skuld holds the code, the ticket store holds tickets and review
 files, and the configured repo holds the code being changed
 ([architecture §3](docs/architecture.md#storage)). The default branch carries the code, and
-everything reaches it by PR. The only status change `plan` makes is Start's move to "in progress";
-**Done never changes an issue's status**, and the human closes the issue.
+everything reaches it by PR. `plan`'s status changes are Start's move to "in progress" and Done's close of a ticket;
+**Done closes a store ticket, and never changes a Jira issue's status**; the human closes the Jira issue.
 
 ## 2. Setting up
 
@@ -134,6 +134,7 @@ macOS only. In order:
    ```sh
    ln -s "$(pwd)/bin/plan" ~/.local/bin/plan
    ln -s "$(pwd)/bin/jira-get" ~/.local/bin/jira-get
+   ln -s "$(pwd)/bin/issue_update" ~/.local/bin/issue_update
    ln -s ~/.claude/skills/jira-issues/scripts/pr.sh ~/.local/bin/pr
    ln -s ~/.claude/skills/jira-issues/scripts/new_issue.py ~/.local/bin/new_issue
    ```
@@ -174,7 +175,8 @@ macOS only. In order:
     Then it opens the shell; both terminals get the issue's key as `PLAN_KEY`. Then, if the plan window has the issue's `Claude <KEY>` terminal, it
     comes to the front; otherwise plan-window creates it in the worktree and starts
     `claude --continue` when the worktree has an earlier Claude session, or `claude` with Start's
-    prompt when it has none. Claude comes last so that it has the focus. Then, if the issue has a
+    prompt when it has none. Claude comes last so that it has the focus, and plan-window locks Claude's editor group, so
+    a file opened from the Explorer goes beside the ticket instead of into Claude's group. Then, if the issue has a
     line in the pulses file, plan-window clears the item's colour by running `plan pulse <KEY> off`;
     its `plan.command` setting names the `plan` to run, which Start and Open set in the plan
     workspace to the running checkout's `bin/plan`, and if that fails the window shows a warning
@@ -246,6 +248,7 @@ decides the repo (§4).
 | `plan view <KEY>` | Print one issue; reads only |
 | `plan new <PREFIX> "<title>"` | Make a store ticket from the template, check it and open it in `$EDITOR` |
 | `plan set <KEY> field=value…` | Change a ticket's front matter, all or nothing, checked first; `blocked_by+=SK-0004` and `blocked_by-=SK-0004` add and remove one blocker |
+| `issue_update <KEY> [field=value…] [--log "text"]` | Change a store ticket's front matter and `## Log`, the one writer for Claude and the skill: every field checked before any is written, `status=done` without `closed=` sets it to today, the log line wrapped to 100 columns, `scripts/index.py` run every time, nothing committed; prints the ticket's path. Refuses a Jira key |
 | `plan milestone new\|set\|list` | Manage milestones, through the checker |
 | `plan start <KEY>`, `plan open <KEY>` | Start or Open (§4); one command, one code path |
 | `plan ship [KEY]` | Ship (§5); the key defaults to the current worktree's branch |
@@ -716,9 +719,12 @@ workspace (the ticket store's folder stays), and print the close note:
 Close CIAM-123 in Jira: https://cryoport.atlassian.net/browse/CIAM-123
 ```
 
-For a store ticket, the note names the file to set `status: done` in.
+For a store ticket, there is no note to act on: after the merge line, Done sets the ticket to
+`status: done` with `closed:` today and regenerates the store's `INDEX.md` (it runs `issue_update`'s
+code), and prints `Closed <KEY>`. It commits nothing; the watcher commits the closed ticket and
+`INDEX.md`. A ticket already `done` with `closed:` set is left as it is.
 
-**Done never changes an issue's status.** `lib/done.py` has no call to a transition, and the
+**Done never changes a Jira issue's status.** `lib/done.py` has no call to a transition, and the
 `no_terminal_jira_transition.py` hook refuses any Bash command that looks like it moves a Jira
 issue to a terminal status. Done accepts an issue that is in progress or already closed.
 

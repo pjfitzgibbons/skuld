@@ -68,7 +68,7 @@ names a key prefix and a list of repos; and every ticket has a web page ([§3.5]
 repo is no longer stdlib-only: the server depends on Flask, markdown-it-py, mdit-py-plugins and DuckDB
 ([§3.5](#server), [§3.7](#duckdb)). Every other rule of ADR 0001 holds as written: `store.yml` lives
 in skuld; the front matter is a restricted YAML subset; numbers never repeat;
-one issue's work stays in one repo; Done never changes a status; a round's review files live in the
+one issue's work stays in one repo; Done closes a ticket once its checks pass and never changes a Jira issue's status; a round's review files live in the
 store.
 
 ADR 0001's Status reads "Accepted, amended by ADR 0006" and names these amendments.

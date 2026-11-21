@@ -117,6 +117,7 @@ async function openIssue(key) {
     await bestEffort(key, () => openTicketPage(plan));
     showShellTerminal(plan);
     showClaudeTerminal(plan);
+    await lockClaudeGroup();
     if (windowPlan.hasPulse(readPulses(), key)) clearPulse(key);
   } catch (error) {
     vscode.window.showErrorMessage(`plan window: ${error.message}`);
@@ -172,6 +173,37 @@ async function openTicketPage(plan) {
 function showClaudeTerminal(plan) {
   const terminal = windowPlan.findClaudeTerminal(plan, vscode.window.terminals) || createClaudeTerminal(plan);
   terminal.show(false);
+}
+
+// A file opened from the Explorer goes to the most recently used group, which is Claude's after it
+// has focus. VS Code skips a locked group when it opens an editor, so Claude's group is locked once
+// the terminal is its active tab. The ticket's group is never locked: if Claude's terminal doesn't
+// become active, nothing is.
+async function lockClaudeGroup() {
+  if (!(await terminalBecomesActiveTab())) return;
+  await vscode.commands.executeCommand("workbench.action.lockEditorGroup");
+}
+
+// Does the active group show a terminal, now or within a moment? terminal.show() moves focus
+// without waiting for it.
+function terminalBecomesActiveTab() {
+  if (activeTabIsTerminal()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const finish = (found) => {
+      clearTimeout(timer);
+      listener.dispose();
+      resolve(found);
+    };
+    const listener = vscode.window.tabGroups.onDidChangeTabGroups(() => {
+      if (activeTabIsTerminal()) finish(true);
+    });
+    const timer = setTimeout(() => finish(activeTabIsTerminal()), 2000);
+  });
+}
+
+function activeTabIsTerminal() {
+  const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+  return Boolean(tab) && tab.input instanceof vscode.TabInputTerminal;
 }
 
 function showShellTerminal(plan) {

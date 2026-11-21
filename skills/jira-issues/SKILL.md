@@ -48,7 +48,21 @@ Person presses **Start** on the issue's row in `plan`'s Next up list. It makes t
 
 ## Shipping
 
-When the work is done and tested, run `/ponytail:ponytail-review` on the uncommitted changes (it lists Must fix, Should fix and Nice to have, and lines that could go, and changes no code) and act on its Must fix and Should fix, or say in the PR body why not. Then write `.tmp/<KEY>/commit.txt` (ending `Assisted-by: Claude:<model>`, subject ending `(<KEY>)`) and `.tmp/<KEY>/pr-body.md`, plus any replies and ticks below. Person reviews them in the issue window and presses **Ship**, which checks them and runs `pr <KEY>` in one of its terminals. Jira's dev panel picks up the PR automatically from the branch name and PR title; nothing writes a Jira field for it. Ship again runs `pr` again, for the next round. After the merge, **Done** cleans up the worktree/branch, posts an ADF comment summarizing the work, and prints "Close `<KEY>` in Jira" with the browse URL — it never transitions the issue itself.
+When the work is done and tested, run `/ponytail:ponytail-review` on the uncommitted changes (it lists Must fix, Should fix and Nice to have, and lines that could go, and changes no code) and act on its Must fix and Should fix, or say in the PR body why not. Then write `.tmp/<KEY>/commit.txt` (ending `Assisted-by: Claude:<model>`, subject ending `(<KEY>)`) and `.tmp/<KEY>/pr-body.md`, plus any replies and ticks below. Person reviews them in the issue window and presses **Ship**, which checks them and runs `pr <KEY>` in one of its terminals. Jira's dev panel picks up the PR automatically from the branch name and PR title; nothing writes a Jira field for it. Ship again runs `pr` again, for the next round. After the merge, **Done** cleans up the worktree/branch, posts an ADF comment summarizing the work, and prints "Close `<KEY>` in Jira" with the browse URL — it never transitions the issue itself. For a store ticket, Done writes the merge line, sets `status: done` and `closed:` today, and regenerates `INDEX.md`, once every box under `## Done` is ticked and the closed ticket passes the checker; otherwise it refuses and names what failed.
+
+## Store tickets
+
+An `SK-<n>` ticket is a file in the issue store (`issueStore` in the machine config), not a Jira issue. Claude changes its front matter and `## Log` only with `issue_update`; it never edits the front matter by hand and never runs `scripts/index.py` itself, since `issue_update` runs it every time. The command prints the ticket's path and commits nothing: the store's watcher commits.
+
+```
+issue_update SK-0047 [field=value …] [--log "text"]
+```
+
+- **Status.** Start sets `in-progress` itself. A ticket worked without Start gets `issue_update SK-<n> status=in-progress`. Never set `status=done` before the merge: Done does it, with `closed:` today, so tick every `## Done` box on the branch first.
+- **Fields.** `milestone`, `ordinal`, `blocked_by`, `after`, `pr` and the rest of `issues/README.md`'s front matter go through one call: `issue_update SK-<n> milestone=issue-round ordinal=160`. Every field is checked before any is written, so one bad value changes nothing and the command names it.
+- **Log lines.** One dated line per thing done: `issue_update SK-<n> --log "Started the lib module."`. It adds `- <today>: <text>` under `## Log`, wrapped to the store's width.
+- **Ticking the Done list.** Tick a `## Done` box in the ticket's body with an ordinary edit, when its condition is verified, and say how in a `--log` line.
+- It refuses a Jira key: a Jira issue's description, comments and status stay Jira's (rule 2).
 
 ## Drafting a new issue
 

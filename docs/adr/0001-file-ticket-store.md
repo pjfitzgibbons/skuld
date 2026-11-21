@@ -32,7 +32,7 @@ Issues not in Jira are Markdown files with YAML front matter, in a ticket store:
 - **The front matter is a restricted YAML subset,** read by a hand parser that the checker defines. The repo stays stdlib-only.
 - **Numbers never repeat.** The next number is one above the highest in `active/` and `archive/` together, zero-padded to four digits (`SK-0029`) so a file listing sorts in number order. `plan new` pulls first, and the checker's duplicate-key rule catches two machines that took the same number offline; the second file is renumbered by hand.
 - **One issue's work stays in one repo.** Existing work found in more than one of a project's repos is refused ([architecture §7.0](../architecture.md#repo-resolution)).
-- **Done never changes an issue's status,** in either tracker. For a ticket it prints the file to set `status: done` in ([architecture §7.3](../architecture.md#finish)).
+- **Done closes a ticket and never changes a Jira issue's status.** Done sets the ticket's `status: done` and `closed:` to today once its checks pass, and runs them before it changes anything: Done's own checks of the merge, every box under the ticket's `## Done` ticked, the closed ticket passing the checker, and the store holding `scripts/index.py` to regenerate `INDEX.md`. A person closes a Jira issue ([architecture §7.3](../architecture.md#finish)).
 - **A round's review files live in the store,** under `reviews/<KEY>/`, so they outlive the worktree and are committed with the ticket they belong to.
 
 <a id="alternatives"></a>
@@ -46,7 +46,7 @@ Issues not in Jira are Markdown files with YAML front matter, in a ticket store:
 - **`plan` commits its own writes.** The messages would be exact, but an edit by a person or an agent wouldn't be committed until the next `plan` write. The watcher commits every writer the same way.
 - **`store.yml` in the store.** The store would describe itself and could be read without skuld. Nothing but skuld reads it, so the definition stays with the code.
 - **PyYAML for front matter.** It handles YAML in full, which the flat schema doesn't need, and it would be the repo's first dependency.
-- **`plan done` sets `status: done` after the merge.** The watcher would make the change visible, but it would break the rule that no code path closes an issue, which holds for Jira.
+- **Done prints the ticket's file, and a person sets `status: done`.** This matches Jira, where a close can need fields or workflow conditions that only a person can satisfy. A ticket has neither, and the step gets missed, which leaves `INDEX.md` listing a merged ticket as open.
 
 <a id="consequences"></a>
 

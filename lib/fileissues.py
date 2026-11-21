@@ -2,7 +2,9 @@
 # of Jira. FileIssues implements the same surface lib/jira.py's Jira class does -- list(jql),
 # issue(key), blockers(issue), statusTransitionId(key, name), transition(key, name),
 # textComment(text), addComment(key, doc) -- returning dicts shaped the way callers (lib/cli.py,
-# lib/start.py, lib/done.py) already read Jira's, so none of them need a SK-specific branch.
+# lib/start.py, lib/done.py) already read Jira's, so none of them need a SK-specific branch. Done
+# alone branches on isFileBacked(key): a ticket closes (close(key)), a Jira issue prints
+# closeNote(key).
 # isFileBacked(key) is the dispatch: lib/cli.py's jiraFrom(cfg, key) calls it to decide whether a
 # key's commands go to Jira or to a FileIssues instance -- user decision 2026-11-05.
 #
@@ -11,11 +13,13 @@
 #  2. Writes edit the file: Start's transition sets frontmatter `status: in-progress`, then reads
 #     it back (transition()), the same refuse-if-it-didn't-take guard Jira's own transition()
 #     uses. Every addComment call appends a dated `- YYYY-MM-DD: <text>` line under a `## Log`
-#     heading at the end of the file (created if absent). Done never changes status -- same hard
-#     rule as Jira (docs/architecture.md §7.3); the human sets `status: done` by hand.
+#     heading at the end of the file (created if absent). Done's close(key) sets `status: done` and
+#     `closed:` through lib/issue_update.py, after the merge line; Done never changes a Jira
+#     issue's status (docs/architecture.md §7.3).
 #  3. `plan list`/the picker merge Jira's JQL results with every SK file whose status is `open` or
 #     `in-progress` (lib/cli.py's issueRows()).
 import re
+import textwrap
 from datetime import date
 from pathlib import Path
 
@@ -40,14 +44,17 @@ STATUS_MAP = {
     "wontfix": ("Won't Fix", "done"),
 }
 
-# The only write-back transition FileIssues supports: Start's "to In Progress" move. Nothing else
-# in this tool transitions an issue (Done never does, Jira or file).
+# The only write-back transition FileIssues supports: Start's "to In Progress" move. Done's close of
+# a ticket is close(key), not a transition.
 TARGET_TO_STATUS_VALUE = {"In Progress": "in-progress"}
 
 # issues/README.md's type enum -> a Jira issuetype name that start.py's DEFAULT_TYPE_MAP (and any
 # configured typeMap) already knows how to turn into a branch prefix: Bug -> fix, Task -> feat,
 # anything else -> chore. bug -> Bug (fix); task and question -> Task (feat).
 TYPE_NAME_MAP = {"bug": "Bug", "task": "Task", "question": "Task"}
+
+# The statuses that end a ticket (issues/README.md's enum).
+CLOSED_STATUSES = ("done", "wontfix")
 
 FRONTMATTER_RE = re.compile(r"^---\n(.*?\n)---\n?(.*)$", re.DOTALL)
 LOG_HEADING_RE = re.compile(r"(?m)^## Log\s*$")
@@ -119,12 +126,20 @@ def _parse(text):
         body_lines.append(line)
     body = "\n".join(body_lines).strip("\n")
 
+    return front, title, body, _logEntries(log_text)
+
+
+# The ## Log entries (each { date, text }) in log_text. A wrapped entry's indented continuation
+# lines join its text, so a long line reads back whole.
+def _logEntries(log_text):
     entries = []
     for line in log_text.strip("\n").split("\n"):
         lm = LOG_LINE_RE.match(line.strip())
         if lm:
             entries.append({"date": lm.group(1), "text": lm.group(2)})
-    return front, title, body, entries
+        elif entries and line.startswith("  ") and line.strip():
+            entries[-1]["text"] += " " + line.strip()
+    return entries
 
 
 # Replaces frontmatter field's value in text (the "field: ..." line inside the --- block), leaving
@@ -138,18 +153,46 @@ def _setField(text, field, value):
     pattern = re.compile(rf"(?m)^{re.escape(field)}:.*$")
     if not pattern.search(block):
         raise RuntimeError(f'issue file has no "{field}" field in its frontmatter')
-    new_block = pattern.sub(f"{field}: {value}", block, count=1)
+    new_block = pattern.sub(f"{field}: {value}".rstrip(), block, count=1)
     start, end = m.span(1)
     return text[:start] + new_block + text[end:]
 
 
+# Sets frontmatter field to value: the field's own line is replaced, or, when the file has no line
+# for it (a ticket written before the field existed), one is added at the end of the block.
+def setFrontField(text, field, value):
+    m = FRONTMATTER_RE.match(text)
+    if not m:
+        raise RuntimeError("issue file has no --- frontmatter block")
+    if re.search(rf"(?m)^{re.escape(field)}:", m.group(1)):
+        return _setField(text, field, value)
+    end = m.end(1)
+    return text[:end] + f"{field}: {value}".rstrip() + "\n" + text[end:]
+
+
+# A dated log entry, wrapped to width when one is given: continuation lines indent two spaces.
+def logEntry(line_text, width=None):
+    entry = f"- {date.today().isoformat()}: {line_text}"
+    if not width:
+        return entry
+    return textwrap.fill(entry, width=width, subsequent_indent="  ", break_long_words=False, break_on_hyphens=False)
+
+
 # Appends a dated log line at the true end of the file, under a ## Log heading -- created, once,
 # if the file doesn't have one yet.
-def _appendLog(text, line_text):
-    entry = f"- {date.today().isoformat()}: {line_text}"
+def appendLog(text, line_text, width=None):
+    entry = logEntry(line_text, width)
     if LOG_HEADING_RE.search(text):
         return text.rstrip("\n") + "\n" + entry + "\n"
     return text.rstrip("\n") + "\n\n## Log\n" + entry + "\n"
+
+
+# The front matter a Done writes to close a ticket: nothing when it is closed with its date, only the
+# date when a closed status lacks one, else status and date (issue_update fills the date in).
+def closingFields(front):
+    if front.get("status") in CLOSED_STATUSES:
+        return {} if front.get("closed") else {"closed": date.today().isoformat()}
+    return {"status": "done"}
 
 
 def _keyFromFilename(name):
@@ -187,6 +230,10 @@ class FileIssues:
             names = ", ".join(p.name for p in matches)
             raise RuntimeError(f"more than one issue file matches {key} in {self.dir}: {names}")
         return matches[0]
+
+    # The ticket's file.
+    def ticketPath(self, key):
+        return self._path(key)
 
     # Every SK file whose status is open or in-progress, in the shape lib/jira.py's Jira.list()
     # returns, so lib/cli.py's issueRows() can concatenate the two lists untouched (decision #3).
@@ -296,13 +343,27 @@ class FileIssues:
     # returns) or a plain string.
     def addComment(self, key, doc):
         path = self._path(key)
-        path.write_text(_appendLog(path.read_text(encoding="utf8"), _flatten(doc)), encoding="utf8")
+        path.write_text(appendLog(path.read_text(encoding="utf8"), _flatten(doc)), encoding="utf8")
 
     # What plan view/Start print instead of a Jira browse URL: the file itself.
     def browseUrl(self, key):
         return str(self._path(key))
 
-    # What Done prints instead of "Close KEY in Jira: <url>" -- there is no Jira transition to ask
-    # for; the human sets status: done in the file by hand (decision #2).
-    def closeNote(self, key):
-        return f"{key} is file-backed: set status: done in {self._path(key)} when it's settled."
+    # Refuses, before Done changes anything, when close() could not reindex the store.
+    def checkClose(self, key):
+        from .issue_update import checkStore
+
+        self._path(key)
+        checkStore(self.dir)
+
+    # Done's close of a ticket: status done, closed today, INDEX.md regenerated. A ticket already
+    # closed with its date set is left as it is. Returns whether it changed the ticket.
+    def close(self, key):
+        from .issue_update import updateTicket  # lib/issue_update.py imports this module
+
+        front = _parse(self._path(key).read_text(encoding="utf8"))[0]
+        fields = closingFields(front)
+        if not fields:
+            return False
+        updateTicket(self.dir, key, fields)
+        return True
