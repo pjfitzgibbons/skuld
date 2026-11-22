@@ -1,23 +1,21 @@
 #!/bin/sh
 # Apply a drafted body from .tmp/ to the current branch's PR. Used by gh aliases:
 #
-#   gh pc [KEY]   pr create, title = the branch's first commit subject, body .tmp/KEY/pr-body.md;
-#                 then requests Copilot's review
+#   gh pc [KEY]   pr create, title = the branch's first commit subject, body .tmp/KEY/pr-body.md
 #   gh pb [KEY]   pr edit (this branch's PR) --body-file .tmp/KEY/pr-body.md
 #
 # KEY is a Jira issue key. It defaults to the one in the branch name: fix/CIAM-88-go-requests ->
 # CIAM-88.
-# GHBODY_DRY=1 prints the gh command instead of running it. GHBODY_NO_COPILOT=1 (pr --no-copilot)
-# leaves Copilot off a new PR.
+# GHBODY_DRY=1 prints the gh command instead of running it.
 set -eu
 
 kind=${1:?usage: ghbody.sh pr-create|pr-edit [KEY]}
 root=$(git rev-parse --show-toplevel)
-# L2: the prefix segment is optional, matching issueBranch() (lib/start.py) and lib/issue.py's KEY_RE,
+# L2: the prefix segment is optional, matching issueBranch() (lib/start.py) and lib/issuekeys.py's ISSUE_KEY_PATTERN,
 # so a bare KEY-slug branch (no prefix) still resolves its key.
-key=${2:-$(git branch --show-current | sed -nE 's,^([^/]+/)?([A-Z][A-Z0-9]+-[0-9]+)-.*,\2,p')}
+key=${2:-$(git branch --show-current | sed -nE 's,^([^/]+/)?([A-Z]+-[0-9]+)-.*,\2,p')}
 [ -n "$key" ] || { echo "ghbody: no Jira key given and none in the branch name" >&2; exit 2; }
-printf '%s' "$key" | grep -qE '^[A-Z][A-Z0-9]+-[0-9]+$' ||
+printf '%s' "$key" | grep -qE '^[A-Z]+-[0-9]+$' ||
   { echo "ghbody: '$key' is not a Jira key; the body is .tmp/KEY/pr-body.md" >&2; exit 2; }
 
 case $kind in
@@ -34,7 +32,7 @@ esac
 # names a Jira key.
 # https://support.atlassian.com/jira-software-cloud/docs/process-issues-with-smart-commits/
 is_smart_commit_line() {
-  printf '%s\n' "$1" | grep -qE '[A-Z][A-Z0-9]+-[0-9]+' &&
+  printf '%s\n' "$1" | grep -qE '[A-Z]+-[0-9]+' &&
     printf '%s\n' "$1" | grep -qE '(^|[[:space:]])#[A-Za-z]'
 }
 
@@ -70,12 +68,6 @@ case $kind in
         exit 2
       fi
       run gh pr create --title "$title" --body-file "$file"
-      # gh pc asks Copilot to review each new PR; pr.sh asks again each time it updates one,
-      # and gh documents @copilot for pr edit, not pr create. A failed request doesn't fail gh pc.
-      if [ "${GHBODY_NO_COPILOT:-}" != 1 ]; then
-        run gh pr edit --add-reviewer @copilot ||
-          echo "ghbody: Copilot's review was not requested; request it under Reviewers on the PR" >&2
-      fi
     else
       run gh pr edit --body-file "$file"
     fi ;;

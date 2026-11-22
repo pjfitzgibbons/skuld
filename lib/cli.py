@@ -12,13 +12,13 @@ from . import agents as agents_mod
 from . import config as config_mod
 from . import done as done_mod
 from . import issuestore as issuestore_mod
-from . import placer as placer_mod
+from . import pulses as pulses_mod
+from . import reviews as reviews_mod
 from . import serve as serve_mod
 from . import ship as ship_mod
-from . import slotbar as slotbar_mod
 from . import start as startLib
 from . import term as term_mod
-from .issue import KEY_RE
+from .issuekeys import ISSUE_KEY_PATTERN, KEY_RE
 
 
 # y/n on stdin, for Start's confirm(blockers) -- the terminal stand-in for the old modal dialog.
@@ -54,10 +54,16 @@ def resolveDir(cfg, key):
 # Pulls an issue key out of a branch name built by branchName() (<type>/<KEY>-<slug>) or a bare
 # <KEY>-<slug>; raises if the branch doesn't carry one, since ship/go without a key need one.
 def keyFromBranch(branch):
-    match = re.search(r"(?:^|/)([A-Z][A-Z0-9]*-[0-9]+)-", branch)
-    if not match:
+    key = branchKey(branch)
+    if not key:
         raise RuntimeError(f'current branch "{branch}" doesn\'t carry an issue key; pass one: plan ship CIAM-123 or plan ship SK-0003')
-    return match.group(1)
+    return key
+
+
+# The issue key a branch name carries, or None: the key before a slug, after any <prefix>/.
+def branchKey(branch):
+    match = re.search(rf"(?:^|/)({ISSUE_KEY_PATTERN})-", branch)
+    return match.group(1) if match else None
 
 
 # Next up's rows: every project this Mac works (issuestore.projects()), each one's open issues
@@ -116,16 +122,9 @@ def placedAfterAnchors(merged, rows):
 # way it did under the old tab-delimited `--delimiter \t`/`--with-nth 1,2,3` setup. cmdPicker
 # below no longer passes either option: it isn't needed to extract `{1}`, and dropping it avoids
 # re-introducing a tab-joined display when fzf re-renders the (now space-padded) fields.
-#
-# slotLabels ({KEY: label}, from the WindowPlacer) adds a column after status: where each issue's
-# window is ("D3", or "D3, window on D4" when its window is elsewhere). With no slots at all there
-# is no column.
-def issueRows(cfg, slotLabels=None):
+def issueRows(cfg):
     issues = nextUpRows(cfg)
-    slotLabels = slotLabels or {}
     columns = [lambda issue: issue["id"], lambda issue: issue["status"]]
-    if slotLabels:
-        columns.append(lambda issue: slotLabels.get(issue["id"], ""))
     widths = [max((len(column(issue)) for issue in issues), default=0) for column in columns]
     rows = []
     for issue in issues:
@@ -139,9 +138,7 @@ def issueRows(cfg, slotLabels=None):
 
 # `plan list`: the picker's rows, printed plainly -- already column-aligned (issueRows()).
 def cmdList(cfg):
-    placer = placer_mod.placerFrom(cfg)
-    placer.sweep()
-    rows = issueRows(cfg, placer.slotLabels())
+    rows = issueRows(cfg)
     for row in rows:
         print(row["line"])
 
@@ -181,15 +178,19 @@ def firstLine(text):
     return text.split("\n")[0]
 
 
-# `plan start`/`plan open <KEY>`: start.start(), then open or focus the issue's VS Code window
-# through the configured WindowPlacer (lib/placer.py). Open is the same call as Start (start.py's
-# ACTION/startIn already handle "already has a worktree" by reusing it); the terminal tool doesn't
-# need two code paths. The issue is read once, by start(), and everything after uses what it read.
-def cmdStart(cfg, key):
+# `plan start`/`plan open <KEY>`: start.start(), then write the issue's workspace file (the plan.*
+# settings; it isn't opened), add the issue to the issues file and its worktree to the plan
+# workspace, open or raise the plan window with `code <plan workspace>` (term.openPlanWindow; VS
+# Code places it, ADR 0004), and ask plan-window to bring the issue forward. Open is the same call
+# as Start (start.py's ACTION/startIn already handle "already has a worktree" by reusing it); the
+# terminal tool doesn't need two code paths. A wrong extension link stops it first
+# (term.checkExtensionLink), before anything changes. The issue is read once, by start(), and
+# everything after uses what it read.
+def cmdStart(cfg, key, command="start"):
     startLib.checkId(key, "Start")
+    term_mod.checkExtensionLink(command, key)
+    storeFolder = config_mod.issueStoreFrom(cfg)  # no store stops Start before anything changes
     store = issuestore_mod.storeFor(cfg, key)
-    placer = placer_mod.placerFrom(cfg)
-    placer.sweep()
     result = startLib.start(store, cfg.get("checkouts"), key, confirmBlockers, typeMap=cfg.get("typeMap"))
     if not result:
         print("Not started.")
@@ -197,15 +198,42 @@ def cmdStart(cfg, key):
     for note in result["notes"]:
         print(note)
     issue = result["issue"]
-    workspaceFile = writeIssueWorkspaceFile(cfg, key, result["dir"], issue.file)
-    placement = placer.openWindow(key, workspaceFile)
-    for note in placement.notes:
-        print(note)
-    print(f"{placement.where} ready.")
+    # A store issue has its ticket file (plan.ticket); an issue on a tracker has its page (plan.ticketUrl).
+    writeIssueWorkspaceFile(cfg, key, result["dir"], issue.file, None if issue.file else issue.page)
+    addToIssuesFile(cfg, key)
+    planWorkspace = addToPlanWorkspace(cfg, result["dir"], storeFolder)
+    term_mod.openPlanWindow(planWorkspace)
+    term_mod.revealIssue(key)
+    print(f"{key} ready.")
+    # The /open link has plan-window open the ticket file in a tab, or the tracker's page
+    # (plan.ticketUrl) in the integrated browser, so those are only printed; a store ticket's page
+    # is on the local server, and is shown here.
+    print(issue.file or issue.page)
     if issue.file:
-        print(issue.file)  # the plan-window extension opens it in a tab
-    showIssuePage(cfg, issue, workspaceFile)
-    placer.focus(placement, workspaceFile)
+        showIssuePage(cfg, issue, planWorkspace)
+
+
+def addToIssuesFile(cfg, key):
+    path = term_mod.resolveIssuesFile(cfg.get("issuesFile"))
+    with term_mod.step("adding the issue to the issues file", f"Check that {os.path.dirname(path)} is writable."):
+        term_mod.addIssue(key, cfg.get("issuesFile"))
+
+
+# The issue's worktree, and the ticket store's folder, which the plan workspace keeps first: Done
+# removes the worktree, and VS Code restarts its extension host when the first folder goes.
+def addToPlanWorkspace(cfg, worktree, storeFolder):
+    path = planWorkspaceFrom(cfg)
+    with term_mod.step("adding the issue's folder to the plan workspace", f"Fix or delete {path} if it can't be read, check that {os.path.dirname(path)} is writable, then run the command again."):
+        term_mod.addFolders([worktree], path, planSettingsFrom(cfg), first=storeFolder)
+    return path
+
+
+def planWorkspaceFrom(cfg):
+    return term_mod.planWorkspacePath(cfg.get("workspaceDir"))
+
+
+def planSettingsFrom(cfg):
+    return term_mod.planSettings(cfg.get("issuesFile"), cfg.get("pulsesFile"), cfg.get("workspaceDir"))
 
 
 # The issue's page beside Claude: on its tracker, or on the local server.
@@ -232,25 +260,119 @@ def claudePrompt(key):
     return f"Work on {key}. Read it first with `plan view {key}`."
 
 
-def writeIssueWorkspaceFile(cfg, key, worktree, ticket):
-    path = term_mod.issueWorkspaceFilePath(key, worktree, cfg.get("workspaceDir"))
-    workspace = term_mod.issueWorkspace(
-        key, worktree, config_mod.issueStoreFrom(cfg), claudePrompt(key), ticket
-    )
+# ticket is a store issue's ticket file; ticketUrl is an issue's page on its tracker, None otherwise.
+def writeIssueWorkspaceFile(cfg, key, worktree, ticket, ticketUrl=None):
+    path = term_mod.workspaceFilePath(key, cfg.get("workspaceDir"))
+    workspace = term_mod.issueWorkspace(key, worktree, claudePrompt(key), ticket, ticketUrl)
     with term_mod.step("writing the issue's workspace file", f"Check that {os.path.dirname(path)} is writable."):
         term_mod.writeWorkspaceFile(path, workspace)
     return path
 
 
-# `plan browse <KEY | pr#N | url> [KEY]`: print the page's URL, then open it in an issue window's
-# integrated browser (architecture §7.6.1). The window is the target's key, else the [KEY] given,
-# else the calling terminal's PLAN_KEY, else whichever VS Code window has focus.
+# `plan browse <KEY | pr#N | url> [KEY]`: print the page's URL, then open it in the plan window's
+# integrated browser (architecture §7.6.1). The issue is the target's key, else the [KEY] given,
+# else the calling terminal's PLAN_KEY; the plan window is raised first when its workspace exists,
+# else the link goes to whichever VS Code window has focus.
 def cmdBrowse(cfg, target, windowKey):
     if not target:
         raise RuntimeError("usage: plan browse <KEY | pr#N | url> [KEY]")
     url, targetKey = browseTarget(cfg, target)
     key = targetKey or windowKey or os.environ.get("PLAN_KEY") or None
-    term_mod.showUrl(url, key, openWorkspaceFile(cfg, key))
+    term_mod.showUrl(url, key, existingPlanWorkspace(cfg))
+
+
+# Starts the round's review in the plan window. When the link can't be sent, a request this run
+# wrote is withdrawn, so the next `pr` starts the round again; the script withdraws it only if it is
+# still this run's and no reviewer has claimed it. A reopened request carries its stored token for
+# the link but is left as it is, since another run wrote it. One with no token (written before
+# requests had one) can't be linked to, so it is refused with the restart that writes it again.
+def startReview(cfg, worktree, key, requested):
+    if not requested.token:
+        raise RuntimeError(f"round {requested.round}'s request has no token for the review link; run plan review {key} --restart")
+    try:
+        term_mod.startReview(key, requested.round, requested.token, reviewWindowWorkspace(cfg, key))
+    except (RuntimeError, OSError):
+        print(withdrawUnstarted(worktree, key, requested), file=sys.stderr)
+        raise
+
+
+# The plan window's workspace file, which the review link needs: without it the link goes to
+# whichever window has focus, which has no Review terminal and refuses it.
+def reviewWindowWorkspace(cfg, key):
+    path = existingPlanWorkspace(cfg)
+    if not path:
+        raise RuntimeError(f"the plan window's workspace {planWorkspaceFrom(cfg)} doesn't exist, so no window would start the review; plan open {key} writes it")
+    return path
+
+
+# What became of the request whose link wasn't sent, one line. A failure to withdraw it is reported
+# here, so the error the caller raises stays the link's, the reason the review didn't start.
+def withdrawUnstarted(worktree, key, requested):
+    if not requested.written:
+        return "request left as it is: it was reopened"
+    try:
+        return reviews_mod.withdrawRequest(worktree, key, requested.token)
+    except (RuntimeError, OSError) as error:
+        return f"request not withdrawn ({error}); plan review {key} --restart writes it again"
+
+
+# `plan review KEY [--restart]`, run in KEY's worktree (or a folder of it) by `pr`: writes the next
+# review round's request (review.py request) with the issue's ticket, focuses the plan window when its workspace exists and
+# sends it the review link, which starts a fresh Claude on the round's line in the window's
+# "Review KEY" terminal, in the worktree; the round's prompt still stops unless its working
+# directory is the worktree. An unfinished round for this HEAD is reopened as it is; one for an
+# older head is refused unless --restart, which the script refuses while the round's claimed
+# reviewer still runs; with nothing due, it says why and starts nothing. --if-due (`pr`'s call) also
+# starts nothing for a round already requested for this HEAD, so two `pr` runs start one review. It
+# refuses a worktree whose branch names another issue, since it writes there and posts to that
+# branch's PR; a branch that names no issue is taken as KEY's, as `pr KEY` takes it.
+def cmdReview(cfg, key, restart=False, ifDue=False):
+    if not key:
+        raise RuntimeError(REVIEW_USAGE)
+    worktree = startLib.git(os.getcwd(), "rev-parse", "--show-toplevel").strip()
+    branch = startLib.git(worktree, "branch", "--show-current").strip()
+    if branchKey(branch) not in (None, key):
+        raise RuntimeError(f"this worktree's branch is {branch or '(detached)'}, not {key}'s; run plan review {key} in {key}'s worktree")
+    requested = reviews_mod.requestRound(worktree, key, restart, ifDue, issueTicket(cfg, key))
+    if not requested.path:
+        print(requested.note)
+        return
+    startReview(cfg, worktree, key, requested)
+    print(f"review started in the Review {key} terminal of the plan window")
+
+
+REVIEW_USAGE = "usage: plan review KEY [--restart | --if-due]"
+REVIEW_FLAGS = ("--restart", "--if-due")
+
+
+def unknownFlags(flags):
+    return [flag for flag in flags if flag not in REVIEW_FLAGS]
+
+
+# --restart and --if-due together contradict each other: one forces a restart, the other starts only when due.
+def conflictingFlags(flags):
+    return set(REVIEW_FLAGS) <= set(flags)
+
+
+# (key, restart, ifDue) of `plan review`'s arguments; a flag it doesn't know, a second word, or
+# --restart with --if-due is refused.
+def reviewArguments(args):
+    flags = [arg for arg in args if arg.startswith("--")]
+    words = [arg for arg in args if not arg.startswith("--")]
+    if unknownFlags(flags) or len(words) > 1 or conflictingFlags(flags):
+        raise RuntimeError(f"{REVIEW_USAGE} (given: {' '.join(args)})")
+    return (words[0] if words else None), "--restart" in flags, "--if-due" in flags
+
+
+# Where the review reads the issue's lenses: a store issue's ticket file, a Jira issue's page. None
+# when this Mac can't name it (no store, or a project with no "jira" entry); the review then uses
+# every lens.
+def issueTicket(cfg, key):
+    try:
+        issue = issuestore_mod.storeFor(cfg, key).issue(key)
+    except RuntimeError:
+        return None
+    return issue.file or issue.page
 
 
 PR_TARGET_RE = re.compile(r"^pr#(\d+)$")
@@ -269,28 +391,10 @@ def browseTarget(cfg, target):
     raise RuntimeError(f'plan browse takes a key, pr#N or an http(s) URL, not "{target}"')
 
 
-# The issue window's workspace file when it exists, for `code` to focus: the file Start and Open
-# use, the legacy one beside the worktree while it still exists. None for no key or no file, and the
-# link goes to the focused window, where a key the window doesn't carry is refused.
-def openWorkspaceFile(cfg, key):
-    if not key:
-        return None
-    path = term_mod.issueWorkspaceFilePath(key, issueWorktree(cfg, key), cfg.get("workspaceDir"))
+# The plan workspace when it exists, for `code` to raise the plan window; None before any Start.
+def existingPlanWorkspace(cfg):
+    path = planWorkspaceFrom(cfg)
     return path if os.path.exists(path) else None
-
-
-# key's worktree, found the way Start finds it, or None when it has none or can't be found. The
-# lookup needs only the key, so it asks neither the store nor Peter: a repo choice it can't make is no
-# worktree, and the page still goes out.
-def issueWorktree(cfg, key):
-    typeMap = cfg.get("typeMap")
-    try:
-        checkout = startLib.mainCheckout(key, cfg.get("checkouts"), os.getcwd(), "Open", typeMap, refuseRepoPick)["checkout"]
-        porcelain = startLib.git(checkout, "worktree", "list", "--porcelain")
-        found = startLib.existingWorktree(porcelain, key, startLib.worktreeDir(checkout, key), "Open", typeMap)
-    except (RuntimeError, OSError):
-        return None
-    return found["dir"] if found and not found["main"] else None
 
 
 def refuseRepoPick(options):
@@ -329,14 +433,14 @@ def cmdDone(cfg, key):
         key = keyFromBranch(currentBranch(dir))
     startLib.checkId(key, "Done")
     store = issuestore_mod.storeFor(cfg, key)
-    placer_mod.placerFrom(cfg).sweep()
     result = done_mod.finish(
         store,
         cfg.get("checkouts"),
         key,
         disposable=cfg.get("disposable"),
         typeMap=cfg.get("typeMap"),
-        slotsFile=cfg.get("slotsFile"),
+        issuesFile=cfg.get("issuesFile"),
+        pulsesFile=cfg.get("pulsesFile"),
         workspaceDir=cfg.get("workspaceDir"),
         cwd=dir,
     )
@@ -359,10 +463,10 @@ def shellQuote(value):
     return "'" + str(value).replace("'", "'\\''") + "'"
 
 
-# `plan pulse <KEY> <orange|green|off>`: pulse the issue's Desktop in SlotBar, or clear its tint.
+# `plan pulse <KEY> <orange|green|off>`: colour the issue's item in the Issues view, or clear it.
 def cmdPulse(cfg, key, color):
     startLib.checkId(key, "Pulse")
-    slotbar_mod.pulse(key, color, cfg.get("slotsFile"))
+    pulses_mod.pulse(key, color, cfg.get("issuesFile"), cfg.get("pulsesFile"))
 
 
 AGENTS_USAGE = "plan agents [status | list | pick | tick [--watch]] [--json]"
@@ -370,9 +474,9 @@ AGENTS_USAGE = "plan agents [status | list | pick | tick [--watch]] [--json]"
 AGENTS_FLAGS = {"status": set(), "list": {"--json"}, "pick": {"--json"}, "tick": {"--watch"}}
 
 
-# `plan agents`: every Claude session, its issue, Desktop and state (lib/agents.py). `status` is one
+# `plan agents`: every Claude session, its issue and state (lib/agents.py). `status` is one
 # line; `list` (the default) is the table; `--json` is the listing as JSON; `pick` chooses a
-# session in fzf and brings its issue window forward; `tick` pulses each Desktop once, and
+# session in fzf and brings its issue forward in the plan window; `tick` pulses each issue once, and
 # `tick --watch` keeps doing so, as the LaunchAgent does (bin/install-agents).
 def cmdAgents(cfg, args):
     words = [arg for arg in args if not arg.startswith("--")]
@@ -383,7 +487,7 @@ def cmdAgents(cfg, args):
     if what == "tick":
         return agentsTick(cfg, "--watch" in flags)
     if what == "status":
-        print(agents_mod.statusLine(agents_mod.currentAgents(cfg.get("slotsFile"), cfg.get("claudeCommand"))))
+        print(agents_mod.statusLine(agents_mod.currentAgents(cfg.get("issuesFile"), cfg.get("claudeCommand"))))
         return None
     agents = listedAgents(cfg)
     if "--json" in flags:
@@ -396,7 +500,7 @@ def cmdAgents(cfg, args):
 
 
 def listedAgents(cfg):
-    agents = agents_mod.currentAgents(cfg.get("slotsFile"), cfg.get("claudeCommand"))
+    agents = agents_mod.currentAgents(cfg.get("issuesFile"), cfg.get("claudeCommand"))
     return agents_mod.withTitles(agents, lambda key: issueTitle(cfg, key))
 
 
@@ -406,17 +510,20 @@ def issueTitle(cfg, key):
     return issuestore_mod.storeFor(cfg, key).issue(key).summary
 
 
+# One tick writes what differs from the engine's sent record (lib/agents.py loadSent); the watch loop starts from it too.
 def agentsTick(cfg, keepWatching):
+    issuesFile, pulsesFile, claudeCommand = cfg.get("issuesFile"), cfg.get("pulsesFile"), cfg.get("claudeCommand")
     if keepWatching:
-        return agents_mod.watch(cfg.get("slotsFile"), cfg.get("claudeCommand"))  # runs until stopped
-    _, failures = agents_mod.tick({}, cfg.get("slotsFile"), cfg.get("claudeCommand"))
+        return agents_mod.watch(issuesFile, pulsesFile, claudeCommand)  # runs until stopped
+    sent = agents_mod.loadSent(pulsesFile)
+    _, failures = agents_mod.rememberingTick(sent, issuesFile, pulsesFile, claudeCommand)
     for failure in failures:
         print(failure, file=sys.stderr)
     return 1 if failures else None
 
 
-# fzf over the table; enter brings the chosen session's issue window forward with `code` on its
-# workspace file, the way Open does (lib/spaces.py's focus()).
+# fzf over the table; enter raises the plan window with `code` and brings the chosen session's issue
+# forward in it, the way Open does (term.openPlanWindow(), term.revealIssue()).
 def pickAgent(cfg, agents):
     menu = "\n".join(f"{i}\t{line}" for i, line in enumerate(agents_mod.tableLines(agents)))
     chosen = subprocess.run(
@@ -433,11 +540,11 @@ def focusAgent(cfg, agent):
     if not agent.key:
         print(f"{agent.name} isn't in an issue's worktree; it runs in {agent.cwd}")
         return
-    workspaceFile = term_mod.issueWorkspaceFilePath(agent.key, agent.worktree, cfg.get("workspaceDir"))
-    if not os.path.exists(workspaceFile):
-        print(f"{agent.key} has no issue window; plan open {agent.key} opens one")
+    if agent.key not in term_mod.issueKeys(cfg.get("issuesFile")):
+        print(f"{agent.key} isn't in the plan window; plan open {agent.key} adds it")
         return
-    startLib.run("code", [workspaceFile], os.getcwd())
+    term_mod.openPlanWindow(planWorkspaceFrom(cfg))
+    term_mod.revealIssue(agent.key)
 
 
 # `plan serve start|stop|restart|status [--port N]`: control the local server's LaunchAgent
@@ -469,11 +576,9 @@ def cmdPicker(cfg, argv0=None):
         "--bind",
         f"ctrl-r:reload({self_} list)",
     ]
-    placer = placer_mod.placerFrom(cfg)
-    placer.sweep()
     fzf = subprocess.Popen(["fzf", *args], stdin=subprocess.PIPE, stdout=None, stderr=None)
     try:
-        rows = issueRows(cfg, placer.slotLabels())
+        rows = issueRows(cfg)
         fzf.stdin.write("\n".join(r["line"] for r in rows).encode("utf8"))
         fzf.stdin.close()
     except Exception as error:
@@ -484,7 +589,7 @@ def cmdPicker(cfg, argv0=None):
         raise RuntimeError(f"fzf exited {code}")
 
 
-# How many arguments each command takes after its name; `agents` and `serve` check their own.
+# How many arguments each command takes after its name; `agents`, `review` and `serve` check their own.
 MOST_ARGS = {"list": 0, "view": 1, "start": 1, "open": 1, "browse": 2, "ship": 1, "done": 1, "pulse": 2}
 
 
@@ -516,9 +621,11 @@ def main(argv=None):
     if cmd == "view":
         return cmdView(cfg, rest[0] if rest else None)
     if cmd in ("start", "open"):
-        return cmdStart(cfg, rest[0] if rest else None)
+        return cmdStart(cfg, rest[0] if rest else None, cmd)
     if cmd == "browse":
         return cmdBrowse(cfg, rest[0] if rest else None, rest[1] if len(rest) > 1 else None)
+    if cmd == "review":
+        return cmdReview(cfg, *reviewArguments(rest))
     if cmd == "ship":
         return cmdShip(cfg, rest[0] if rest else None)
     if cmd == "done":
@@ -529,4 +636,4 @@ def main(argv=None):
         return cmdAgents(cfg, argv[1:])
     if cmd == "serve":
         return cmdServe(cfg, argv[1:])
-    raise RuntimeError(f'unknown command "{cmd}"; try: list, view, start, open, browse, ship, done, serve, pulse, agents')
+    raise RuntimeError(f'unknown command "{cmd}"; try: list, view, start, open, browse, review, ship, done, serve, pulse, agents')

@@ -1,14 +1,25 @@
 # Failure modes
 
-A command that writes outside its own process, to git, Jira, GitHub or a file another window
-reads, gets a failure-mode table in its PR body before its code is written. The table lists each
-step that writes or reads outside state against five ways it can go wrong:
+## Contents
+
+- [1. Jira silently blocks a transition](#jira-silently-blocks-a-transition)
+- [2. A smart-commit token silently transitions or comments on the issue](#smart-commit-token)
+  - [2.1 Open](#smart-commit-open)
+- [3. Start](#start)
+  - [3.1 Open](#start-open)
+- [4. Done](#done)
+  - [4.1 Open](#done-open)
+- [5. Session status](#session-status)
+
+A command that writes outside its own process, to git, the tracker, GitHub or a file another
+window reads, gets a failure-mode table in its PR body before its code is written. The table lists
+each step that writes or reads outside state against five ways it can go wrong:
 
 | Column | The question |
 |---|---|
 | **Fails** | The step fails part way. Does the next run finish the job, from whatever it left behind? |
 | **Twice** | The command runs again after success. Does it change nothing? |
-| **At once** | Two runs overlap, from two invocations or from the terminals of two issue windows. Does one join the other, or fail before it writes? |
+| **At once** | Two runs overlap, from two invocations or from the terminals of two issues in the plan window. Does one join the other, or fail before it writes? |
 | **Stale** | What it read has changed since: an issue, a status, a folder deleted by hand. Does it check again before writing? |
 | **Guards** | Each limit or existence check it adds. Which recovery does it block? |
 
@@ -17,23 +28,25 @@ cell gets a row in the command's fault-injection test, which fails that step onc
 next run ends where a clean one does (`STEPS` in `test/start.test.js`).
 
 A review fix re-reads the whole table. Prefer a refusal that names its fix to automatic recovery:
-recovery code is new surface, and some findings in the original tool came from it.
+recovery code is new surface.
 
 Only a silent failure needs a fix or an *Open* row. That means one that leaves no trace and loses
 work, files, commits or the tracker's state. A refusal or an error the user sees is already
 handled.
 
-## Jira silently blocks a transition
+<a id="jira-silently-blocks-a-transition"></a>
 
-Jira can fail a transition two ways, and this tool's read-back guard exists because of the second,
-rarer one:
+## 1. Jira silently blocks a transition
+
+This section and the next are the Jira adapter's, on the work computer. Jira can fail a transition
+two ways, and the adapter's read-back guard exists because of the second, rarer one:
 
 - **Outright refusal (the common case).** The transition id posted doesn't correspond to an
   allowed transition from the issue's current status, so `POST /rest/api/3/issue/CIAM-123/
   transitions` returns a 4xx with a body naming the problem. This is already visible to the
   caller; `lib/jira.py` avoids it by listing the issue's actual available transitions and picking
-  the one whose `to.name` matches the configured target immediately before posting, so it should
-  only happen if the issue's status changed between the lookup and the POST (an "at once" case,
+  the one whose `to.name` matches the configured target immediately before posting, so it happens
+  only when the issue's status changed between the lookup and the POST (an "at once" case,
   below).
 - **Accepted but didn't move (the rare case).** The POST returns success (Jira accepts the
   transition id as structurally valid for the issue) but a workflow condition or validator
@@ -44,19 +57,21 @@ rarer one:
 A success response doesn't mean the status changed. Every write that posts a transition goes
 through `jira.py`'s transition call, which reads the issue back afterward. If the status isn't the
 one it posted for, the write is refused, naming the issue, the attempted status and the actual
-status. Any comment posted in the same call is not rolled back — the refusal says so, the same way
-the original Redmine guard did for a saved journal note.
+status. Any comment posted in the same call is not rolled back, and the refusal says so.
 
-## A smart-commit token silently transitions or comments on the issue
+<a id="smart-commit-token"></a>
+
+## 2. A smart-commit token silently transitions or comments on the issue
 
 [Jira smart commits](https://support.atlassian.com/jira-software-cloud/docs/process-issues-with-smart-commits/)
 let a `#<word>` token in a commit message, PR title or PR body (`#close`, `#comment`, `#time`, ...)
 act on the Jira issue named next to it — read and acted on by Jira's GitHub integration itself,
 not by anything this tool calls. A commit message, PR title or body that accidentally carried one
 would transition or comment on the issue the moment it reached GitHub, from outside Peter's own
-hand — the same failure "Done never transitions the issue" (above) is built to prevent, but via a
-path neither `done.py` nor its `PreToolUse` hook watches (the token never appears in a Bash command
-the hook sees if it's typed straight into `commit.txt` or `pr-body.md` by a text edit instead).
+hand — the same failure "Done never changes the status" ([§4](#done)) is built to prevent, but
+via a path neither `done.py` nor its `PreToolUse` hook watches (the token never appears in a Bash
+command the hook sees if it's typed straight into `commit.txt` or `pr-body.md` by a text edit
+instead).
 
 Four independent checks, each catching a different point the text could reach GitHub from:
 
@@ -65,8 +80,8 @@ Four independent checks, each catching a different point the text could reach Gi
 - `pr.sh` also scans the whole commit range it's about to push (`git log --format=%B HEAD --not
   --remotes=origin`), not only the message it just wrote to `commit.txt` — so a smart commit
   already on the branch some other way (`git commit -am`, an amend, a squash, a cherry-pick) is
-  caught too, and the scan always runs rather than being skipped when `origin/<base>` happens not
-  to be a local ref (N7).
+  caught too, and the scan always runs rather than being skipped when `origin/<base>` is not a
+  local ref.
 - `ghbody.sh` refuses `gh pr create`/`gh pr edit` the same way, checking the PR title (`pr-create`,
   from the branch's first commit subject) and `pr-body.md`'s content.
 - Claude's own `no_terminal_jira_transition.py` `PreToolUse` hook blocks two shapes of the same Bash
@@ -76,9 +91,9 @@ Four independent checks, each catching a different point the text could reach Gi
   `--body-file=path`), through a `git`/`gh` global option before the subcommand (`git -C <dir>
   commit`, `git -c k=v commit`), and through a heredoc when the flag reads from stdin (`git commit
   -F- <<EOF ... EOF` — the hook reads the heredoc body out of the command text itself, since there
-  is no file on disk to check) (N11). The same hook also blocks `gh api ... pulls/<n>` calls
-  carrying `-f`/`-F title=...`/`body=...` fields with the token-next-to-a-key pattern, including the
-  attached `--body-file=x`/`--title=` forms on `gh pr` (N8) — `gh api` can write a PR's title/body
+  is no file on disk to check). The same hook also blocks `gh api ... pulls/<n>` calls carrying
+  `-f`/`-F title=...`/`body=...` fields with the token-next-to-a-key pattern, including the
+  attached `--body-file=x`/`--title=` forms on `gh pr` — `gh api` can write a PR's title/body
   directly, bypassing `gh pr create`/`edit` entirely.
 
 The rule is deliberately broad — any `#<word>`, not a fixed list of smart-commit command words —
@@ -86,110 +101,134 @@ since Jira's own list of recognized commands can grow; a false positive (an ordi
 reference with no Jira key on the same line passes; a Jira key with no `#<word>` passes) is the
 accepted cost of never letting one through silently.
 
-### Open
+<a id="smart-commit-open"></a>
+
+### 2.1 Open
 
 - **A smart-commit token written directly into `commit.txt`/`pr-body.md` by hand, then pushed
   through some path other than `pr`/`ghbody`/a Claude Bash call** (e.g. Peter running `git commit`
   himself from a different terminal) is not caught by any of the four checks above, since none of
-  them runs. This is the same class of gap as GH Plan's original attribution check, which only
-  ever covered this tool's own commit path.
+  them runs.
 - **A PR's title or body edited directly in the GitHub UI**, after `pr`/`ghbody` already pushed it,
   is not caught by anything in this repo — none of the four checks run again at that point, and
-  nothing here watches GitHub for a post-creation edit (N8).
+  nothing here watches GitHub for a post-creation edit.
 - **A squash-merge commit message edited in the merge dialog at merge time** (GitHub lets the
   merger rewrite the squash commit's message, which defaults to the PR body/title but need not stay
   that way) is likewise uncovered — the message that actually reaches `origin/<base>`'s history can
-  differ from everything `pr`/`ghbody`/the hook ever checked (N8). **Remedy:** check the squash
-  message in the merge dialog for a smart-commit token before confirming the merge.
+  differ from everything `pr`/`ghbody`/the hook ever checked. **Remedy:** check the squash message
+  in the merge dialog for a smart-commit token before confirming the merge.
 
-## Start (ported from gh-plan PR #110)
+<a id="start"></a>
+
+## 3. Start
+
+Start and Open are triggered from the Mac, at the issue's `vscode://` link, which the issue page and
+`plan` both open, so VS Code must be running for them. For Start the core is called first: it reads
+the issue, moves it to "in progress", reads it back and journals "Started", and it can refuse. A
+refusal leaves the Mac untouched. Once the core accepts, the git and worktree module does the work
+on the Mac.
 
 Within a session, a second invocation on an issue joins the Start under way. Across sessions, a
 lock file in the repo's git dir, holding the invoking process's pid, refuses the second Start
-before it changes anything. A lock left by a Start that stopped is never taken over, because two
-processes taking it at once could both win. The refusal names the file for Peter to delete.
+before the module changes anything. A lock left by a Start that stopped is never taken over,
+because two processes taking it at once could both win. The refusal names the file for a person to
+delete.
 
 | Step | Fails | Twice | At once | Stale | Guards |
 |---|---|---|---|---|---|
-| Read the issue | Nothing written; rerun | — | — | Any `statusCategory` but `new` or `indeterminate` is refused | — |
-| Read the blockers | A blocker Jira won't show (permission scheme) is listed as unknown | — | — | — | Issue links of type other than "Blocks" are ignored; only the inward "is blocked by" direction counts |
+| Read the issue (core) | Nothing written; rerun | — | — | A closed issue is refused, and so is a parent issue with open children | — |
+| Read the blockers (core) | Nothing written; rerun | — | — | Only open issues the issue depends on through a `blocks` relation are listed | — |
+| Transition to in progress (core) | Nothing on the Mac has changed; rerun sends it | Skipped when the issue is already in progress | Open | The core reads the issue back, and a status that didn't change is refused, naming the attempted and actual status | — |
+| "Started" journal entry (core) | Rerun journals it again | Not deduplicated: see [§3.1](#start-open) | Open | — | — |
 | Lock | — | Released after every Start | The second invocation is refused | A dead holder's lock is refused by name, never taken over | Blocks recovery after a crash until the file is deleted |
-| Fetch origin | Stops before any branch | No-op | git locks the repo | `--prune` drops a deleted `develop`; the base is `develop`, else origin's default, else `main` | — |
+| Fetch origin | Stops before any branch | No-op | git locks the repo | `--prune` drops a deleted branch; the base is `origin`'s default branch | — |
 | Setup marker | Written before the worktree, removed if `git worktree add` fails and leaves no worktree, and after the handoff, so a failure in between reruns setup | Absent once set up, so Open changes nothing | — | A worktree made by hand or before the marker counts as set up | — |
-| Branch and worktree | Rerun reuses the branch left behind, on its own base | Found by key, reused | Behind the lock | A listed worktree deleted by hand is refused, naming `git worktree prune`; the issue's branch in the main checkout is refused; a worktree mid-rebase is found by its folder | Only `feat/`, `fix/`, `chore/` or no prefix names an issue's branch |
+| Branch and worktree | Rerun reuses the branch left behind, on its own base | Found by key, reused | Behind the lock | A listed worktree deleted by hand is refused, naming `git worktree prune`; the issue's branch in the main checkout is refused; a worktree mid-rebase is found by its folder | Only a prefix the tracker adapter gives, or no prefix, names an issue's branch |
 | Pushed branch | — | — | — | An issue branch on `origin` is checked out, tracking it, before a new one is made | — |
-| Transition to in-progress | Rerun sends it | Skipped when `statusCategory` is already `indeterminate` | Behind the lock | The transition is looked up by target status name at call time, never a hardcoded id. If the issue's status moved since the lookup, the POST 4xxs and Start refuses before the handoff. If the POST succeeds but the read-back shows the old status, Start refuses naming both statuses | — |
-| "Started" comment | Rerun posts it again (idempotent-ish: a duplicate comment, not a correctness issue) | Not deduplicated — an open item, see *Open* below | Behind the lock | — | — |
-| Issue window | A failed step stops Start, naming the step and the `code` command to run by hand (`term.step`); what the earlier steps opened stays open, and the marker stays, so the next Start retries | The window recorded in `windowsFile` is the issue's: Open focuses it with `code <workspace file>` and never opens a second. A window already open on the workspace but not recorded is adopted | Behind the lock | A slot whose recorded window is gone is swept, and a free Desktop is picked | The new window's id comes from diffing VS Code's window ids before and after `code`, never from its title |
-| Ticket tab and terminals (`plan-window`) | A bad or missing `plan.*` key in the workspace file shows a `plan window: …` notification, and the window still opens with its folders; the human starts Claude by hand | The ticket opens only if no tab has it, and the `Claude <KEY>` and `Shell <KEY>` terminals are found by name and reused | — | — | Runs only in a window whose workspace file carries `plan.key` |
-| Claude in its terminal | `claude` exiting or failing to start drops the `Claude <KEY>` terminal to a login shell in the worktree, where the human starts it again | A reused terminal is shown, not restarted | — | — | — |
-| The issue's page (`showUrl()`) | Prints the URL first; every later step is best-effort | Opens another tab in the integrated browser | — | — | — |
+| Issue workspace file and plan workspace file | Rerun rewrites them | The issue workspace file is rewritten; a worktree already in the plan workspace is not added again, and skuld's main checkout is moved to the front when it is listed further down | Behind the issue's lock. The plan workspace and the issues file are also changed under an exclusive lock on each read-modify-write, so Start, Open and Done never interleave their changes | — | Each is written through a uniquely named temp file and a rename |
+| Plan window | A failed `code` stops Start, naming the step and the `code` command to run by hand (`term.step`); what the earlier steps opened stays open, and the marker stays, so the next Start retries | `code <plan workspace>` opens the plan window or raises the one already showing it, so Open never opens a second | Behind the lock | A window closed by hand is opened again by the next Start or Open, with every issue's folder | VS Code knows a window by its workspace file's path, never by its title |
+| Issue page tab and terminals (`plan-window`), when the issue is opened | A bad or missing `plan.*` key in the issue workspace file shows a `plan window: …` notification and opens no terminal; a person starts Claude by hand | The issue page's existing tab is brought to the front, never a second one, and the `Claude <KEY>` and `Shell <KEY>` terminals are found by name and reused | — | A new `Claude <KEY>` terminal runs `claude --continue` when the worktree has an earlier Claude session, and `claude "$PLAN_PROMPT"` when it has none | Runs in the plan window. The issue page opens first, then the shell, then the Claude terminal is focused or created, so focus ends on Claude |
+| Claude in its terminal | `claude` exiting or failing to start drops the `Claude <KEY>` terminal to a login shell in the worktree, where a person starts it again | A reused terminal is shown, not restarted | — | — | — |
+| The `/open` link (`code --open-url`) | Best-effort: Start or Open still prints `<KEY> ready.`, adds `couldn't open <KEY> in the plan window: <error>; click it in the Issues view` on stderr, and a person clicks the issue in the Issues view | Opening an issue that is already open focuses its terminal | — | — | — |
+| The issue page (`plan.ticketUrl`), when the issue is opened | Start has printed the URL; a page that doesn't open is opened from it, or with `plan browse <KEY>` | Each time the issue is opened, shows the page in the integrated-browser tab already on that URL, or in a new tab when none is | — | — | — |
 
-### Open
+<a id="start-open"></a>
 
-Found during porting and left unfixed, or newly introduced by the VS Code front end: each is
-unlikely in use, and its worst case is one an agent or the human can read and undo.
+### 3.1 Open
+
+Each case is unlikely in use, and its worst case is one an agent or a person can read and undo.
 
 | Case | Worst case | Recovery |
 |---|---|---|
-| Two invocations press Start on a new issue at once; the second read the issue before the first took the lock | A second "Started" comment | Delete the extra comment in Jira |
-| The issue's slot names a Desktop whose issue window the user closed by hand | Open could treat an empty Desktop as the issue's | A slot is reused only while its window id in `windowsFile` is still open (`SpacesPlacer.reuseWindow`); a stale slot fails that check, and a free Desktop is picked and relabelled instead |
-| The slots file names a Desktop for an issue whose window the user closed, and no command runs again before the user looks at SketchyBar | The bar still shows a label for an empty Desktop | Every slot-touching command (`start`, `open`, `done`, `list`, the fzf picker) sweeps the slots file first (`SpacesPlacer.sweep`), dropping any line whose issue window is gone |
-| SketchyBar isn't installed, or its binary is missing | `sketchybar --trigger` would otherwise raise and abort the command | `term.triggerSketchybar()` swallows the `RuntimeError` and continues silently — a missing bar is not this tool's problem to report |
-| The new window lands on a Desktop other than the one ^N switched to, or the human drags an issue window to another Desktop | The slot names a Desktop the window isn't on | `SpacesPlacer` never moves a window. Start and Open rewrite the slot to the window's Desktop and print a note, and `plan list` shows both Desktops until then (`D3, window on D4`) |
-| A macOS update removes a SkyLight call `skuld-spaces` resolves | The Desktops can't be read | The helper resolves each call with `dlsym` and reports "unknown". Start and Open stop before `code`, naming the call, and the sweep leaves the slots file alone |
-| A second VS Code window opens between the ids read before and after `code` | The wrong window could be recorded as the issue's | **Open**: the diff takes the newest id. Correct `windowsFile` by hand, or close the stray window and run Open |
-| The issue's workspace is already open in a window `windowsFile` doesn't record, so `code` brings that window forward instead of opening one | Start could wait for a new window that never comes | `SpacesPlacer` adopts the frontmost VS Code window when no new id appears and VS Code has switched away from the free Desktop, records it, and rewrites the slot to its Desktop with a note |
-| An issue's window is on a Desktop that is another issue's slot | Two issues would claim one Desktop | The other issue keeps its slot. This issue's slot is dropped, and the command says to drag the window to a free Desktop and run `plan open <KEY>` |
-| Every Desktop outside `reservedDesktops` holds a VS Code window or another issue's slot | Start and Open refuse, even for a workspace that's already open, since placing starts by switching to a free Desktop | Add a Desktop in Mission Control, turn on its ^N shortcut, and run the command again |
-| The ^N shortcut runs but its Desktop never shows | `code` would open the window on the wrong Desktop | Start stops at the switching step, before `code` runs, and says to switch and open the window by hand |
-| The issue's window is full screen, so it is on no numbered Desktop | Its slot can't be checked, and the page would open on the wrong Desktop | Start and Open stop and say to take the window out of full screen, then run `plan open <KEY>` |
-| An issue window opened before the workspace file moved to `workspaceDir` | Running `code` on the new path opens a second window, since VS Code knows a window by its workspace file's path | Start and Open keep using the file beside the worktree while it exists; Done deletes it, beside the worktree it resolved |
-| The issue's window is open but off the record and already in front on another display | `code` changes neither the showing Desktops nor the front window, so nothing shows it was brought forward | The front window is adopted when its title starts with the issue's key |
-| A subject with no ASCII letters or digits | The branch is named `feat/CIAM-123-` | Rename the branch |
-| An issue started in repo A, then `plan open CIAM-123` run from a different repo B | `mainCheckout()` searches only the repos `checkouts.<PROJECT>` lists. When A is listed, its existing worktree or branch wins over B. When A is not listed, the work in A isn't found: new work goes in B if B is listed, in the one listed repo, or the run is refused | Add A to `checkouts.<PROJECT>`, or remove the work in A by hand |
-| An issue's worktree or branch exists in more than one of the listed repos at once (e.g. started by hand in two places, or two listed repos both happen to have a same-named branch) | `mainCheckout()` refuses outright, naming every repo it was found in, rather than silently picking one | None needed — it's a refusal, not a silent failure; the human picks and removes the extra one. **OPEN:** whether one Jira issue may legitimately span two repos in the same round is not answered here; today it's always a refusal |
-| Each Jira request reads the token from `~/.netrc` again, and blockers are fetched with issue links | A Start with several blockers is slower | None needed |
-| `code` is missing, the issue window is closed, or any other `showUrl()` step fails | The page never opens | `showUrl()` prints the URL first, and every later step is best-effort, so a failure never blocks or fails Start. Click the printed URL |
-| `showUrl()` focuses the issue window with `code <workspace file>`, then sends `vscode://skuld.plan-window/browse?url=<url>&key=<KEY>`, which VS Code routes to the focused window; focus moves to another window between the two commands | The page would open in another window's integrated browser | plan-window refuses a link whose `key` isn't its window's `plan.key`, with a `plan window: …` notice naming both; the URL is already printed. Run `plan browse <KEY>` again |
-| `plan browse <url>` run with no key named and no `PLAN_KEY` in the terminal | The page opens in whichever VS Code window has focus | None needed: with no key, the focused window is the target. Name the window with `plan browse <url> <KEY>` |
-| `showUrl()` aims at an issue window that isn't open yet: `code <workspace file>` opens it, and the `/browse` link may arrive before its extensions have activated | The page doesn't open, or opens in another window | **UNVERIFIED**: never run live, and left **open**. Run `plan browse <KEY>` once the window is up |
-| plan-window isn't installed, so nothing handles the `/browse` link | The page doesn't open | VS Code shows its own notice, and the URL is already printed |
-| The window's folders aren't trusted | VS Code keeps `plan-window` disabled, so no ticket tab and no Claude terminal | Restricted Mode shows in the window. Trust, once, the folder that holds each configured repo with its `<repo>.worktrees/`, and the ticket store's folder (GUIDE §2) |
-| A link clicked in an issue window's terminal names a host other than localhost or loopback | The page opens in the system browser, outside the issue window | None in the window: `workbench.browser.openLocalhostLinks` takes only localhost and loopback links. Open it with `plan browse <url>` |
+| Two invocations press Start on a new issue at once, and both reach the core before either takes the lock | A second "Started" journal entry | Delete the extra note in Redmine (**UNVERIFIED**: needs the permission to edit notes) |
+| A `/open` or `/browse` link reaches a VS Code window that is not the plan window | The window shows "this link is for the plan window." and does nothing; the Issues view, the click command and the watchers exist only in the plan window | Send it again with the plan window open (`plan open <KEY>`, or click the issue in the Issues view) |
+| A finished issue is reopened (Done removed its key and folder; its terminals are still open) | Start refuses a closed issue | One manual step: set the issue back to in progress in Redmine, then start it. Start makes the worktree again (a local branch for the issue, else `origin`'s, else a new one from the default branch), adds the key and the folder, and the Claude terminal runs `claude --continue` when the worktree's conversation files exist |
+| A line in the issues file does not match `ISSUE_KEY_PATTERN` ([design §3.5](design.md#naming)), such as `ab-1` or a project prefix with a digit | The line is ignored: no Issues view item and no worktree folder | Correct the line, or start the issue again |
+| The plan window was closed by hand | No Issues view and no tints show until it opens again | The next Start or Open reopens it with every issue's folder; opening an issue that has no terminal starts Claude in its worktree, with `claude --continue` when there is an earlier session |
+| VS Code is not running when `plan` opens a Start, Open or Done link | `code --open-url` starts VS Code, or the link reaches no handler | Open the plan window, then open the link again |
+| A window opened on an issue's own workspace file is still open beside the plan window | Two windows show the issue's worktree, and the terminals in the old window are outside the Issues view | Close the old window; opening the issue in the plan window starts `claude --continue` there |
+| A subject with no ASCII letters or digits | The branch is named `bug/SK-123-` | Rename the branch |
+| An issue started in repo A, then opened with B as the current folder | The module searches only the project's repos that `checkouts` lists. When A is listed, its existing worktree or branch wins over B. When A is not listed, the work in A isn't found: new work goes in B if B is a candidate, else in the one candidate, else a pick opens, and with no candidate the run is refused | Add A to `checkouts`, or remove the work in A by hand |
+| An issue's worktree or branch exists in more than one candidate repo at once (started by hand in two places, or two repos with a same-named branch) | The module refuses, naming every repo it was found in, and picks none | None needed: it's a refusal. A person removes the extra one |
+| Each call from the Mac reads the Redmine API key from the Keychain again | A Start that makes several calls is slower | None needed |
+| `code` is missing, the plan window is closed, or any other `showUrl()` step fails | The page never opens | `showUrl()` prints the URL first, and every later step is best-effort, so a failure never blocks or fails Start. Click the printed URL |
+| `showUrl()` focuses the plan window with `code <plan workspace>`, then sends `vscode://skuld.plan-window/browse?url=<url>&key=<KEY>`, which VS Code routes to the focused window; focus moves to another window between the two commands | The other window shows "this link is for the plan window." and opens no page | Run `plan browse` again with the plan window focused, or open the printed URL |
+| `plan browse <url>` run with no key named and no `PLAN_KEY` in the terminal | The link carries no key | None needed: `showUrl()` focuses the plan window before it sends the link |
+| `showUrl()` or Start's `/open` link aims at a plan window that isn't open yet: `code <plan workspace>` opens it, and the `/browse` or `/open` link arrives before its extensions have activated | The page or the issue doesn't open, or the page opens in another window | **UNVERIFIED**: never run live, and left **open**. Run `plan browse <KEY>`, or click the issue in the Issues view, once the window is up |
+| No `~/.vscode/extensions/skuld.plan-window-*` entry resolves into skuld's main checkout: the link is missing, or points at another checkout such as a worktree | The links are handled by another checkout's extension, or by none. When it activates, the extension shows where the link points (or that no link is in the folder) and the numbered fix | Follow the steps, every path shell-quoted: `rm` a leftover link of another version, `mv -i` a real directory at any `skuld.plan-window-*` name into `~/.Trash/` (recoverable, and outside the extensions folder, so it stops matching), `mkdir -p` an extensions folder that does not exist, `ln -sfn <skuld's main checkout>/vscode/plan-window ~/.vscode/extensions/skuld.plan-window-0.0.1`, then "Restart VS Code (quit and reopen)." Any version suffix that resolves into skuld's main checkout passes. The extension only reads the link and never runs `ln`, `mv` or `mkdir` |
+| plan-window isn't installed, so nothing handles the `/browse`, `/open`, Start or Done link | The page or the issue doesn't open | VS Code shows its own notice, and the URL is already printed |
+| The plan window's folders aren't trusted | VS Code keeps `plan-window` disabled, so no issue page tab, no Claude terminal and no Issues view | Restricted Mode shows in the window. Trust, once, the folder that holds each configured repo with its `<repo>.worktrees/`, and skuld's main checkout |
+| A link clicked in a terminal of the plan window names a host other than localhost or loopback | The page opens in the system browser, outside the plan window | None in the window: `workbench.browser.openLocalhostLinks` takes only localhost and loopback links. Open it with `plan browse <url>` |
 
-## Done (ported from gh-plan PR #114)
+<a id="done"></a>
 
-Done finishes an issue once its PR has merged. It checks everything before it changes anything: the
-PR is merged, the worktree holds nothing the PR lacks, `origin` holds the merge, and the base can
+## 4. Done
+
+Done finishes an issue once its PR has merged. It is triggered from the Mac, at the issue's
+`vscode://` link, as Start is. The core is called first, and it can refuse; a refusal leaves the
+Mac untouched. It checks everything before it changes anything: the PR is merged, no round is
+unsent, the worktree holds nothing the PR lacks, `origin` holds the merge, and the base can
 fast-forward to it. Each later step runs only when it has something left to do, so a Done that
-stopped part way is finished by the next one, and a Done after success changes nothing. A Done that
-fails part way says what it changed before the failure. Start and Done take one lock per issue, so
-Open and Done on the same issue exclude each other.
+stopped part way is finished by the next one, and a Done after success changes nothing. A Done
+that fails part way says what it changed before the failure. Start, Done and `pr` take one lock per
+issue, so Open, Done and `pr` on the same issue exclude each other.
 
 | Step | Fails | Twice | At once | Stale | Guards |
 |---|---|---|---|---|---|
-| Read the issue | Nothing written; rerun | `statusCategory` `done` is accepted, though Next up shows no Done on a Done-category issue | — | Any `statusCategory` but `indeterminate` or `done` is refused | — |
-| Find the PR | Nothing written; rerun | — | — | Found via `gh pr view <branch>` / `gh pr list --head <branch>` fresh each time, never from a cached Jira field — an open PR, or one closed unmerged, is refused with nothing changed | Jira's native development panel is not read or trusted for this; the branch is the only source of truth for which PR belongs to this issue |
-| Lock | — | Released after every Done | A second invocation joins the Done under way; a Start or Open of the same issue is refused | A dead holder's lock is refused by name, never taken over | Blocks recovery after a crash until the file is deleted |
+| Read the issue (core) | Nothing written; rerun | A closed issue is accepted | — | An issue neither in progress nor closed is refused; a parent issue is ignored | — |
+| Find the PR (core) | Nothing written; rerun | — | — | Found from the issue's branch through `PullRequests`, fresh each time, never from a stored tracker field. An open PR, or one closed unmerged, is refused with nothing changed | The branch is the only source of which PR belongs to the issue |
+| Check for an unsent round (core) | Nothing written; rerun | — | — | A draft round in `review_findings` refuses Done, naming the round | — |
+| Lock | — | Released after every Done | Within a session a second Done joins the one under way; across sessions it is refused. A Start or Open of the same issue is refused, and so is a Done while `pr` holds the lock. `pr` holds it only for its own run, and a second `pr` in that window is refused by name | A dead holder's lock is refused by name, never taken over | Blocks recovery after a crash until the file is deleted |
 | Fetch origin | Stops before any change | No-op | git locks the repo | `origin` must be the PR's repo, must still have the base, and `origin/<base>` must hold the merge commit. A local base must be behind it, unless another worktree has it checked out. Otherwise Done stops before any change | A PR head that isn't local is fetched from `refs/pull/<n>/head` before any change; if that fetch fails, Done stops, rather than reading the head as missing |
-| Bring the base up | The next Done fast-forwards it again | A no-op | git locks the repo | The main checkout switches to the base only from the issue's branch, and changes on the base refuse Done before the worktree goes. A base checked out in another worktree is left for Peter to pull there | Fast-forward only, checked before any change |
-| Remove the worktree | The next Done removes it, or drops git's entry for a folder already gone | Skipped once gone | Behind the lock | Checked before any change: changes, commits the PR's merged head lacks, or an ignored file outside the disposable list refuse it | Only the disposable list's entries go with the worktree: `.tmp/` and what a tool makes again |
+| Bring the base up | The next Done fast-forwards it again | A no-op | git locks the repo | The main checkout switches to the base only from the issue's branch, and changes on the base refuse Done before the worktree goes. A base checked out in another worktree is left for a person to pull there | Fast-forward only, checked before any change |
+| Remove the worktree | The next Done removes it, or drops git's entry for a folder already gone | Skipped once gone | Behind the lock | Checked before any change: changes, commits the PR's merged head lacks, or an ignored file or folder outside the disposable list refuse it, naming each folder once | Only the disposable list's entries go with the worktree: `.tmp/` and what a tool makes again |
 | Delete the branch | The next Done deletes it | Skipped once gone | Behind the lock | Every branch named for the issue, deleted only when its tip holds nothing the PR's merged head lacks | — |
-| **Attempt to transition the issue to a terminal status** | **N/A — no code path in this tool can do this** | **N/A** | **N/A** | **N/A** | Structural: `lib/done.py` contains no call to `jira.transition()` — grep `done.py` for `transition` to confirm. Defensive: a `PreToolUse` hook on the human's own Claude Code setup independently blocks any Bash command recognized as transitioning a Jira ticket to a terminal/closed state, so even a hand-run CLI command inside a Claude session is stopped a second time |
-| Comment the issue | The next Done sends what's missing (idempotency not yet guarded — see *Open*) | Posts a second comment — open, below | Behind the lock | — | Posts an ADF comment linking the PR and merge commit; never a transition |
-| Print "Close CIAM-123 in Jira" | — | Printed every time; harmless | — | — | Done never calls `showUrl()` (§7.3/§7.6.1) — it only prints the browse URL; a human closes the issue by hand in the Jira UI, or runs the transition themselves — this tool offers no shortcut for it |
-| Delete the workspace file | — | Skipped once gone | Behind the lock | A file that won't delete is a warning in Done's notes, never a failure; delete it by hand | Deletes `<KEY>.code-workspace` in `workspaceDir`, and an older one beside the worktree |
-| Free the issue's slot | The next Done removes it, or finds it already gone | Skipped once gone | Behind the lock | `term.removeSlot(key)` drops the slot's line only if one exists, writing (and triggering SketchyBar) only on an actual change | — |
+| **Change the issue's status** | **N/A: Done has no step that does it** | **N/A** | **N/A** | **N/A** | Structural: Done makes no status write. The one automated close is Redmine's own, from `fixes <KEY>` when it fetches the merge commit |
+| Journal the PR and its merge commit (core) | The next Done journals what's missing | Journals a second entry: see [§4.1](#done-open) | Open | — | A journal entry, never a status change |
+| Print the close note | — | Printed every time; harmless | — | Done reads the issue back each time: "closed by <commit>" when Redmine has closed it, else a warning that Redmine has not closed it yet | Done never opens a page |
+| Delete the issue workspace file | — | Skipped once gone | Behind the lock | A file that won't delete is a warning in Done's notes, never a failure; delete it by hand | Deletes `<KEY>.code-workspace` in `workspaceDir`, and an older one beside the worktree |
+| Remove the issue from the issues file and the plan workspace file | The next Done removes them, or finds them already gone | Skipped once gone | Behind the issue's lock. Each file is also changed under an exclusive lock on its read-modify-write and written through a uniquely named temp file, so another issue's Start never loses Done's change | `term.removeIssue(key)` drops the issue's line only if one exists, writing only on an actual change; the plan workspace's folder goes the same way. The issue leaves the Issues view; its `Claude <KEY>` and `Shell <KEY>` terminals stay open until a person closes them, since Done is often run from one | — |
 
-### Open
+<a id="done-open"></a>
 
-Found during porting and left unfixed: each fails silently, and its worst case is one an agent or
-the human can read and undo.
+### 4.1 Open
+
+Each case fails silently, and its worst case is one an agent or a person can read and undo.
 
 | Case | Worst case | Recovery |
 |---|---|---|
-| A second Done run after the comment was posted, before the worktree/branch cleanup finished | A duplicate "Done" comment on the issue | Delete the extra comment in Jira |
+| A second Done run after the journal entry, before the worktree and branch cleanup finished | A duplicate journal entry of the merge on the issue | Delete the extra note in Redmine (**UNVERIFIED**: needs the permission to edit notes) |
 | GitHub keeps the PR's branch after the merge | `origin/<branch>` survives, and a later Start of a reopened issue checks out the merged branch | `git push origin --delete <branch>` |
-| Ship runs `pr` in the worktree while Done removes it; Ship takes neither the lock nor an in-session guard | `pr` fails part way, or pushes a branch Done just deleted | Don't run Done until Ship's window has finished; delete a re-pushed branch on GitHub |
-| `CIAM-123` appears in an unrelated commit message or PR title in the same repo | GitHub's Jira integration may link it to that issue's development panel spuriously | None; this is a property of the GitHub↔Jira integration, outside this tool |
+| On the work computer, `CIAM-123` appears in an unrelated commit message or PR title in the same repo | GitHub's Jira integration links it to that issue's development panel | None; this is a property of the GitHub and Jira integration, outside this tool |
+
+<a id="session-status"></a>
+
+## 5. Session status
+
+Claude Code's hooks report each session's state to the core, and the core keeps it and gives each
+issue its tint ([design §3.3.6](design.md#session-status)).
+
+| Step | Fails | Twice | At once | Stale | Guards |
+|---|---|---|---|---|---|
+| A hook's call to the core | The call is dropped: the hook prints nothing and exits 0, so the session goes on, and its next event reports its state again | A repeated call sets the same state | Each call carries one session's state, so two sessions' calls never touch the same record | A session whose folder names no issue in Redmine is placed on `-` | — |
+| The Issues view reads the tints | No tint shows until the next read | — | — | Read from the core each time | — |

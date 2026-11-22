@@ -3,5 +3,5 @@ node_modules/
 .DS_Store
 __pycache__/
 *.pyc
-macos/build/
 .venv/
+.wdio-vscode-service/

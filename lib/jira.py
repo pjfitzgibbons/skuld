@@ -11,7 +11,8 @@ from urllib.parse import quote, urlparse
 import urllib.error
 import urllib.request
 
-from .issue import DONE, IN_PROGRESS, NEW, Blocker, Comment, Issue, projectOf
+from .issue import DONE, IN_PROGRESS, NEW, Blocker, Comment, Issue
+from .issuekeys import projectOf
 
 # The machine config names the site and the projects; nothing here defaults to either.
 
@@ -29,8 +30,8 @@ def categoryOf(status):
     return CATEGORIES.get(status["statusCategory"]["key"], NEW)
 
 
-# A project's set in Next up when its config entry sets no `jql`: the open issues assigned to me,
-# in Jira's rank order.
+# Next up's Jira half when the config sets no `jql`: the open issues assigned to me in the
+# configured projects, in Jira's rank order.
 def nextUpJql(projects):
     return (
         f"project in ({', '.join(projects)}) AND assignee = currentUser() "

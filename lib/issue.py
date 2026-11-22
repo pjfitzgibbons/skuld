@@ -2,19 +2,7 @@
 # read in one fetch, so Start, Open, Ship, Done, view, browse and the page server read an issue
 # the same way whichever tracker holds it. These are the port's own words: each adapter translates
 # its tracker's shapes and vocabulary into them, and none of a tracker's leaks past its adapter.
-import re
 from dataclasses import dataclass, field
-
-# An issue key, in every store: a project code of two or more letters/digits starting with a
-# letter, a dash, a number. CIAM-123 or SK-0003, not a bare number or a branch-release tag. This is
-# the one pattern every other key check in the repo (the scripts' KEY_RE-equivalents, pr.sh,
-# ghbody.sh) must match (L2).
-KEY_RE = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
-
-
-def projectOf(key):
-    return key.split("-")[0]
-
 
 # Status categories: where an issue is in its work, whatever its tracker calls the status. Every
 # tracker's statuses sort into these three. A command moves an issue by category, never by name.

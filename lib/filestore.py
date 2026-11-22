@@ -15,7 +15,8 @@ import re
 from datetime import date
 from pathlib import Path
 
-from .issue import DONE, IN_PROGRESS, KEY_RE, NEW, Comment, Issue, IssueNotFound, projectOf
+from .issue import DONE, IN_PROGRESS, NEW, Comment, Issue, IssueNotFound
+from .issuekeys import KEY_RE, projectOf
 
 # The one project this module serves: storeFor() routes a key whose projectOf() is PROJECT here.
 PROJECT = "SK"

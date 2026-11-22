@@ -14,7 +14,7 @@
 from . import config as config_mod
 from . import filestore as filestore_mod
 from . import serve as serve_mod
-from .issue import KEY_RE, projectOf
+from .issuekeys import KEY_RE, projectOf
 from .jira import Jira
 
 canonicalKey = filestore_mod.canonicalKey

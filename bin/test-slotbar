@@ -1,8 +1,0 @@
-#!/bin/bash
-# Builds and runs SlotBar's core tests (macos/slotbar/SlotCoreTests.swift) with swiftc alone.
-set -euo pipefail
-root=$(cd "$(dirname "$(realpath "$0")")/.." && pwd)
-src="$root/macos/slotbar"
-mkdir -p "$root/macos/build"
-swiftc -parse-as-library -o "$root/macos/build/slotbar-tests" "$src/SlotCore.swift" "$src/SlotCoreTests.swift"
-"$root/macos/build/slotbar-tests"
