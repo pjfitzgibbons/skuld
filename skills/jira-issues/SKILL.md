@@ -52,14 +52,14 @@ When the work is done and tested, run `/ponytail:ponytail-review` on the uncommi
 
 ## Store tickets
 
-An `SK-<n>` ticket is a file in the issue store (`issueStore` in the machine config), not a Jira issue. Claude changes its front matter and `## Log` only with `issue_update`; it never edits the front matter by hand and never runs `scripts/index.py` itself, since `issue_update` runs it every time. The command prints the ticket's path and commits nothing: the store's watcher commits.
+An `SK-<n>` ticket is a file in the issue store (`issueStore` in the machine config), not a Jira issue. Claude changes its front matter and `## Log` only with `issue_update`; it never edits the front matter by hand and never runs `store-index` itself, since `issue_update` runs it every time. The command prints the ticket's path and commits nothing: the store's watcher commits.
 
 ```
 issue_update SK-0047 [field=value …] [--log "text"]
 ```
 
 - **Status.** Start sets `in-progress` itself. A ticket worked without Start gets `issue_update SK-<n> status=in-progress`. Never set `status=done` before the merge: Done does it, with `closed:` today, so tick every `## Done` box on the branch first.
-- **Fields.** `milestone`, `ordinal`, `blocked_by`, `after`, `pr` and the rest of `issues/README.md`'s front matter go through one call: `issue_update SK-<n> milestone=issue-round ordinal=160`. Every field is checked before any is written, so one bad value changes nothing and the command names it.
+- **Fields.** `status`, `type`, `guide`, `opened`, `closed`, `milestone`, `ordinal`, `blocked_by`, `after`, `pr`, `parent`, `host` and `points` go through one call: `issue_update SK-<n> milestone=issue-round ordinal=160 points=3`. Every field is checked before any is written, so one bad value changes nothing and the command names it: `points` is 1 2 3 5 8 or 13, `ordinal` a whole number, dates ISO, `parent` and each `blocked_by` key a ticket in the store, `milestone` one with a file in `milestones/`. `closed` follows the status: `done` or `wontfix` without `closed=` gets today's date, an open status clears it. `issue_update --help` prints the usage.
 - **Log lines.** One dated line per thing done: `issue_update SK-<n> --log "Started the lib module."`. It adds `- <today>: <text>` under `## Log`, wrapped to the store's width.
 - **Ticking the Done list.** Tick a `## Done` box in the ticket's body with an ordinary edit, when its condition is verified, and say how in a `--log` line.
 - It refuses a Jira key: a Jira issue's description, comments and status stay Jira's (rule 2).

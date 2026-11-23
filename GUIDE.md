@@ -135,6 +135,7 @@ macOS only. In order:
    ln -s "$(pwd)/bin/plan" ~/.local/bin/plan
    ln -s "$(pwd)/bin/jira-get" ~/.local/bin/jira-get
    ln -s "$(pwd)/bin/issue_update" ~/.local/bin/issue_update
+   ln -s "$(pwd)/bin/store-index" ~/.local/bin/store-index
    ln -s ~/.claude/skills/jira-issues/scripts/pr.sh ~/.local/bin/pr
    ln -s ~/.claude/skills/jira-issues/scripts/new_issue.py ~/.local/bin/new_issue
    ```
@@ -175,8 +176,7 @@ macOS only. In order:
     Then it opens the shell; both terminals get the issue's key as `PLAN_KEY`. Then, if the plan window has the issue's `Claude <KEY>` terminal, it
     comes to the front; otherwise plan-window creates it in the worktree and starts
     `claude --continue` when the worktree has an earlier Claude session, or `claude` with Start's
-    prompt when it has none. Claude comes last so that it has the focus, and plan-window locks Claude's editor group, so
-    a file opened from the Explorer goes beside the ticket instead of into Claude's group. Then, if the issue has a
+    prompt when it has none. Claude comes last so that it has the focus. Then, if the issue has a
     line in the pulses file, plan-window clears the item's colour by running `plan pulse <KEY> off`;
     its `plan.command` setting names the `plan` to run, which Start and Open set in the plan
     workspace to the running checkout's `bin/plan`, and if that fails the window shows a warning
@@ -248,7 +248,8 @@ decides the repo (§4).
 | `plan view <KEY>` | Print one issue; reads only |
 | `plan new <PREFIX> "<title>"` | Make a store ticket from the template, check it and open it in `$EDITOR` |
 | `plan set <KEY> field=value…` | Change a ticket's front matter, all or nothing, checked first; `blocked_by+=SK-0004` and `blocked_by-=SK-0004` add and remove one blocker |
-| `issue_update <KEY> [field=value…] [--log "text"]` | Change a store ticket's front matter and `## Log`, the one writer for Claude and the skill: every field checked before any is written, `status=done` without `closed=` sets it to today, the log line wrapped to 100 columns, `scripts/index.py` run every time, nothing committed; prints the ticket's path. Refuses a Jira key |
+| `issue_update <KEY> [field=value…] [--log "text"]` | Change a store ticket's front matter and `## Log`, the one writer for Claude and the skill: every field (`status`, `points`, `ordinal`, dates, `parent`, `blocked_by`, `milestone`, `host`…) checked before any is written; `closed` set exactly when the ticket is closed (`done` or `wontfix` without `closed=` gets today, an open status clears it); the log line wrapped to 100 columns; `store-index` run on the store every time; nothing committed. Prints the ticket's path, then each field written. Refuses a Jira key |
+| `store-index [--check] [STORE]` | Write the store's `INDEX.md` from its tickets and milestones, the only writer of that file; `--check` exits 1, changing nothing, when it is out of date. `STORE` defaults to `issueStore`. The store holds data only, so the script is skuld's |
 | `plan milestone new\|set\|list` | Manage milestones, through the checker |
 | `plan start <KEY>`, `plan open <KEY>` | Start or Open (§4); one command, one code path |
 | `plan ship [KEY]` | Ship (§5); the key defaults to the current worktree's branch |
@@ -721,8 +722,14 @@ Close CIAM-123 in Jira: https://cryoport.atlassian.net/browse/CIAM-123
 
 For a store ticket, there is no note to act on: after the merge line, Done sets the ticket to
 `status: done` with `closed:` today and regenerates the store's `INDEX.md` (it runs `issue_update`'s
-code), and prints `Closed <KEY>`. It commits nothing; the watcher commits the closed ticket and
-`INDEX.md`. A ticket already `done` with `closed:` set is left as it is.
+code), and prints `Closed <KEY>: status done, closed <date>, INDEX.md regenerated.` It commits
+nothing; the watcher commits the closed ticket and `INDEX.md`. A ticket already closed (`done` or
+`wontfix`) with `closed:` set is left as it is, and Done prints `<KEY> is already closed.`
+
+Done checks the close with its other checks, before it changes anything: every box under the
+ticket's `## Done` is ticked, and the closed ticket passes the same checker `issue_update` runs. Either
+failing refuses Done, naming it, with the worktree, branch and ticket as they were. If `store-index`
+fails after the ticket is written, the error names it; run `store-index` by hand.
 
 **Done never changes a Jira issue's status.** `lib/done.py` has no call to a transition, and the
 `no_terminal_jira_transition.py` hook refuses any Bash command that looks like it moves a Jira
@@ -917,6 +924,8 @@ store.yml                  the store's projects (key, name, repo remotes), archi
 bin/
   plan                     plan's entry point
   jira-get                 one read-only Jira GET with ~/.netrc auth
+  issue_update             changes a store ticket's front matter and ## Log, checked first
+  store-index              writes the store's INDEX.md, or checks it with --check
   gh-aliases.yml           gh pc and gh pb
   install-agents           installs the LaunchAgent running plan agents tick --watch and the
                            claude-waiting hook, or --uninstall removes both
@@ -928,6 +937,8 @@ lib/
   start.py                 Start and Open: repo resolution, names, worktrees, the lock
   ship.py                  Ship's checks and round-file naming
   done.py                  Done: checks, then changes, then the close note
+  issue_update.py          bin/issue_update and the checker Done's close shares
+  store_index.py           bin/store-index: INDEX.md from the store's tickets and milestones
   term.py                  the workspace files, the issues file, the code call, Ship's tmux window
   pulses.py                plan pulse: an issue's colour, written to the pulses file
   agents.py                plan agents: each Claude session's issue and state, and the

@@ -27,9 +27,9 @@ from .jira import Jira
 # for every other project. Every call site below already knows its key before it needs a client
 # (checkId() runs first), so dispatch is a plain "which class for this key", not a wrapping
 # router object: each returned client implements the same surface (list/issue/blockers/
-# statusTransitionId/transition/textComment/addComment/browseUrl), so start.py/ship.py need no
-# branch of their own, and done.py only for its last step (closeNote for Jira, close for a file). key=None is the picker's Jira half (issueRows(), below),
-# asked for only when the config names Jira projects. A key whose project the config's `jira`
+# statusTransitionId/transition/textComment/addComment/browseUrl/checkClose/close), so start.py/
+# done.py/ship.py need no branch of their own. key=None is the picker's Jira half (issueRows(),
+# below), asked for only when the config names Jira projects. A key whose project the config's `jira`
 # entry doesn't name is refused here, before any command changes anything.
 def jiraFrom(cfg, key=None):
     if key is not None and fileissues_mod.isFileBacked(key):
@@ -468,9 +468,9 @@ def cmdShip(cfg, key):
     return None
 
 
-# `plan done [KEY]`: done.finish(); Done never transitions the Jira issue (decision #5) -- it
-# prints the notes done.py returns, including the "Close KEY in Jira" line, and leaves closing
-# it to Peter.
+# `plan done [KEY]`: done.finish(). A store ticket is closed by its client; Done never transitions
+# a Jira issue (decision #5) -- it prints the notes done.py returns, including the "Close KEY in
+# Jira" line, and leaves closing it to Peter.
 def cmdDone(cfg, key):
     dir = os.getcwd()
     if not key:

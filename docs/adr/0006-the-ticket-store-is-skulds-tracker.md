@@ -86,8 +86,8 @@ ADR 0001's Status reads "Accepted, amended by ADR 0006" and names these amendmen
   round's report files (SK-0014).
 - `queries/*.sql`: saved DuckDB queries ([§3.7](#duckdb)).
 - `INDEX.md`: a generated copy of the ticket list, for reading on GitHub. `issue-watch` regenerates
-  it with `scripts/index.py` and stages it in the commit it makes ([§3.4](#writes)). A pre-commit
-  hook runs `scripts/index.py --check` and refuses a commit whose `INDEX.md` is stale, so a commit
+  it with skuld's `store-index` and stages it in the commit it makes ([§3.4](#writes)). A pre-commit
+  hook runs `store-index --check` and refuses a commit whose `INDEX.md` is stale, so a commit
   made by hand keeps it current too.
 
 <a id="writes"></a>

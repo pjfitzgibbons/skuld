@@ -104,7 +104,7 @@ Four interfaces, each a module under `lib/` (later the `plan` package) with one 
 
 | Port           | Does                                                                                       | Adapters                                                |
 | -------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
-| `IssueStore`   | list next up, read an issue, create, set fields, transition, append a log line, close note | `FileStore` (first), `Jira` (exists)               |
+| `IssueStore`   | list next up, read an issue, create, set fields, transition, append a log line, close with its pre-check | `FileStore` (first), `Jira` (exists)  |
 | `ReviewStore`  | record a round, its findings and outcomes; read them back                                  | files under `<store>/reviews/<KEY>/` (first), SQLite    |
 | `PullRequests` | open or update a PR, read its state and threads, post replies                              | `gh`                                                    |
 | `GitRemote`    | fetch, push, rebase onto the base, worktree add and remove                                 | `git`                                                   |

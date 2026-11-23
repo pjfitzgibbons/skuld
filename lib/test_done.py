@@ -16,13 +16,14 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from datetime import date
+from pathlib import Path
 from unittest import mock
 
 from lib import done as done_mod
 from lib import pulses, term
 from lib.fileissues import FileIssues
-from lib.store_sandbox import FILE_NAME, KEY as SK_KEY, head, makeStore
+from lib.store_index import indexIsCurrent
+from lib.store_sandbox import FILE_NAME, KEY as SK_KEY, TODAY, freezeToday, head, makeStore
 from lib.done import DISPOSABLE, branchForKey, doneNote, finish
 from lib.start import worktreeDir
 
@@ -101,7 +102,10 @@ class FakeJira:
         self.transitioned.append([key, target])
         raise RuntimeError("finish() must never call jira.transition -- decision #5")
 
-    def closeNote(self, key):
+    def checkClose(self, key):
+        pass
+
+    def close(self, key):
         return f'Close {key} in Jira: {self.settings["baseUrl"]}/browse/{key}'
 
 
@@ -457,11 +461,15 @@ def writeIgnoredFolder(dir, relative, count):
 
 class FinishStoreTicketTests(unittest.TestCase):
     def setUp(self):
+        freezeToday(self)
         self.s = sandbox(key=SK_KEY)
-        self.store = makeStore(self.s["root"])
-        self.ticket = self.store / FILE_NAME
-        self.client = FileIssues({"dir": str(self.store)})
         self.addCleanup(shutil.rmtree, self.s["root"], ignore_errors=True)
+        self.useStore(makeStore(self.s["root"]))
+
+    def useStore(self, store):
+        self.store = store
+        self.ticket = store / "active" / FILE_NAME
+        self.client = FileIssues({"dir": str(store)})
 
     def done(self):
         return finish(self.client, self.s["checkouts"], SK_KEY, view=self.s["view"], cwd=self.s["checkout"])
@@ -469,15 +477,28 @@ class FinishStoreTicketTests(unittest.TestCase):
     def text(self):
         return self.ticket.read_text()
 
+    def assertRefusedChangingNothing(self, pattern):
+        original = self.text()
+        index = (self.store / "INDEX.md").read_text()
+        with self.assertRaisesRegex(RuntimeError, pattern):
+            self.done()
+        self.assertEqual(self.text(), original)
+        self.assertEqual((self.store / "INDEX.md").read_text(), index)
+        self.assertTrue(os.path.exists(self.s["dir"]))
+        self.assertTrue(git(self.s["checkout"], "branch", "--list", self.s["branch"]).strip())
+
     def test_closes_the_ticket_with_its_merge_line_and_drops_it_from_index(self):
         before = head(self.store)
-        self.done()
+        result = self.done()
         text = self.text()
         self.assertIn("\nstatus: done\n", text)
-        self.assertIn(f"\nclosed: {date.today().isoformat()}\n", text)
+        self.assertIn(f"\nclosed: {TODAY}\n", text)
         self.assertRegex(text, r"- \d{4}-\d{2}-\d{2}: Done: \[origin#1\]")
-        self.assertNotIn(FILE_NAME, (self.store / "INDEX.md").read_text())
+        self.assertTrue(indexIsCurrent(self.store))
+        self.assertNotIn(f"[{SK_KEY}]", (self.store / "INDEX.md").read_text())
+        self.assertIn(f"Closed {SK_KEY}: status done, closed {TODAY}, INDEX.md regenerated.", result["notes"])
         self.assertEqual(head(self.store), before)
+        self.assertEqual(git(self.store, "diff", "--cached", "--name-only"), "")
 
     def test_a_second_done_leaves_the_closed_ticket_untouched_with_one_merge_line(self):
         self.done()
@@ -490,25 +511,39 @@ class FinishStoreTicketTests(unittest.TestCase):
     def test_a_done_stopped_after_the_log_line_closes_on_the_next_run_without_a_second_line(self):
         self.done()
         # What a Done killed between the merge line and the close left: the line, an open ticket.
-        stopped = self.text().replace("status: done", "status: in-progress").replace(
-            f"closed: {date.today().isoformat()}", "closed:"
-        )
+        stopped = self.text().replace("status: done", "status: in-progress").replace(f"closed: {TODAY}", "closed:")
         self.ticket.write_text(stopped)
         (self.store / "INDEX.md").write_text("stale\n")
         self.done()
         text = self.text()
         self.assertIn("\nstatus: done\n", text)
-        self.assertIn(f"\nclosed: {date.today().isoformat()}\n", text)
+        self.assertIn(f"\nclosed: {TODAY}\n", text)
         self.assertEqual(text.count("Done: [origin#1]"), 1)
-        self.assertNotIn(FILE_NAME, (self.store / "INDEX.md").read_text())
+        self.assertTrue(indexIsCurrent(self.store))
 
-    def test_a_store_that_cant_reindex_stops_done_before_anything_changes(self):
-        (self.store / "scripts" / "index.py").unlink()
-        original = self.text()
-        with self.assertRaisesRegex(RuntimeError, "index.py"):
-            self.done()
-        self.assertEqual(self.text(), original)
-        self.assertTrue(os.path.exists(self.s["dir"]))
+    def test_an_unticked_done_box_stops_done_naming_it_before_anything_changes(self):
+        self.useStore(makeStore(Path(self.s["root"]) / "second", done="- [x] One.\n- [ ] Two is not done.\n"))
+        self.assertRefusedChangingNothing("Two is not done")
+
+    def test_a_ticket_the_checker_rejects_stops_done_naming_the_field(self):
+        self.ticket.write_text(self.text().replace("blocked_by:\n", "blocked_by: SK-9999\n"))
+        self.assertRefusedChangingNothing("blocked_by")
+
+    def test_a_milestone_without_a_file_stops_done_naming_the_field(self):
+        self.ticket.write_text(self.text().replace("milestone: issue-round", "milestone: nowhere"))
+        self.assertRefusedChangingNothing("milestone")
+
+    def test_a_ticket_already_closed_is_not_held_to_the_checks_again(self):
+        self.done()
+        self.ticket.write_text(self.text().replace("- [x] It works.", "- [ ] It works."))
+        self.assertTrue(any("already closed" in n for n in self.done()["notes"]))
+
+    def test_the_cli_client_for_a_store_key_is_the_file_client(self):
+        from lib.cli import jiraFrom
+
+        client = jiraFrom({"issueStore": str(self.store), "jira": {}}, SK_KEY)
+        self.assertIsInstance(client, FileIssues)
+        self.assertEqual(client.dir, self.store.resolve())
 
 
 class DisposableTests(unittest.TestCase):

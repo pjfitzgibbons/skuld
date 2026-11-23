@@ -2,9 +2,9 @@
 # of Jira. FileIssues implements the same surface lib/jira.py's Jira class does -- list(jql),
 # issue(key), blockers(issue), statusTransitionId(key, name), transition(key, name),
 # textComment(text), addComment(key, doc) -- returning dicts shaped the way callers (lib/cli.py,
-# lib/start.py, lib/done.py) already read Jira's, so none of them need a SK-specific branch. Done
-# alone branches on isFileBacked(key): a ticket closes (close(key)), a Jira issue prints
-# closeNote(key).
+# lib/start.py, lib/done.py) already read Jira's, so none of them need a SK-specific branch. Done's
+# last step is the port's close(key), after its checkClose(key): a ticket closes, a Jira issue
+# returns the note to close it by hand.
 # isFileBacked(key) is the dispatch: lib/cli.py's jiraFrom(cfg, key) calls it to decide whether a
 # key's commands go to Jira or to a FileIssues instance -- user decision 2026-11-05.
 #
@@ -56,8 +56,12 @@ TYPE_NAME_MAP = {"bug": "Bug", "task": "Task", "question": "Task"}
 # The statuses that end a ticket (issues/README.md's enum).
 CLOSED_STATUSES = ("done", "wontfix")
 
+FENCES = ("```", "~~~")
+BOX_RE = re.compile(r"^- \[([ xX])\]\s*(.*)$")
+
 FRONTMATTER_RE = re.compile(r"^---\n(.*?\n)---\n?(.*)$", re.DOTALL)
-LOG_HEADING_RE = re.compile(r"(?m)^## Log\s*$")
+# A ## Log line wraps here, continuation lines indented two spaces, as the store's tickets are.
+LOG_WIDTH = 100
 LOG_LINE_RE = re.compile(r"^-\s*(\d{4}-\d{2}-\d{2}):\s*(.*)$")
 
 
@@ -96,6 +100,49 @@ def _flatten(doc):
     return " ".join(parts)
 
 
+# (offset, line) for each line of text outside a code fence, fence lines included in neither.
+def linesOutsideFences(text):
+    fence = None
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if fence is None and stripped[:3] in FENCES:
+            fence = stripped[:3]
+        elif fence is not None and stripped.startswith(fence):
+            fence = None
+        elif fence is None:
+            yield offset, line
+        offset += len(line)
+
+
+# The start and end of the first `## <name>` line in text that is outside a code fence, or None. A
+# heading inside a fenced block, or in inline code, is quoted text, not a section.
+def headingSpan(text, name):
+    for offset, line in linesOutsideFences(text):
+        if re.match(rf"## {name}\s*$", line):
+            return offset, offset + len(line)
+    return None
+
+
+# The lines under the `## <name>` heading, up to the next `## ` heading, leaving out code fences.
+def sectionLines(text, name):
+    span = headingSpan(text, name)
+    if not span:
+        return []
+    lines = []
+    for _offset, line in linesOutsideFences(text[span[1] :]):
+        if line.startswith("## "):
+            break
+        lines.append(line.rstrip("\n"))
+    return lines
+
+
+# The `## Done` boxes still unticked, each as its text.
+def untickedBoxes(text):
+    boxes = (BOX_RE.match(line.strip()) for line in sectionLines(text, "Done"))
+    return [m.group(2).strip() for m in boxes if m and m.group(1) == " "]
+
+
 # frontmatter dict, title, description body (everything between the title and ## Log, or end of
 # file), and the ## Log entries (each { date, text }), from one issue file's full text.
 def _parse(text):
@@ -112,8 +159,8 @@ def _parse(text):
         front[key.strip()] = value
 
     rest = m.group(2)
-    log_match = LOG_HEADING_RE.search(rest)
-    before, log_text = (rest[: log_match.start()], rest[log_match.end() :]) if log_match else (rest, "")
+    log_span = headingSpan(rest, "Log")
+    before, log_text = (rest[: log_span[0]], rest[log_span[1] :]) if log_span else (rest, "")
 
     title = ""
     body_lines = []
@@ -130,14 +177,15 @@ def _parse(text):
 
 
 # The ## Log entries (each { date, text }) in log_text. A wrapped entry's indented continuation
-# lines join its text, so a long line reads back whole.
+# lines join its text, so a long line reads back whole; an indented list item under an entry is its
+# own line, not part of the entry.
 def _logEntries(log_text):
     entries = []
     for line in log_text.strip("\n").split("\n"):
         lm = LOG_LINE_RE.match(line.strip())
         if lm:
             entries.append({"date": lm.group(1), "text": lm.group(2)})
-        elif entries and line.startswith("  ") and line.strip():
+        elif entries and line.startswith("  ") and line.strip() and not line.strip().startswith(("- ", "* ")):
             entries[-1]["text"] += " " + line.strip()
     return entries
 
@@ -170,28 +218,30 @@ def setFrontField(text, field, value):
     return text[:end] + f"{field}: {value}".rstrip() + "\n" + text[end:]
 
 
-# A dated log entry, wrapped to width when one is given: continuation lines indent two spaces.
-def logEntry(line_text, width=None):
+# A dated log entry, wrapped to width: continuation lines indent two spaces.
+def logEntry(line_text, width=LOG_WIDTH):
     entry = f"- {date.today().isoformat()}: {line_text}"
-    if not width:
-        return entry
-    return textwrap.fill(entry, width=width, subsequent_indent="  ", break_long_words=False, break_on_hyphens=False)
+    # A lone "-" or "*" is held to the word before it, so no wrapped line starts like a list item.
+    glued = re.sub(r"(?<=\S) ([-*])(?= )", "\0\\1", entry)
+    wrapped = textwrap.fill(glued, width=width, subsequent_indent="  ", break_long_words=False, break_on_hyphens=False)
+    return wrapped.replace("\0", " ")
 
 
 # Appends a dated log line at the true end of the file, under a ## Log heading -- created, once,
-# if the file doesn't have one yet.
-def appendLog(text, line_text, width=None):
+# if the file doesn't have one outside a code fence.
+def appendLog(text, line_text, width=LOG_WIDTH):
     entry = logEntry(line_text, width)
-    if LOG_HEADING_RE.search(text):
+    if headingSpan(text, "Log"):
         return text.rstrip("\n") + "\n" + entry + "\n"
     return text.rstrip("\n") + "\n\n## Log\n" + entry + "\n"
 
 
-# The front matter a Done writes to close a ticket: nothing when it is closed with its date, only the
-# date when a closed status lacks one, else status and date (issue_update fills the date in).
+# The front matter a Done writes to close a ticket: nothing when it is closed with its date, else the
+# closed status it has (or done); issue_update's closed rule fills the date in.
 def closingFields(front):
-    if front.get("status") in CLOSED_STATUSES:
-        return {} if front.get("closed") else {"closed": date.today().isoformat()}
+    status = front.get("status")
+    if status in CLOSED_STATUSES:
+        return {} if front.get("closed") else {"status": status}
     return {"status": "done"}
 
 
@@ -218,9 +268,14 @@ class FileIssues:
         self.dir = Path(d).resolve()
         self.settings = {"dir": str(self.dir)}
 
+    # Open tickets live in active/ (architecture §7.7).
+    # shortcut: the store root is read too while its tickets move into active/; drop it once none are left there.
+    def _ticketFiles(self, pattern):
+        return [p for folder in (self.dir / "active", self.dir) for p in folder.glob(pattern)]
+
     def _path(self, key):
         key = canonicalKey(key)
-        matches = sorted(p for p in self.dir.glob(f"{key}-*.md"))
+        matches = sorted(self._ticketFiles(f"{key}-*.md"))
         if not matches:
             exact = self.dir / f"{key}.md"
             if exact.exists():
@@ -245,7 +300,7 @@ class FileIssues:
     # here -- every candidate is parsed first, then the whole batch is sorted by workOrder().
     def list(self, jql=None):
         candidates = []
-        for path in self.dir.glob(f"{PROJECT}-*.md"):
+        for path in self._ticketFiles(f"{PROJECT}-*.md"):
             key = _keyFromFilename(path.name)
             if not key:
                 continue
@@ -349,21 +404,24 @@ class FileIssues:
     def browseUrl(self, key):
         return str(self._path(key))
 
-    # Refuses, before Done changes anything, when close() could not reindex the store.
+    # Refuses, before Done changes anything, when close() would: a Done box unticked, or a field the
+    # checker rejects.
     def checkClose(self, key):
-        from .issue_update import checkStore
+        from .issue_update import closeProblems  # lib/issue_update.py imports this module
 
-        self._path(key)
-        checkStore(self.dir)
+        problems = closeProblems(self.dir, self._path(key).read_text(encoding="utf8"))
+        if problems:
+            raise RuntimeError(f"{canonicalKey(key)} can't be closed; nothing changed: " + "; ".join(problems))
 
     # Done's close of a ticket: status done, closed today, INDEX.md regenerated. A ticket already
-    # closed with its date set is left as it is. Returns whether it changed the ticket.
+    # closed with its date set is left as it is. Returns what Done prints.
     def close(self, key):
-        from .issue_update import updateTicket  # lib/issue_update.py imports this module
+        from .issue_update import updateTicket
 
+        key = canonicalKey(key)
         front = _parse(self._path(key).read_text(encoding="utf8"))[0]
         fields = closingFields(front)
         if not fields:
-            return False
-        updateTicket(self.dir, key, fields)
-        return True
+            return f"{key} is already closed."
+        _path, written = updateTicket(self.dir, key, fields)
+        return f"Closed {key}: status {written['status']}, closed {written['closed']}, INDEX.md regenerated."

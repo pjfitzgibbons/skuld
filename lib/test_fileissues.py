@@ -5,10 +5,9 @@
 import shutil
 import tempfile
 import unittest
-from datetime import date
 from pathlib import Path
 
-from lib.fileissues import FileIssues, canonicalKey, closingFields, isFileBacked, setFrontField
+from lib.fileissues import FileIssues, canonicalKey, closingFields, isFileBacked, setFrontField, untickedBoxes
 
 
 def writeIssue(dir, name, text):
@@ -309,10 +308,6 @@ class MergedListTests(unittest.TestCase):
         self.assertNotIn("after", jiraRows[0])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class FrontMatterEditTests(unittest.TestCase):
     def test_setFrontField_adds_a_field_the_block_lacks(self):
         out = setFrontField(OPEN_BUG, "pr", "https://github.com/a/b/pull/1")
@@ -322,8 +317,19 @@ class FrontMatterEditTests(unittest.TestCase):
         self.assertIn("status: done\n", setFrontField(OPEN_BUG, "status", "done"))
 
     def test_closingFields_by_status(self):
-        today = date.today().isoformat()
         self.assertEqual(closingFields({"status": "in-progress", "closed": ""}), {"status": "done"})
-        self.assertEqual(closingFields({"status": "done", "closed": ""}), {"closed": today})
+        self.assertEqual(closingFields({"status": "done", "closed": ""}), {"status": "done"})
+        self.assertEqual(closingFields({"status": "wontfix", "closed": ""}), {"status": "wontfix"})
         self.assertEqual(closingFields({"status": "done", "closed": "2026-11-03"}), {})
         self.assertEqual(closingFields({"status": "wontfix", "closed": "2026-11-03"}), {})
+
+    def test_untickedBoxes_reads_the_done_section_outside_code_fences(self):
+        text = (
+            "# T\n\n## Task\n\n- [ ] not a Done box\n\n## Done\n\n- [x] one\n- [ ] two\n"
+            "```\n- [ ] in a fence\n## Log\n```\n- [X] three\n\n## Log\n\n- 2026-11-09: x\n- [ ] after\n"
+        )
+        self.assertEqual(untickedBoxes(text), ["two"])
+
+
+if __name__ == "__main__":
+    unittest.main()
