@@ -74,7 +74,7 @@ macOS only. In order:
    with `"issueStore": "~/programming/skuld-project/issues"` in `~/.config/skuld/config.json`. It
    can be cloned anywhere else; `issueStore` names whichever path.
    For a new store, `git init` a folder, give it a private remote, and run `plan init-store` to
-   make the empty folders (`milestones/`, `active/`, `archive/`, `reviews/`) at `issueStore`.
+   make the empty folders (`milestones/`, `active/`, `archive/`, `reviews/`, `queries/`) at `issueStore`.
 
 4. **`store.yml`**, in skuld, lists the store's projects, each with its key prefix, its name and
    its repos by remote:
@@ -259,7 +259,7 @@ decides the repo (§4).
 | `plan agents pick` | The listing in fzf; `enter` opens the chosen session's issue in the plan window |
 | `plan agents tick [--watch]` | Set each issue's colour in the pulses file once from its Claudes' states; `--watch` keeps doing so, as its LaunchAgent does (§2, step 12) |
 | `plan archive` | Move closed tickets past `archiveAfterDays` to `archive/` |
-| `plan init-store` | Make an empty store's folders |
+| `plan init-store` | Make the store's missing folders (`milestones/`, `active/`, `archive/`, `reviews/`, `queries/`) at `issueStore`, printing each; refuses a missing store folder, changes no file, and a second run makes nothing |
 | `pr [done] [KEY]` | Send a round (§5) |
 | `plan review KEY` | Write the next review round's request and start Claude's review on it in the plan window's `Review KEY` terminal; `pr` runs it when a review is due (§5), and it is how to start one by hand |
 | `issue-check [PATH…]` | Check ticket files, or the whole store; exits non-zero naming file, line and rule |

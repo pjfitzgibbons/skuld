@@ -74,8 +74,8 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #   workspaceDir   Folder for each issue's throwaway <KEY>.code-workspace file (its plan.*
 #                  settings), outside every repo, which Done deletes, and for the plan window's
 #                  plan.code-workspace (lib/term.py). Default: "~/.cache/plan/code-workspaces".
-#   issueStore     The issue store's checkout: the folder of SK-<nnnn> ticket files
-#                  (lib/fileissues.py's FileIssues), its own git repo, e.g.
+#   issueStore     The issue store's checkout: the folder whose active/ and archive/
+#                  hold the SK-<nnnn> ticket files (lib/fileissues.py's FileIssues), its own git repo, e.g.
 #                  "~/programming/skuld-project/issues". `~` is expanded. Default: None -- the
 #                  store lives outside skuld, so a machine that works tickets sets it; a command
 #                  that needs the store without it refuses, naming this key (issueStoreFrom()).

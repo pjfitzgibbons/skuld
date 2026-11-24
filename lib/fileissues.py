@@ -30,6 +30,11 @@ PROJECT = "SK"
 # in number order. A number past 9999 simply grows a digit.
 KEY_DIGITS = 4
 
+# The store's folders (docs/architecture.md §7.7): tickets live in the first two, read together.
+# `plan init-store` makes all of them.
+TICKET_FOLDERS = ("active", "archive")
+STORE_FOLDERS = ("milestones", *TICKET_FOLDERS, "reviews", "queries")
+
 # issues/README.md's status enum -> the Jira-shaped (status name, statusCategory key) pair a
 # caller reads off issue["fields"]["status"]. done/wontfix both read as Jira's "done" category --
 # neither is a status Start or Done need to tell apart from the other.
@@ -152,6 +157,22 @@ def _appendLog(text, line_text):
     return text.rstrip("\n") + "\n\n## Log\n" + entry + "\n"
 
 
+# Makes the store's folders that are missing and returns the ones it made. Only creates: the
+# store's root must already exist (it is the store's git checkout), and nothing in it is moved,
+# rewritten or deleted, so a second run makes nothing.
+def initStore(root):
+    root = Path(root)
+    if not root.is_dir():
+        raise RuntimeError(f"the issue store {root} doesn't exist; git init it first, then run plan init-store")
+    for name in STORE_FOLDERS:
+        if (root / name).exists() and not (root / name).is_dir():
+            raise RuntimeError(f"{root / name} is a file; the store needs a folder there")
+    made = [name for name in STORE_FOLDERS if not (root / name).is_dir()]
+    for name in made:
+        (root / name).mkdir()
+    return made
+
+
 def _keyFromFilename(name):
     m = re.match(rf"^({re.escape(PROJECT)}-\d{{{KEY_DIGITS},}})(?:-.*)?\.md$", name)
     return m.group(1) if m else None
@@ -175,13 +196,21 @@ class FileIssues:
         self.dir = Path(d).resolve()
         self.settings = {"dir": str(self.dir)}
 
+    # Every file in active/ and archive/ matching pattern. A ticket at the store's top level is
+    # refused, naming the file: it belongs in active/ (docs/architecture.md §7.7).
+    def _ticketFiles(self, pattern):
+        strays = sorted(self.dir.glob(f"{PROJECT}-*.md"))
+        if strays:
+            raise RuntimeError(f"{strays[0]} is at the store's top level; move it to {self.dir / 'active'}/")
+        return [p for folder in TICKET_FOLDERS for p in (self.dir / folder).glob(pattern)]
+
     def _path(self, key):
         key = canonicalKey(key)
-        matches = sorted(p for p in self.dir.glob(f"{key}-*.md"))
+        matches = sorted(self._ticketFiles(f"{key}-*.md"))
         if not matches:
-            exact = self.dir / f"{key}.md"
-            if exact.exists():
-                return exact
+            exact = self._ticketFiles(f"{key}.md")
+            if exact:
+                return exact[0]
             raise RuntimeError(f"no issue file for {key} in {self.dir}")
         if len(matches) > 1:
             names = ", ".join(p.name for p in matches)
@@ -198,7 +227,7 @@ class FileIssues:
     # here -- every candidate is parsed first, then the whole batch is sorted by workOrder().
     def list(self, jql=None):
         candidates = []
-        for path in self.dir.glob(f"{PROJECT}-*.md"):
+        for path in self._ticketFiles(f"{PROJECT}-*.md"):
             key = _keyFromFilename(path.name)
             if not key:
                 continue
