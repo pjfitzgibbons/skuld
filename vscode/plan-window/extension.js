@@ -4,8 +4,8 @@
 // any other window a link shows one message saying it is for the plan window. Its Issues view in the Explorer shows one
 // item per issue in plan's issues file, tinted from its pulses file and refreshed when either
 // changes; choosing an item, or a vscode://skuld.plan-window/open?key=<KEY> link, runs openIssue.
-// An issue that leaves the issues file leaves the view; its terminals stay until closed by hand,
-// since `plan done` or its Claude may be running in them.
+// An issue that leaves the issues file leaves the view; `plan done` has the window close its
+// terminals and tabs first (the /done and /done-tab links below).
 //
 // The window also handles vscode://skuld.plan-window/browse?url=<url>[&key=<KEY>], which `plan
 // browse` sends: it opens the page in the window's integrated browser; and
@@ -13,6 +13,7 @@
 // starts Claude's review of the issue's PR in a "Review <KEY>" terminal in the issue's worktree, on
 // the round's request.md, once request.json there carries the token.
 const { execFile } = require("child_process");
+const fs = require("fs");
 const path = require("path");
 const vscode = require("vscode");
 const windowPlan = require("./plan");
@@ -49,6 +50,8 @@ async function handleUri(uri) {
   if (uri.path === "/browse") return openBrowseLink(uri.query);
   if (uri.path === "/open") return openOpenLink(uri.query);
   if (uri.path === "/review") return openReviewLink(uri.query);
+  if (uri.path === "/done") return openDoneLink(uri.path, uri.query, closeTerminalsAndPrTab);
+  if (uri.path === "/done-tab") return openDoneLink(uri.path, uri.query, closeIssueTab);
   vscode.window.showErrorMessage(`plan window: unknown link ${uri.path}`);
 }
 
@@ -87,6 +90,66 @@ async function openReviewLink(query) {
   } catch (error) {
     vscode.window.showErrorMessage(`plan window: ${error.message}`);
   }
+}
+
+// vscode://skuld.plan-window/done?key=<KEY> (terminals, then the PR's tab) and /done-tab?key=<KEY>
+// (the issue's own tab) are what `plan done` sends. Each carries the key only: the PR's URL and the
+// ticket's path come from the issue's workspace file. What the window did goes to the result file
+// plan done reads, one line per step.
+async function openDoneLink(route, query, closeSteps) {
+  const request = windowPlan.doneRequest(route, query);
+  if (request.refusal) {
+    vscode.window.showErrorMessage(`plan window: ${request.refusal}`);
+    return;
+  }
+  let lines;
+  try {
+    lines = await closeSteps(request.key);
+  } catch (error) {
+    lines = [windowPlan.doneLine("failed", error.message)];
+  }
+  lines.forEach((line) => planLog.info(`done ${request.key} ${line}`));
+  fs.writeFileSync(windowPlan.doneResultFile(request.key, planSetting("workspaceDir")), JSON.stringify({ route, lines }));
+}
+
+async function closeTerminalsAndPrTab(key) {
+  const lines = await windowPlan.closeIssueTerminals(key, vscode.window.terminals, hasRunningChild);
+  return [...lines, await windowPlan.prTabLine(key, issueWorkspaceText(key), closeTabs)];
+}
+
+async function closeIssueTab(key) {
+  return [await windowPlan.issueTabLine(key, issueWorkspaceText(key), closeTabs)];
+}
+
+async function closeTabs(target, what) {
+  const tabs = vscode.window.tabGroups.all.flatMap((group) => group.tabs);
+  const toClose = tabs.filter((tab) => windowPlan.tabsShowing([tabTarget(tab)], target).length);
+  if (!toClose.length) return windowPlan.doneLine("skipped", `${what} isn't open`);
+  await vscode.window.tabGroups.close(toClose);
+  return windowPlan.doneLine("ran", `closed ${what}`);
+}
+
+// A tab as { file, url }: a text tab's file, or the page of a browser tab. 🔍 Unverified: the
+// integrated browser's tab input isn't documented in the extension API, so its page is read from
+// the input's url, or its uri when that is an http(s) one.
+function tabTarget(tab) {
+  const input = tab.input || {};
+  const uri = input.uri;
+  const file = uri && uri.scheme === "file" ? uri.fsPath : null;
+  const url = input.url || (uri && uri.scheme !== "file" ? uri.toString() : null);
+  return { file, url: url ? String(url) : null };
+}
+
+// Whether a terminal's shell still has a child, which is Claude (or anything else) running in it:
+// the terminal's `claude; exec shell` leaves the shell with none once Claude exits.
+function hasRunningChild(terminal) {
+  return terminal.processId.then(
+    (pid) =>
+      new Promise((resolve) => {
+        if (!pid) return resolve(false);
+        execFile("pgrep", ["-P", String(pid)], (error) => resolve(!error));
+      }),
+  );
 }
 
 // Each round is reviewed by a fresh Claude on that round's line, so a Review terminal left from an
@@ -146,8 +209,11 @@ function clearPulse(key) {
 
 // The issue's record is its own workspace file, which Start writes and nothing opens.
 function readIssueRecord(key) {
-  const file = windowPlan.workspaceFilePath(key, planSetting("workspaceDir"));
-  return windowPlan.issueRecord(windowPlan.readTextOrEmpty(file), key);
+  return windowPlan.issueRecord(issueWorkspaceText(key), key);
+}
+
+function issueWorkspaceText(key) {
+  return windowPlan.readTextOrEmpty(windowPlan.workspaceFilePath(key, planSetting("workspaceDir")));
 }
 
 // A store issue's ticket file, brought to the front on every click. VS Code reveals the tab that

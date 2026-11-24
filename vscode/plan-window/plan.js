@@ -12,7 +12,8 @@ const ISSUE_KEY = new RegExp(`^${ISSUE_KEY_PATTERN}$`);
 
 // An issue: its plan.* settings, read from the issue's own workspace file (issueRecord), which
 // Start writes and nothing opens. A store issue has a ticket file; a Jira issue has none, and
-// ticketUrl, its Jira page, instead.
+// ticketUrl, its Jira page, instead. prUrl is the issue's PR, which plan done writes into the file
+// just before it asks the window to close the issue.
 function readPlan(setting) {
   const key = setting("key");
   if (!key) return null;
@@ -20,7 +21,9 @@ function readPlan(setting) {
   if (!worktree) throw new Error(`plan.key is ${key} but plan.worktree is unset`);
   const ticketUrl = setting("ticketUrl") || null;
   if (ticketUrl && !isWebUrl(ticketUrl)) throw new Error(`plan.ticketUrl is ${ticketUrl}, not an http(s) link`);
-  return { key, worktree, ticket: setting("ticket") || null, ticketUrl, prompt: setting("prompt") || "" };
+  const prUrl = setting("prUrl") || null;
+  if (prUrl && !isWebUrl(prUrl)) throw new Error(`plan.prUrl is ${prUrl}, not an http(s) link`);
+  return { key, worktree, ticket: setting("ticket") || null, ticketUrl, prUrl, prompt: setting("prompt") || "" };
 }
 
 // The issue's plan.* settings from the text of its workspace file (lib/term.py issueWorkspace).
@@ -219,6 +222,122 @@ function openRequest(query) {
   if (!key) return { refusal: "/open needs ?key=" };
   if (!isIssueKey(key)) return { refusal: `/open needs an issue key, not ${key}` };
   return { key };
+}
+
+// What a /done or /done-tab link asks of this window: { key } to close the issue's terminals and PR
+// tab (/done), or its own tab (/done-tab), or { refusal }. Like /open, the link carries the key
+// only; the PR's URL and the ticket's path come from the issue's workspace file.
+function doneRequest(route, query) {
+  const key = new URLSearchParams(query).get("key");
+  if (!key) return { refusal: `${route} needs ?key=` };
+  if (!isIssueKey(key)) return { refusal: `${route} needs an issue key, not ${key}` };
+  return { key };
+}
+
+// The issue's own terminals among the window's, each found by its exact name, so a terminal named
+// for another key, or merely resembling one, is never in the answer. A missing one is undefined.
+function issueTerminals(key, terminals) {
+  const plan = { key };
+  return {
+    shell: findShellTerminal(plan, terminals),
+    claude: findClaudeTerminal(plan, terminals),
+    review: findReviewTerminal(plan, terminals),
+  };
+}
+
+// The tabs showing target: { file } the tab on that file, or { url } a browser tab on that page,
+// which is the URL itself or a page under it (/pull/5/files for /pull/5, never /pull/50). A tab is
+// { file, url }, either null.
+function tabsShowing(tabs, target) {
+  return tabs.filter((tab) => (target.file ? tab.file === target.file : isUnder(tab.url, target.url)));
+}
+
+function isUnder(tabUrl, url) {
+  if (!tabUrl || !url) return false;
+  return tabUrl === url || ["/", "?", "#"].some((separator) => tabUrl.startsWith(url + separator));
+}
+
+function doneLine(outcome, text) {
+  return `${outcome}: ${text}`;
+}
+
+const CLEAN_CLOSE_POLLS = 50;
+const CLEAN_CLOSE_POLL_MS = 200;
+
+// Ends what a terminal runs with Ctrl-C twice, then removes it once nothing it started is left
+// running (isBusy(terminal) is false). Nothing is killed: a terminal still busy after the polls is
+// left open. Resolves to the line saying which.
+async function cleanClose(terminal, isBusy, wait = sleep) {
+  terminal.sendText("\x03", false);
+  terminal.sendText("\x03", false);
+  for (let poll = 0; poll < CLEAN_CLOSE_POLLS; poll++) {
+    if (!(await isBusy(terminal))) {
+      terminal.dispose();
+      return doneLine("ran", `closed the ${terminal.name} terminal`);
+    }
+    await wait(CLEAN_CLOSE_POLL_MS);
+  }
+  return doneLine("failed", `${terminal.name} is still running after Ctrl-C twice; left open, close it by hand`);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// The first three steps of plan done, as the lines it prints: the Shell terminal removed, then
+// Claude's and the review's each closed cleanly. A terminal that isn't open is skipped, not an error.
+async function closeIssueTerminals(key, terminals, isBusy, wait = sleep) {
+  const found = issueTerminals(key, terminals);
+  const lines = [];
+  if (found.shell) {
+    found.shell.dispose();
+    lines.push(doneLine("ran", `closed the ${found.shell.name} terminal`));
+  } else {
+    lines.push(doneLine("skipped", `no ${shellTerminalName({ key })} terminal open`));
+  }
+  for (const [name, terminal] of [[claudeTerminalName({ key }), found.claude], [reviewTerminalName({ key }), found.review]]) {
+    lines.push(terminal ? await cleanClose(terminal, isBusy, wait) : doneLine("skipped", `no ${name} terminal open`));
+  }
+  return lines;
+}
+
+// The issue's record, or null when its workspace file is gone (empty text), as it is after a Done
+// that finished; a file that exists but isn't a record still throws.
+function maybeIssueRecord(workspaceText, key) {
+  return workspaceText === "" ? null : issueRecord(workspaceText, key);
+}
+
+// The PR-tab step of plan done, as a line. closeTabs(target, what) closes tabs and returns its line.
+// A workspace file that is gone, or has no PR URL, skips the step and names what to close by hand.
+async function prTabLine(key, workspaceText, closeTabs) {
+  const what = "the PR's browser tab";
+  try {
+    const record = maybeIssueRecord(workspaceText, key);
+    if (!record) return doneLine("skipped", `${key}'s workspace file is gone, so the PR's URL is unknown; close ${what} by hand`);
+    if (!record.prUrl) return doneLine("skipped", `no PR URL in the workspace file; close ${what} by hand`);
+    return await closeTabs({ url: record.prUrl }, what);
+  } catch (error) {
+    return doneLine("failed", error.message);
+  }
+}
+
+// The issue's own tab step: the ticket's file tab for a store issue, the Jira page's browser tab
+// for a Jira one.
+async function issueTabLine(key, workspaceText, closeTabs) {
+  try {
+    const record = maybeIssueRecord(workspaceText, key);
+    if (!record) return doneLine("skipped", `${key}'s workspace file is gone, so its ticket is unknown; close the issue's tab by hand`);
+    if (record.ticket) return await closeTabs({ file: record.ticket }, "the ticket's editor tab");
+    return await closeTabs({ url: record.ticketUrl }, "the Jira page's browser tab");
+  } catch (error) {
+    return doneLine("failed", error.message);
+  }
+}
+
+// Where the window tells plan done what it did: <KEY>.done-result.json beside the issue's workspace
+// file, one { route, lines } object, the route naming the link it answers.
+function doneResultFile(key, workspaceDir) {
+  return path.join(expandHome(workspaceDir), `${key}.done-result.json`);
 }
 
 const ROUND_NUMBER = /^(0|[1-9][0-9]*)$/;
@@ -443,6 +562,16 @@ module.exports = {
   browseRequest,
   openRequest,
   reviewRequest,
+  doneRequest,
+  issueTerminals,
+  tabsShowing,
+  doneLine,
+  cleanClose,
+  closeIssueTerminals,
+  prTabLine,
+  issueTabLine,
+  maybeIssueRecord,
+  doneResultFile,
   reviewRequestFile,
   reviewStart,
   linkLogLine,

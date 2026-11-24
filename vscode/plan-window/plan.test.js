@@ -14,6 +14,7 @@ const plan = {
   worktree: "/work/repo.worktrees/SK-9",
   ticket: "/work/issues/SK-0009-example.md",
   ticketUrl: null,
+  prUrl: null,
   prompt: "Work on SK-9.",
 };
 
@@ -23,7 +24,7 @@ test("settings with no plan.key are no issue", () => {
 
 test("an issue's settings are read, with no ticket for a Jira issue", () => {
   const read = windowPlan.readPlan(settingsOf({ key: "CIAM-1", worktree: "/w", prompt: "p" }));
-  assert.deepEqual(read, { key: "CIAM-1", worktree: "/w", ticket: null, ticketUrl: null, prompt: "p" });
+  assert.deepEqual(read, { key: "CIAM-1", worktree: "/w", ticket: null, ticketUrl: null, prUrl: null, prompt: "p" });
 });
 
 test("plan.key without plan.worktree is refused, naming both", () => {
@@ -454,4 +455,110 @@ test("the plan window is the one whose workspace file is plan.code-workspace in 
   assert.equal(windowPlan.isPlanWindow("/h/.cache/plan/code-workspaces/SK-9.code-workspace", dir, "/h"), false);
   assert.equal(windowPlan.isPlanWindow("/elsewhere/plan.code-workspace", dir, "/h"), false);
   assert.equal(windowPlan.isPlanWindow(undefined, dir, "/h"), false);
+});
+
+// plan done's teardown (SK-0108): the link, the choice of terminals and tabs, the clean close.
+
+function fakeTerminal(name, { exitsOn = 2, log = [] } = {}) {
+  const terminal = { name, interrupts: 0, disposed: false };
+  terminal.sendText = (text) => {
+    if (text === "\x03") terminal.interrupts += 1;
+    log.push(`${name} ^C`);
+  };
+  terminal.dispose = () => {
+    terminal.disposed = true;
+    log.push(`${name} dispose`);
+  };
+  terminal.busy = () => terminal.interrupts < exitsOn;
+  return terminal;
+}
+
+const noWait = () => Promise.resolve();
+const isBusy = (terminal) => terminal.busy();
+
+test("a done link carries a key only, and a missing or malformed one is refused", () => {
+  assert.deepEqual(windowPlan.doneRequest("/done", "key=SK-9"), { key: "SK-9" });
+  assert.match(windowPlan.doneRequest("/done", "").refusal, /\/done needs \?key=/);
+  assert.match(windowPlan.doneRequest("/done-tab", "key=../x").refusal, /needs an issue key/);
+});
+
+test("only the issue's own terminals are chosen, by exact name", () => {
+  const own = ["Shell SK-9", "Claude SK-9", "Review SK-9"].map((name) => fakeTerminal(name));
+  const others = ["Shell SK-99", "Claude SK-10", "Review SK-9 (old)", "Claude SK-9 "].map((name) => fakeTerminal(name));
+  const found = windowPlan.issueTerminals("SK-9", [...others, ...own]);
+  assert.deepEqual([found.shell, found.claude, found.review], own);
+});
+
+test("a tab on the ticket's path, or the PR's URL or a page under it, is chosen; another path or PR is not", () => {
+  const tabs = [
+    { file: "/work/issues/SK-0009-a.md", url: null },
+    { file: "/work/issues/SK-0090-b.md", url: null },
+    { file: null, url: "https://github.com/o/r/pull/5" },
+    { file: null, url: "https://github.com/o/r/pull/5/files" },
+    { file: null, url: "https://github.com/o/r/pull/50" },
+  ];
+  assert.deepEqual(windowPlan.tabsShowing(tabs, { file: "/work/issues/SK-0009-a.md" }), [tabs[0]]);
+  assert.deepEqual(windowPlan.tabsShowing(tabs, { url: "https://github.com/o/r/pull/5" }), [tabs[2], tabs[3]]);
+});
+
+test("the terminals close in order: Shell, then Claude and Review after Ctrl-C twice, each ended", async () => {
+  const terminals = ["Review SK-9", "Claude SK-9", "Shell SK-9", "Shell SK-10"].map((name) => fakeTerminal(name));
+  const lines = await windowPlan.closeIssueTerminals("SK-9", terminals, isBusy, noWait);
+  assert.deepEqual(lines, [
+    "ran: closed the Shell SK-9 terminal",
+    "ran: closed the Claude SK-9 terminal",
+    "ran: closed the Review SK-9 terminal",
+  ]);
+  assert.deepEqual(terminals.map((terminal) => [terminal.interrupts, terminal.disposed]), [[2, true], [2, true], [0, true], [0, false]]);
+});
+
+test("the Shell terminal is removed before Claude's and the review's Ctrl-Cs, Claude's before the review's", async () => {
+  const log = [];
+  const terminals = ["Review SK-9", "Claude SK-9", "Shell SK-9"].map((name) => fakeTerminal(name, { log }));
+  await windowPlan.closeIssueTerminals("SK-9", terminals, isBusy, noWait);
+  assert.deepEqual(log, [
+    "Shell SK-9 dispose",
+    "Claude SK-9 ^C",
+    "Claude SK-9 ^C",
+    "Claude SK-9 dispose",
+    "Review SK-9 ^C",
+    "Review SK-9 ^C",
+    "Review SK-9 dispose",
+  ]);
+});
+
+test("a workspace file that is gone skips the PR tab and the issue tab by name, and an unreadable one fails them", async () => {
+  const closeTabs = async () => assert.fail("no tab is closed without a record");
+  assert.match(await windowPlan.prTabLine("SK-9", "", closeTabs), /^skipped: SK-9's workspace file is gone.*close the PR's browser tab by hand/);
+  assert.match(await windowPlan.issueTabLine("SK-9", "", closeTabs), /^skipped: SK-9's workspace file is gone.*close the issue's tab by hand/);
+  assert.match(await windowPlan.prTabLine("SK-9", "{not json", closeTabs), /^failed: .*isn't JSON/);
+  assert.match(await windowPlan.issueTabLine("SK-9", "{not json", closeTabs), /^failed: /);
+});
+
+test("with a record, the PR tab is closed by its recorded URL and the issue tab by the ticket's path or Jira page", async () => {
+  const asked = [];
+  const closeTabs = async (target, what) => (asked.push(target), `ran: closed ${what}`);
+  const withPr = JSON.stringify({ settings: { "plan.key": "SK-9", "plan.worktree": "/w", "plan.ticket": "/t.md", "plan.prUrl": "https://github.com/o/r/pull/5" } });
+  const jira = JSON.stringify({ settings: { "plan.key": "SK-9", "plan.worktree": "/w", "plan.ticketUrl": "https://j.example/browse/SK-9" } });
+  await windowPlan.prTabLine("SK-9", withPr, closeTabs);
+  await windowPlan.issueTabLine("SK-9", withPr, closeTabs);
+  await windowPlan.issueTabLine("SK-9", jira, closeTabs);
+  assert.match(await windowPlan.prTabLine("SK-9", jira, closeTabs), /^skipped: no PR URL/);
+  assert.deepEqual(asked, [{ url: "https://github.com/o/r/pull/5" }, { file: "/t.md" }, { url: "https://j.example/browse/SK-9" }]);
+});
+
+test("a terminal that outlives Ctrl-C twice stays open, is reported, and the later one still closes", async () => {
+  const stubborn = fakeTerminal("Claude SK-9", { exitsOn: Infinity });
+  const review = fakeTerminal("Review SK-9");
+  const lines = await windowPlan.closeIssueTerminals("SK-9", [stubborn, review], isBusy, noWait);
+  assert.equal(stubborn.disposed, false);
+  assert.equal(stubborn.interrupts, 2);
+  assert.match(lines[1], /^failed: Claude SK-9 is still running after Ctrl-C twice; left open/);
+  assert.equal(lines[2], "ran: closed the Review SK-9 terminal");
+  assert.equal(review.disposed, true);
+});
+
+test("terminals that aren't open are skipped, not errors", async () => {
+  const lines = await windowPlan.closeIssueTerminals("SK-9", [], isBusy, noWait);
+  assert.deepEqual(lines.map((line) => line.split(":")[0]), ["skipped", "skipped", "skipped"]);
 });

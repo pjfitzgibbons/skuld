@@ -234,7 +234,7 @@ Every VS Code window loads `plan-window`, and it acts only in the plan window. I
 - the git and worktree module, which makes and removes branches and worktrees and resolves which repo holds an issue's work (§7.1); and
 - the local files: the issues file and the workspace files. Writes to them are locked, and a reader never sees a half-written file.
 
-Opening an issue, by a click in the Issues view or by the issue's link, shows the issue page in the integrated browser beside the issue's Claude terminal. The window never closes an issue's terminals. Claude's review of a PR runs in a terminal of its own, in a conversation apart from the author's. The design is in [design §3.3](design.md#extension).
+Opening an issue, by a click in the Issues view or by the issue's link, shows the issue page in the integrated browser beside the issue's Claude terminal. The window closes an issue's terminals and tabs only when Done asks, through the `done` link. Claude's review of a PR runs in a terminal of its own, in a conversation apart from the author's. The design is in [design §3.3](design.md#extension).
 
 <a id="operations"></a>
 

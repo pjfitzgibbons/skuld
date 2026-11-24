@@ -335,9 +335,12 @@ window inherited: a window opened by `code` from inside a Claude session carries
 `CLAUDE_CODE_CHILD_SESSION` and `CLAUDE_PID`, and a Claude started with them never registers, so
 `claude agents --json` wouldn't list it. `CLAUDE_CONFIG_DIR` is kept. It says where Claude keeps
 its config and conversations, not which session it belongs to, and the check for an earlier
-session reads it. The window never closes an issue's terminals. When a key
-leaves the issues file, the issue leaves the Issues view, and its `Claude <KEY>` and `Shell <KEY>`
-terminals stay until the human closes them, since `plan done` is often run in one of them.
+session reads it. The window closes an issue's terminals and tabs only when Done asks
+(§7.3). The extension's `done` link handler does the closing, and the link carries the key only. It
+closes the issue's `Shell <KEY>`, `Claude <KEY>` and `Review <KEY>` terminals, the PR's
+integrated-browser tab and the issue's tab, the ticket's editor tab for a store ticket or the Jira
+page's integrated-browser tab for a Jira issue. It closes a terminal only when its name is the
+issue's own. Each Claude terminal gets a clean close, Ctrl-C twice, and is never killed.
 
 **The machine config's `reviewer` names who reviews each round: `copilot` (the default, also when the key is absent) or `claude`.** With `copilot`, `pr` asks Copilot to review a new PR and again when a push moved the PR's branch, `gh pc` asks for it on the PR it opens, and Claude's review is not started. With `claude`, `pr` starts Claude's review and never asks Copilot. `pr`, `gh pc` and `gh pb` read the one field, and `pr` prints the reviewer it asked. A value other than the two refuses `pr` before the commit, naming `reviewer`. A request that fails never fails `pr`: it prints why and the command to ask by hand. One round has one reviewer.
 
@@ -481,16 +484,26 @@ again (§8).
 
 The finish is the squash merge. The PR's subject includes the key (e.g. `Add X (CIAM-123)`).
 
-Done shows once a PR for the issue's branch is found and merged. It removes the issue's worktree and
-its issue workspace file, brings the main checkout's base up to the merge, deletes the branch, and notes
-the PR and its merge commit on the issue: an ADF comment in Jira, a `## Log` line in a ticket.
+Done shows once a PR for the issue's branch is found and merged. It closes the issue's terminals
+(`Shell <KEY>`, `Claude <KEY>` and `Review <KEY>`) and the PR's browser tab, removes the issue's
+worktree and its issue workspace file, brings the main checkout's base up to the merge, deletes the
+branch, and notes the PR and its merge commit on the issue: an ADF comment in Jira, a `## Log` line
+in a ticket. It then closes the issue's tab and, for a store ticket, sets `status: done` and
+`closed:` and runs the store's `scripts/index.py`.
 
-**Done never changes an issue's status.** `lib/done.py` contains no call to a transition. The
+**Done refuses when the current working directory is inside the issue's worktree.** The refusal is
+one of Done's checks, made before any change, and it names the worktree.
+
+**Done closes windows through the extension.** The terminals and tabs belong to the plan window, and
+the extension's `done` link handler is the only code that reaches them. Done requests it with
+`code --open-url`, and the link carries the key only (§7.1). With VS Code unreachable, Done prints
+each window step it skipped and still does the ticket and the reindex.
+
+**Done never changes a Jira issue's status.** `lib/done.py` contains no call to a transition. The
 human's Claude Code `PreToolUse` hook also blocks any Bash command recognized as moving a Jira issue
 to a terminal status (Done, Closed, Cancelled, Resolved), so a hand-run command can't do it from
-inside a Claude session either. Done's last step prints the close note (`closeNote(key)`): for Jira,
-`Close CIAM-123 in Jira` with the browse URL; for a ticket, the file to set `status: done` in. Done
-never calls `showUrl()`; the printed line is what points the human at the issue.
+inside a Claude session either. A Jira issue gets the window steps only, and no ticket edit and no
+reindex. A store ticket is the store's own record, so Done sets its status.
 
 Done accepts an issue that is in progress or already closed, reasoning from Jira's
 `statusCategory` or the ticket's `status`, since Jira's Done-category status names vary by issue
@@ -499,8 +512,7 @@ type.
 It checks everything before it changes anything, and Done again finishes what a stopped one left
 ([failure-modes.md, *Done*](failure-modes.md)). Done also removes the issue from the issues file
 (`term.removeIssue(key)`), its worktree from the plan workspace file and its line from the pulses
-file. The issue leaves the Issues view, and its terminals stay open until the human closes them
-(§7.1). The ticket store's folder stays in the plan workspace.
+file. The issue leaves the Issues view. The ticket store's folder stays in the plan workspace.
 
 <a id="tool-commits"></a>
 

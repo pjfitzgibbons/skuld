@@ -16,6 +16,7 @@ import secrets
 import shlex
 import stat
 import sys
+import time
 from contextlib import contextmanager
 from urllib.parse import quote, urlencode, urlparse
 
@@ -467,6 +468,64 @@ def reviewLink(key, roundNumber, token):
 def startReview(key, roundNumber, token, workspaceFile=None):
     for command, args in linkCommands(reviewLink(key, roundNumber, token), workspaceFile):
         run(command, args, os.getcwd())
+
+
+# --- Plan done's teardown in the plan window (SK-0108) ---
+#
+# Done's links carry the key only: /done has the window close the issue's terminals and its PR's
+# browser tab, /done-tab the issue's own tab. The PR's URL goes in the issue's workspace file as
+# plan.prUrl, where the handler reads it with the ticket's path. The window runs a link after
+# `code --open-url` returns, so it writes what it did to <KEY>.done-result.json beside that file,
+# and Done waits for it: the worktree can't go while a terminal is still in it.
+DONE_WAIT_SECONDS = 60
+DONE_POLL_SECONDS = 0.2
+
+
+def doneLink(route, key):
+    return planWindowLink(route, {"key": key})
+
+
+def doneResultPath(key, workspaceDir=None):
+    return os.path.join(expandHome(workspaceDir or DEFAULT_WORKSPACE_DIR), f"{key}.done-result.json")
+
+
+# Records the PR's URL in key's workspace file. A missing file leaves nothing to record in, and the
+# window then says it has no PR URL.
+def recordPrUrl(key, url, workspaceDir=None):
+    path = workspaceFilePath(key, workspaceDir)
+    try:
+        with open(path, "r", encoding="utf8") as f:
+            workspace = json.load(f)
+    except FileNotFoundError:
+        return
+    workspace.setdefault("settings", {})["plan.prUrl"] = url
+    writeWorkspaceFile(path, workspace)
+
+
+# Asks the plan window to run route for key, and returns the lines it reports, one per step. Raises
+# RuntimeError when the window can't be reached, or says nothing within wait seconds.
+def askWindow(route, key, workspaceDir=None, wait=DONE_WAIT_SECONDS):
+    result = doneResultPath(key, workspaceDir)
+    removeIfThere(result)
+    try:
+        for command, args in linkCommands(doneLink(route, key), planWorkspacePath(workspaceDir)):
+            run(command, args, os.getcwd())
+    except (RuntimeError, OSError) as error:
+        raise RuntimeError(f"VS Code wasn't reached ({error})") from error
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
+        try:
+            with open(result, "r", encoding="utf8") as f:
+                answer = json.load(f)
+        except (FileNotFoundError, ValueError):
+            answer = {}
+        # A late answer to an earlier ask is not this one's.
+        if answer.get("route") != f"/{route}":
+            time.sleep(DONE_POLL_SECONDS)
+            continue
+        removeIfThere(result)
+        return answer["lines"]
+    raise RuntimeError(f"the plan window didn't answer within {wait} seconds")
 
 
 # Prints url, then opens it in key's window. Every step after the print is best-effort: the printed

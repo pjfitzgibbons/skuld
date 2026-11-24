@@ -1,17 +1,18 @@
-# Finishing an issue once its PR has merged: its worktree and branch gone, the main checkout's base
-# at the merge, and a comment on the issue linking the merge, with a reminder to close it by hand.
-# Ported from lib/done.js. Faithful, behavior-preserving port: no change in logic. Each step runs
-# only when it has something to do, so a Done that stopped part way is finished by the next, and a
-# second Done changes nothing.
+# Finishing an issue once its PR has merged: the issue's terminals and browser tabs in the plan
+# window closed, its worktree and branch gone, the main checkout's base at the merge, a comment on the
+# issue linking the merge, and a store ticket set to done and the store reindexed. A Jira issue is
+# left for Peter to close by hand. Ported from lib/done.js. Each step runs only when it has something
+# to do, so a Done that stopped part way is finished by the next, and a second Done changes nothing.
 #
 # INVARIANT (decision #5): Done never transitions the Jira issue, to Done or anything else. Peter's
 # PreToolUse hook already blocks any Bash command that looks like it moves an issue to a terminal
 # status, and a terminal transition needs a human regardless -- Jira issues can carry required-field
 # prompts or workflow conditions on close that only a person reviewing the issue can satisfy. So
-# finish() has no status write at all: it posts an ADF comment (jira.addComment) linking the PR and
-# merge commit, and its last note is the literal string "Close <KEY> in Jira: <browse URL>" for
+# finish() has no Jira status write at all: it posts an ADF comment (jira.addComment) linking the PR
+# and merge commit, and its last note is the literal string "Close <KEY> in Jira: <browse URL>" for
 # Peter to act on himself. No function in this file calls jira.transition, and none should ever be
-# added that does.
+# added that does. A store ticket is the repo's own file, not Jira's: Done sets its `status: done`
+# (jira.close) and runs the store's index (jira.reindex).
 import json
 import os
 import re
@@ -30,6 +31,7 @@ from .start import (
     worktreeDir,
     worktrees,
 )
+from .fileissues import isFileBacked
 from .ship import prLink, unsentIn
 from . import pulses, term
 
@@ -242,7 +244,7 @@ def checkMerged(dir, pr, removing, disposable):
 # FIRST here, and the PR lookup (prFromBranch) moves after it, inside finishIn, once a branch name
 # is in hand. If no worktree and no branch for the key can be found at all, there is nothing to
 # resolve a PR from, and finish() must refuse rather than guess at a branch name.
-def finish(jira, checkouts, key, view=None, disposable=None, typeMap=None, issuesFile=None, cwd=None, pickRepo=None, workspaceDir=None, pulsesFile=None):
+def finish(jira, checkouts, key, view=None, disposable=None, typeMap=None, issuesFile=None, cwd=None, pickRepo=None, workspaceDir=None, pulsesFile=None, askWindow=None):
     if view is None:
         view = prFromBranch
     if disposable is None:
@@ -251,6 +253,9 @@ def finish(jira, checkouts, key, view=None, disposable=None, typeMap=None, issue
         typeMap = DEFAULT_TYPE_MAP
     if cwd is None:
         cwd = os.getcwd()
+    if askWindow is None:
+        askWindow = lambda route, key: term.askWindow(route, key, workspaceDir)
+    askWindow = unreachableOnce(askWindow)
     checkId(key, "Done")
     issue = jira.issue(key)
     # The panel's row can be older than the issue.
@@ -265,6 +270,8 @@ def finish(jira, checkouts, key, view=None, disposable=None, typeMap=None, issue
     found = existingWorktree(porcelain, key, dir, "Done", typeMap)
     branch = (found["branch"] if found else None) or branchForKey(checkout, key, typeMap)
     if not branch:
+        if alreadyDone(issue):
+            return finishedBefore(jira, askWindow, key, common)
         raise RuntimeError(f"{key} has no worktree and no branch found for it; Ship it first")
 
     pr = view(checkout, branch)
@@ -273,13 +280,49 @@ def finish(jira, checkouts, key, view=None, disposable=None, typeMap=None, issue
     release = lock(common, key, "Done")
     result = {"dir": None, "notes": []}
     try:
-        finishIn(jira, key, project, checkout, common, pr, found, porcelain, result, disposable, typeMap, issuesFile, workspaceDir, pulsesFile)
+        finishIn(jira, key, project, checkout, common, pr, found, porcelain, result, disposable, typeMap, issuesFile, workspaceDir, pulsesFile, cwd, askWindow)
         return result
     except Exception as error:
         error.result = result
         raise
     finally:
         release()
+
+
+# Has an earlier Done finished issue? A store ticket it closed is in the done category; a Jira issue
+# keeps its status, but carries the "merged as" note Done posted.
+def alreadyDone(issue):
+    if issue["fields"]["status"]["statusCategory"]["key"] == "done":
+        return True
+    comments = (issue["fields"].get("comment") or {}).get("comments") or []
+    return any("merged as [" in json.dumps(c.get("body") or "") for c in comments)
+
+
+# A Done on an issue an earlier Done finished, whose worktree and branch are gone: nothing is left to
+# remove, so only the ticket's tail runs, each step a no-op once done.
+def finishedBefore(jira, askWindow, key, common):
+    release = lock(common, key, "Done")
+    try:
+        return {"dir": None, "notes": [f"{key} is already done; its worktree and branch are gone."] + closeTicket(jira, askWindow, key)}
+    finally:
+        release()
+
+
+# askWindow that, once it has failed, fails every later ask at once with the same error, so a window
+# that didn't answer is waited for once.
+def unreachableOnce(askWindow):
+    failures = []
+
+    def ask(route, key):
+        if failures:
+            raise failures[0]
+        try:
+            return askWindow(route, key)
+        except RuntimeError as error:
+            failures.append(error)
+            raise
+
+    return ask
 
 
 # A branch matching the key's pattern, local or on origin, when no worktree holds one: the issue may
@@ -320,7 +363,61 @@ def issueWorktreePath(resolved, checkout, key):
     return worktreeDir(checkout, key)
 
 
-def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result, disposable, typeMap=None, issuesFile=None, workspaceDir=None, pulsesFile=None):
+# Is path the folder dir, or inside it?
+def isInside(path, dir):
+    path, dir = os.path.realpath(path), os.path.realpath(dir)
+    return os.path.commonpath([path, dir]) == dir
+
+
+# Asks the plan window to run route for key, and returns its lines, one per step. A window that
+# can't be reached or doesn't answer skips every step it was asked for: one line each, naming what
+# to close by hand, so Done carries on with the steps that need no window.
+def closeInWindow(askWindow, route, key, byHand):
+    try:
+        return askWindow(route, key)
+    except RuntimeError as error:
+        return [f"skipped: {what}: {error}; {todo}" for what, todo in byHand]
+
+
+# Steps 1 to 3: the Shell terminal, then Claude's and the review's after a clean close, then the PR's
+# tab. The PR's URL goes into the workspace file the window reads, since the link carries the key only.
+def closeTerminalsAndPrTab(askWindow, key, prUrl, workspaceDir):
+    try:
+        term.recordPrUrl(key, prUrl, workspaceDir)
+    except (OSError, ValueError):
+        pass  # the window then says it has no PR URL to close a tab by
+    return closeInWindow(askWindow, "done", key, [
+        (f"Shell {key} terminal", "close it by hand"),
+        (f"Claude {key} terminal", "press Ctrl-C twice in it, then close it by hand"),
+        (f"Review {key} terminal", "press Ctrl-C twice in it, then close it by hand"),
+        ("the PR's browser tab", f"close the tab on {prUrl}"),
+    ])
+
+
+# Steps 4 to 6: a store ticket is set done, its tab closed, the store reindexed; a Jira issue gets
+# Done's usual "close it in Jira" note and its page's tab closed, and no status or index step. A
+# ticket write that fails is a line naming what to do by hand, and the steps after it still run.
+def closeTicket(jira, askWindow, key):
+    ticket = jira.browseUrl(key)
+    if isFileBacked(key):
+        lines = [storeStep(f"setting {key} done", f"set status: done and closed: in {ticket}", jira.close, key)]
+        lines += closeInWindow(askWindow, "done-tab", key, [("the ticket's editor tab", f"close the tab on {ticket}")])
+        lines.append(storeStep("the index", "run scripts/index.py in the store", jira.reindex))
+        return lines
+    lines = [jira.closeNote(key)]
+    lines += closeInWindow(askWindow, "done-tab", key, [("the Jira page's browser tab", f"close the tab on {ticket}")])
+    lines.append(f"skipped: no store index to run, {key} is a Jira issue.")
+    return lines
+
+
+def storeStep(name, byHand, action, *args):
+    try:
+        return action(*args)
+    except (RuntimeError, OSError) as error:
+        return f"failed: {name}: {error}; {byHand}."
+
+
+def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result, disposable, typeMap=None, issuesFile=None, workspaceDir=None, pulsesFile=None, cwd=None, askWindow=None):
     if typeMap is None:
         typeMap = DEFAULT_TYPE_MAP
     notes = result["notes"]
@@ -362,6 +459,11 @@ def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result,
         tree = next((t for t in trees if t["dir"] == resolved["dir"]), None)
         if tree and tree.get("locked"):
             raise RuntimeError(f'{resolved["dir"]} is locked; run git worktree unlock {resolved["dir"]}, then Done again')
+
+    # The Shell terminal is removed with the worktree's folder, so a Done run from inside it stops
+    # before anything changes.
+    if resolved and not resolved["main"] and cwd and isInside(cwd, resolved["dir"]):
+        raise RuntimeError(f"{cwd} is inside {key}'s worktree {resolved['dir']}; run plan done from the main checkout or any other folder")
 
     # The main checkout moves to the base only from the issue's branch; on any other, Peter's work
     # stays checked out, and only the base is brought up to date, unless another worktree has it.
@@ -433,6 +535,10 @@ def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result,
         git(checkout, "update-ref", f"refs/heads/{base}", target, local)
         notes.append(f"Left {checkout} on {current or 'a detached HEAD'}, and brought {base} up to date.")
 
+    # Steps 1 to 3: a terminal left in a removed folder keeps running there, so the window closes
+    # the issue's terminals and its PR's tab first.
+    notes.extend(closeTerminalsAndPrTab(askWindow, key, pr["url"], workspaceDir))
+
     if resolved and not resolved["main"]:
         # git removes a worktree whose folder was deleted by hand as well, and refuses one with
         # untracked files; ignored ones, such as .tmp/ and .venv, go with it. Start's setup marker
@@ -494,7 +600,7 @@ def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result,
     if not noted:
         jira.addComment(key, jira.textComment(doneNote(pr)))
         notes.append(f"Added the note to {key}.")
-    notes.append(jira.closeNote(key))
+    notes.extend(closeTicket(jira, askWindow, key))
 
     # Rule 4: the issue is finished, so it leaves the issues file that Start/Open added it to
     # (term.addIssue), its colour leaves the pulses file, and its worktree's folder leaves the plan
