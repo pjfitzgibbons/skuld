@@ -75,14 +75,14 @@ instead).
 
 Four independent checks, each catching a different point the text could reach GitHub from:
 
-- `pr.sh` refuses to commit if `.tmp/KEY/commit.txt` carries a `#<word>` right after whitespace or
+- `pr` refuses to commit if `.tmp/KEY/commit.txt` carries a `#<word>` right after whitespace or
   line-start on a line that also names a Jira key.
-- `pr.sh` also scans the whole commit range it's about to push (`git log --format=%B HEAD --not
+- `pr` also scans the whole commit range it's about to push (`git log --format=%B HEAD --not
   --remotes=origin`), not only the message it just wrote to `commit.txt` — so a smart commit
   already on the branch some other way (`git commit -am`, an amend, a squash, a cherry-pick) is
   caught too, and the scan always runs rather than being skipped when `origin/<base>` is not a
   local ref.
-- `ghbody.sh` refuses `gh pr create`/`gh pr edit` the same way, checking the PR title (`pr-create`,
+- `ghbody` refuses `gh pr create`/`gh pr edit` the same way, checking the PR title (`pr-create`,
   from the branch's first commit subject) and `pr-body.md`'s content.
 - Claude's own `no_terminal_jira_transition.py` `PreToolUse` hook blocks two shapes of the same Bash
   call: the inline text itself (`git commit -m`/`--message`, or `gh pr create|edit --title|--body`,

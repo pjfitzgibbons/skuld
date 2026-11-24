@@ -51,7 +51,7 @@ GIT_COMMIT = r"\bgit\b(?:\s+(?:-C\s+\S+|-c\s+\S+))*\s+commit\b"
 # N2/M5/N11: a command that writes a commit message or a PR title/body directly on the command
 # line -- git commit -m/-am/--message (a combined short-flag cluster like "-am" still carries "m"'s
 # meaning: pick the index up AND take the message from the command line), or gh pr create/edit's
-# -t/--title/-b/--body (not --body-file/-F, which pr.sh and ghbody.sh already check at the file
+# -t/--title/-b/--body (not --body-file/-F, which pr and ghbody already check at the file
 # itself, and which this hook now also reads below -- the negative lookahead keeps "--body-file"
 # from matching "--body"). This only catches the inline forms Claude could type straight into a
 # Bash call; the file-based forms are handled by FILE_FLAG/GH_FILE_FLAG below.
@@ -64,10 +64,10 @@ SMART_COMMIT_VERB = re.compile(
 # N2/N11: the message/title/body text lives in a FILE for these forms -- git commit -F/--file
 # <path> (also attached as -Fpath, -F=path, or --file=path), or gh pr create/edit's -F/--body-file
 # <path> (also --body-file=path) -- so there is no inline text for SMART_COMMIT_VERB to see at
-# all. pr.sh and ghbody.sh are the real guarantee for their own files (GUIDE.md); this is
+# all. pr and ghbody are the real guarantee for their own files (GUIDE.md); this is
 # belt-and-braces for whatever path Claude happens to pass on the command line. A quoted path has
 # its quotes stripped; a missing file is not an error here (it may not exist yet, or may be a path
-# this hook can't resolve) -- silently allow and let pr.sh/ghbody.sh catch it once it does exist.
+# this hook can't resolve) -- silently allow and let pr/ghbody catch it once it does exist.
 # The captured value "-" (git commit -F- / --file=-) means "read the message from stdin", which
 # for an inline Bash call is a heredoc right there in the command text -- _file_flag_text() reads
 # that instead of a file.
@@ -135,7 +135,7 @@ def _unquote(path: str) -> str:
 def _file_flag_text(command: str, cwd: str) -> str | None:
     """N2/N11: the text a -F/--file or -F/--body-file flag points at. Normally that's a path, read
     from disk relative to cwd; None if neither flag is present or the file can't be read (missing,
-    not a Jira near-miss -- pr.sh/ghbody.sh are the real guarantee for files that do exist by the
+    not a Jira near-miss -- pr/ghbody are the real guarantee for files that do exist by the
     time they run). But "-F-"/"--file=-" means "read the message from stdin", and for an inline
     Bash call the only way that stdin is actually fed is a heredoc right there in the same command
     string (git commit -F- <<EOF ... EOF) -- there's no file on disk at all, so read the heredoc

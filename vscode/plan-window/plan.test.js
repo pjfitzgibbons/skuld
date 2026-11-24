@@ -197,7 +197,7 @@ test("a review link carrying a path is refused, its path never read", () => {
 });
 
 test("the round's request path is review.py's rounds_folder() layout", () => {
-  const source = fs.readFileSync(path.join(__dirname, "../../skills/jira-issues/scripts/review.py"), "utf8");
+  const source = fs.readFileSync(path.join(__dirname, "../../bin/pr-helpers/review.py"), "utf8");
   assert.match(source, /return Path\(root\) \/ "\.tmp" \/ key \/ "rounds"\n/);
   assert.equal(windowPlan.roundRequestPath("/w", "SK-9", "3"), "/w/.tmp/SK-9/rounds/3/request.md");
 });
