@@ -182,6 +182,7 @@ The clients:
 - **`pr`** commits, pushes, opens or updates the PR, posts review replies, and cleans up after a
   merge.
 - **`issue-check`** runs the checker over the store or the files named (§7.7).
+- **`issue-create`** and **`issue-update`** write ticket files, the only commands that do (§7.7).
 - **`issue-watch`** is the watcher: it commits and pushes the store (§7.7).
 - **`plan archive`** moves closed issues to `archive/` (§7.5).
 - **`jira-get`** sends one read-only GET with `~/.netrc` auth, so an agent can read Jira issues
@@ -289,8 +290,8 @@ moves the issue to "in progress".
   the configured target (default `"In Progress"`), and posts it. Issue types in `CIAM` don't share
   one status scheme, so Start's "already started" check reasons from `statusCategory.key`
   (`new`/`indeterminate`/`done`), never from a status name.
-- **Store.** `FileStore` sets `status: in-progress` in the front matter, leaving the rest of the
-  file untouched.
+- **Store.** `FileStore` runs `issue-update <KEY> status=in-progress`, which sets the one front-matter
+  line and leaves the rest of the file untouched (§7.7).
 
 Either way, Start reads the issue back and refuses if its status isn't the target (§8). It then logs
 "Started" on the issue (an ADF comment in Jira, a `## Log` line in a ticket) and brings the issue
@@ -599,26 +600,39 @@ watcher runs it before each commit and stages the result. A pre-commit hook runs
 `scripts/index.py --check` and refuses a commit whose `INDEX.md` is stale.
 
 `FileStore` is the `IssueStore` adapter for it. It answers for every prefix `store.yml` lists, and
-reads `active/` and `archive/` together. A ticket's front matter holds `key`, `title`, `status`
+reads `active/` and `archive/` together. A ticket's front matter opens with `ticket_id`, the file
+name's key, so the key shows with the rest of the data, and holds `title`, `status`
 (`open`, `in-progress`, `done`, `wontfix`), `type`, `opened`, `closed`, `milestone`, `ordinal`,
 `after`, `parent`, `blocked_by`, `host` and `points`, a Fibonacci story-point estimate (1 2 3 5 8 13); its body is the house outline (Task, Guardrails,
 Lenses, Done), then `## Log`, one dated line per thing `plan` did. `docs/issue-format.md` is the
 spec.
 
 **The checker.** `issue-check` (stdlib Python) checks every file against the spec and exits
-non-zero on any error, naming file, line and rule: front matter keys, types and enums; the key
-against the file name and `store.yml`; no duplicate keys; `parent` and `blocked_by` naming tickets
+non-zero on any error, naming file, line and rule: front matter keys, types and enums; `ticket_id`
+against the file name and `store.yml`; a file without `ticket_id` takes the file name's key; no duplicate keys; `parent` and `blocked_by` naming tickets
 that exist, with no `blocked_by` cycle; `closed` set exactly when the ticket is closed; milestones
 that exist and aren't closed under an open ticket; the body's outline and log lines. Every writer,
 `plan`, a person or an agent, produces files it accepts. `FileStore` runs the same checks before
 every write, so `plan` can't produce a file the watcher would refuse.
 
-**Writing tickets.** `plan new <PREFIX> "<title>"` takes the next number, fills skuld's
-`templates/issue.md`, writes the ticket, checks it and opens it in `$EDITOR`. `plan set <KEY>
-field=value…` changes front-matter fields, all or nothing, checked first. Nobody writes front matter
-by hand. A transition edits the one `status` line and reads the file back (§7.1); a log entry
-appends a dated line under `## Log`. `FileStore` answers in the same shapes `Jira` does, so Start,
-Ship and Done have no store-specific branch.
+**Writing tickets.** Two commands write ticket files, and nothing else does. `issue-create "<title>"
+[field=value…]` takes the next free key and ordinal and writes the ticket: `ticket_id` first, the
+house outline (Task, Guardrails, Lenses, Done) and a `## Log` with `Filed.`. `issue-update <KEY>
+[field=value…] [--log "text"]` changes front-matter fields and appends a dated line under `## Log`.
+Each writes the whole new text to a temporary file beside the ticket and renames it over the ticket,
+so a failed write leaves the file as it was. Each prints the path it wrote, refuses a Jira key, and
+refuses an unknown field or a value that is not one line, naming it, with nothing written;
+`issue-update` never adds `ticket_id` to a ticket that has none. Values are checked against the
+field: `status` and `type` against their enums, `ordinal` a whole number, `opened` and `closed` ISO
+dates, and none may hold a newline or " #". Each runs `store-index` after a
+write, and says so when it cannot. Start's transition (§7.1), its "Started" line and Done's closing note
+reach a ticket through `FileIssues`, which calls `issue-update`'s code; Ship and `pr` write no ticket. A
+person and Claude run the same commands, and nobody writes front matter by hand. `plan new <PREFIX>
+"<title>"` calls `issue-create`'s code, which fills `templates/issue.md`, then checks the file with
+`outline.py` and opens it in `$EDITOR`; a prefix `store.yml` does not list is refused, naming
+`store.yml`. `plan set <KEY> field=value…` calls `issue-update`'s code, so it changes all its fields or
+none, and `blocked_by+=KEY` and `blocked_by-=KEY` add or remove one blocker. `FileStore` answers in the same shapes
+`Jira` does, so Start, Ship and Done have no store-specific branch.
 
 **The watcher.** `issue-watch` runs under launchd and watches `active/`, `archive/`, `milestones/`
 and `reviews/`. After a quiet period (`debounceSeconds` in `store.yml`), so a mass edit becomes

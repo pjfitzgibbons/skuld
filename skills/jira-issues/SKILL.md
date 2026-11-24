@@ -59,6 +59,10 @@ When the work is done and tested, run `/ponytail:ponytail-review` on the uncommi
    ```
 3. Give Peter the same command without `--check`, as `! new_issue .tmp/<KEY>/<slug>.md`. It creates the issue (via CIAM's required-fields helper, `~/.claude/skills/jira-ciam-create/create-ciam-issue.sh`, when `project` is `CIAM`), adds its issue links and reads it back. A second run finds the issue by its summary and adds only the relations still missing.
 
+## Changing a store ticket
+
+A store ticket (`SK-<nnnn>`) is written by two commands and no other way: `issue-create "<title>" [field=value ...]` makes a new one, with `ticket_id` first, the outline and a `## Log` with `Filed.`; `issue-update <KEY> [field=value ...] [--log "text"]` sets front-matter fields and appends a dated `## Log` line. Never edit a ticket file's front matter or `## Log` by hand. Each prints the path it wrote; an unknown field, a Jira key or a value that is not one line refuses, naming it, and writes nothing. `issue-update` does not add `ticket_id` to a ticket that has none. Both run `store-index` after a write. Neither commits: the store's watcher does.
+
 ## Answering a PR review
 
 How the reviewer co-signs, records a disposition per file, and resolves a verbatim-applied fix
