@@ -1,0 +1,8 @@
+# The canonical project list, shared by every machine that clones skuld.
+projects:
+  - key: SK
+    name: Skuld
+    repos: # remotes, never paths
+      - git@github.com:pjfitzgibbons/skuld.git
+archiveAfterDays: 14
+debounceSeconds: 5

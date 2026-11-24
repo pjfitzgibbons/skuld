@@ -8,15 +8,14 @@
 #
 # Three decisions this implements (2026-11-05):
 #  1. Every plan command (list/picker, view, start/open, ship, done) works on a SK key.
-#  2. Writes edit the file: Start's transition sets frontmatter `status: in-progress`, then reads
-#     it back (transition()), the same refuse-if-it-didn't-take guard Jira's own transition()
-#     uses. Every addComment call appends a dated `- YYYY-MM-DD: <text>` line under a `## Log`
-#     heading at the end of the file (created if absent). Done never changes status -- same hard
-#     rule as Jira (docs/architecture.md §7.3); the human sets `status: done` by hand.
+#  2. Writes go through lib/issue_update.py, the one writer of an issue file (the `issue-update`
+#     command): Start's transition runs `status=in-progress`, then reads it back (transition()),
+#     the same refuse-if-it-didn't-take guard Jira's own transition() uses. Every addComment call
+#     is an `issue-update --log` line under the `## Log` heading. Done never changes status --
+#     same hard rule as Jira (docs/architecture.md §7.3); the human sets `status: done`.
 #  3. `plan list`/the picker merge Jira's JQL results with every SK file whose status is `open` or
 #     `in-progress` (lib/cli.py's issueRows()).
 import re
-from datetime import date
 from pathlib import Path
 
 from .issuekeys import KEY_RE, projectOf
@@ -54,6 +53,7 @@ TARGET_TO_STATUS_VALUE = {"In Progress": "in-progress"}
 # anything else -> chore. bug -> Bug (fix); task and question -> Task (feat).
 TYPE_NAME_MAP = {"bug": "Bug", "task": "Task", "question": "Task"}
 
+# Shared with lib/issue_update.py, which edits the front matter and Log this module reads.
 FRONTMATTER_RE = re.compile(r"^---\n(.*?\n)---\n?(.*)$", re.DOTALL)
 LOG_HEADING_RE = re.compile(r"(?m)^## Log\s*$")
 LOG_LINE_RE = re.compile(r"^-\s*(\d{4}-\d{2}-\d{2}):\s*(.*)$")
@@ -132,31 +132,6 @@ def _parse(text):
     return front, title, body, entries
 
 
-# Replaces frontmatter field's value in text (the "field: ..." line inside the --- block), leaving
-# everything else -- comments, spacing, the rest of the file -- untouched. Raises if the field
-# isn't already there: a transition never invents a field issues/README.md doesn't define.
-def _setField(text, field, value):
-    m = FRONTMATTER_RE.match(text)
-    if not m:
-        raise RuntimeError("issue file has no --- frontmatter block")
-    block = m.group(1)
-    pattern = re.compile(rf"(?m)^{re.escape(field)}:.*$")
-    if not pattern.search(block):
-        raise RuntimeError(f'issue file has no "{field}" field in its frontmatter')
-    new_block = pattern.sub(f"{field}: {value}", block, count=1)
-    start, end = m.span(1)
-    return text[:start] + new_block + text[end:]
-
-
-# Appends a dated log line at the true end of the file, under a ## Log heading -- created, once,
-# if the file doesn't have one yet.
-def _appendLog(text, line_text):
-    entry = f"- {date.today().isoformat()}: {line_text}"
-    if LOG_HEADING_RE.search(text):
-        return text.rstrip("\n") + "\n" + entry + "\n"
-    return text.rstrip("\n") + "\n\n## Log\n" + entry + "\n"
-
-
 # Makes the store's folders that are missing and returns the ones it made. Only creates: the
 # store's root must already exist (it is the store's git checkout), and nothing in it is moved,
 # rewritten or deleted, so a second run makes nothing.
@@ -196,26 +171,11 @@ class FileIssues:
         self.dir = Path(d).resolve()
         self.settings = {"dir": str(self.dir)}
 
-    # Every file in active/ and archive/ matching pattern. A ticket at the store's top level is
-    # refused, naming the file: it belongs in active/ (docs/architecture.md §7.7).
-    def _ticketFiles(self, pattern):
-        strays = sorted(self.dir.glob(f"{PROJECT}-*.md"))
-        if strays:
-            raise RuntimeError(f"{strays[0]} is at the store's top level; move it to {self.dir / 'active'}/")
-        return [p for folder in TICKET_FOLDERS for p in (self.dir / folder).glob(pattern)]
-
+    # The ticket file for key, in the store's folder, its active/ or its archive/.
     def _path(self, key):
-        key = canonicalKey(key)
-        matches = sorted(self._ticketFiles(f"{key}-*.md"))
-        if not matches:
-            exact = self._ticketFiles(f"{key}.md")
-            if exact:
-                return exact[0]
-            raise RuntimeError(f"no issue file for {key} in {self.dir}")
-        if len(matches) > 1:
-            names = ", ".join(p.name for p in matches)
-            raise RuntimeError(f"more than one issue file matches {key} in {self.dir}: {names}")
-        return matches[0]
+        from .issue_update import ticketPath  # issue_update imports this module, so not at the top
+
+        return ticketPath(self.dir, canonicalKey(key))
 
     # Every SK file whose status is open or in-progress, in the shape lib/jira.py's Jira.list()
     # returns, so lib/cli.py's issueRows() can concatenate the two lists untouched (decision #3).
@@ -226,8 +186,10 @@ class FileIssues:
     # order holds even past SK-9999, where the padding runs out). Glob order is irrelevant
     # here -- every candidate is parsed first, then the whole batch is sorted by workOrder().
     def list(self, jql=None):
+        from .issue_update import ticketFiles  # see _path()
+
         candidates = []
-        for path in self._ticketFiles(f"{PROJECT}-*.md"):
+        for path in ticketFiles(self.dir):
             key = _keyFromFilename(path.name)
             if not key:
                 continue
@@ -304,9 +266,10 @@ class FileIssues:
     # Sets frontmatter status, then reads the file back and refuses if it didn't take -- the same
     # guard Jira.transition() applies after its POST (decision #2).
     def transition(self, key, targetStatusName):
+        from .issue_update import updateTicket  # see _path()
+
         value = self.statusTransitionId(key, targetStatusName)
-        path = self._path(key)
-        path.write_text(_setField(path.read_text(encoding="utf8"), "status", value), encoding="utf8")
+        updateTicket(self.dir, canonicalKey(key), {"status": value})
         issue = self.issue(key)
         if issue["fields"]["status"]["name"] != targetStatusName:
             raise RuntimeError(
@@ -324,8 +287,9 @@ class FileIssues:
     # Appends a dated log line (decision #2). Accepts either an ADF doc (what textComment()
     # returns) or a plain string.
     def addComment(self, key, doc):
-        path = self._path(key)
-        path.write_text(_appendLog(path.read_text(encoding="utf8"), _flatten(doc)), encoding="utf8")
+        from .issue_update import updateTicket  # see _path()
+
+        updateTicket(self.dir, canonicalKey(key), {}, log=_flatten(doc))
 
     # What plan view/Start print instead of a Jira browse URL: the file itself.
     def browseUrl(self, key):

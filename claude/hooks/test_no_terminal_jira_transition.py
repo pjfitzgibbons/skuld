@@ -37,7 +37,7 @@ ALLOW = [
     ("commit with a hashtag, no key", 'git commit -m "fixes the thing #3"'),
     ("gh pr create title with a key, no hashtag", 'gh pr create --title "CIAM-9 adds the thing" --body-file b.md'),
     ("gh pr edit body-file flag isn't --body", 'gh pr edit --body-file b.md'),
-    ("git commit -F a file (checked by pr.sh itself, not this hook)", 'git commit -q -F .tmp/CIAM-9/commit.txt'),
+    ("git commit -F a file (checked by pr itself, not this hook)", 'git commit -q -F .tmp/CIAM-9/commit.txt'),
 ]
 
 BLOCK = [
@@ -126,7 +126,7 @@ class RuleTests(unittest.TestCase):
         self.assertIn("CIAM-9", reason)
 
     def test_git_commit_dash_F_file_missing_still_allows(self):
-        # pr.sh's own file-existence check and smart-commit scan are the real guarantee for a file
+        # pr's own file-existence check and smart-commit scan are the real guarantee for a file
         # this hook can't find (e.g. not yet written, or a path it can't resolve).
         with tempfile.TemporaryDirectory() as d:
             self.assertIsNone(hook.violation("git commit -q -F .tmp/CIAM-9/commit.txt", cwd=d))

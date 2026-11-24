@@ -82,6 +82,9 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #   claudeCommand  The `claude` CLI `plan agents` asks for its sessions (`claude agents --json`),
 #                  as a path, since the LaunchAgent's PATH doesn't hold it.
 #                  Default: "~/.local/bin/claude".
+#   reviewer       Who reviews each round `pr` ends: "copilot" or "claude". Read by pr and
+#                  ghbody (bin/pr-helpers/reviewer.py), which `pr`, `gh pc` and
+#                  `gh pb` run; a value other than the two refuses `pr`. Default: "copilot".
 #   serverPort     The local page server's port on 127.0.0.1 (lib/server.py, `plan serve`).
 #                  Default: 8765.
 def defaults():
@@ -100,6 +103,7 @@ def defaults():
         "workspaceDir": "~/.cache/plan/code-workspaces",
         "issueStore": None,
         "claudeCommand": "~/.local/bin/claude",
+        "reviewer": "copilot",
         "serverPort": 8765,
     }
 

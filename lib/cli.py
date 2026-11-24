@@ -5,6 +5,7 @@
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -17,6 +18,8 @@ from . import reviews as reviews_mod
 from . import serve as serve_mod
 from . import ship as ship_mod
 from . import start as startLib
+from . import issue_update as issue_update_mod
+from . import store_projects as store_projects_mod
 from . import term as term_mod
 from .issuekeys import ISSUE_KEY_PATTERN, KEY_RE, projectOf
 from .jira import Jira
@@ -637,6 +640,51 @@ def cmdPicker(cfg, argv0=None):
         raise RuntimeError(f"fzf exited {code}")
 
 
+# skuld's own list of the store's projects (docs/plan-file-issue-store.md §4.3).
+STORE_YML = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "store.yml")
+
+NEW_USAGE = 'usage: plan new <PREFIX> "<title>"'
+SET_USAGE = 'usage: plan set <KEY> field=value... [blocked_by+=KEY] [blocked_by-=KEY]'
+
+
+def openInEditor(path):
+    editor = os.environ.get("EDITOR")
+    if not editor:
+        print(f"EDITOR is not set; edit {path} by hand")
+        return
+    subprocess.run([*shlex.split(editor), str(path)])
+
+
+def refuseUnlistedPrefix(prefix):
+    listed = store_projects_mod.projectKeys(STORE_YML)
+    if prefix not in listed:
+        raise RuntimeError(f'"{prefix}" is not a project in {STORE_YML}; it lists {", ".join(listed)}')
+    if prefix != fileissues_mod.PROJECT:
+        raise RuntimeError(f'"{prefix}" is listed in {STORE_YML}, but only {fileissues_mod.PROJECT} tickets can be written')
+
+
+# `plan new <PREFIX> "<title>"`: the next ticket from templates/issue.md, written by issue-create's
+# code, checked with outline.py (findings go to stderr) and opened in $EDITOR.
+def cmdNew(cfg, args):
+    if len(args) != 2:
+        raise RuntimeError(NEW_USAGE)
+    prefix, title = args
+    refuseUnlistedPrefix(prefix)
+    path = issue_update_mod.createTicket(config_mod.issueStoreFrom(cfg), title)
+    print(path)
+    for finding in issue_update_mod.outlineProblems(path):
+        print(f"outline: {finding}", file=sys.stderr)
+    openInEditor(path)
+
+
+# `plan set <KEY> field=value...`: issue-update's code, all or nothing, checked first.
+def cmdSet(cfg, args):
+    key, fields, log, edits = issue_update_mod.parseArgs(args, SET_USAGE)
+    if log is not None or not (fields or edits):
+        raise RuntimeError(SET_USAGE)
+    print(issue_update_mod.updateTicket(config_mod.issueStoreFrom(cfg), key, fields, edits=edits))
+
+
 def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
@@ -645,6 +693,10 @@ def main(argv=None):
     rest = [fileissues_mod.canonicalKey(arg) for arg in argv[1:]]
     if not cmd:
         return cmdPicker(cfg)
+    if cmd == "new":
+        return cmdNew(cfg, argv[1:])
+    if cmd == "set":
+        return cmdSet(cfg, argv[1:])
     if cmd == "list":
         return cmdList(cfg)
     if cmd == "view":
@@ -669,4 +721,4 @@ def main(argv=None):
         return cmdInitStore(cfg)
     if KEY_RE.match(cmd):  # `plan CIAM-123` is shorthand for view
         return cmdView(cfg, fileissues_mod.canonicalKey(cmd))
-    raise RuntimeError(f'unknown command "{cmd}"; try: list, view, start, open, browse, review, ship, done, serve, pulse, agents, init-store')
+    raise RuntimeError(f'unknown command "{cmd}"; try: list, view, new, set, start, open, browse, review, ship, done, serve, pulse, agents, init-store')

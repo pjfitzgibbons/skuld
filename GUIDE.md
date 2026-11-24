@@ -134,13 +134,16 @@ macOS only. In order:
    ```sh
    ln -s "$(pwd)/bin/plan" ~/.local/bin/plan
    ln -s "$(pwd)/bin/jira-get" ~/.local/bin/jira-get
-   ln -s ~/.claude/skills/jira-issues/scripts/pr.sh ~/.local/bin/pr
+   ln -s "$(pwd)/bin/issue-create" ~/.local/bin/issue-create
+   ln -s "$(pwd)/bin/issue-update" ~/.local/bin/issue-update
+   ln -s "$(pwd)/bin/pr" ~/.local/bin/pr
+   ln -s "$(pwd)/bin/ghbody" ~/.local/bin/ghbody
    ln -s ~/.claude/skills/jira-issues/scripts/new_issue.py ~/.local/bin/new_issue
    ```
 
    `pr` collides with `/usr/bin/pr`, the Unix paginator. An interactive shell with `~/.local/bin`
    first finds the right one, but a login shell may not, so `plan` runs `pr` by path (the `pr`
-   key). `pr.sh` finds its sibling scripts through `realpath "$0"`, so it works through the link.
+   key). `pr` and `ghbody` find `bin/plan` and `bin/pr-helpers/` through `realpath "$0"`, so they work through the link.
 
 8. **gh aliases.** `gh alias import bin/gh-aliases.yml` adds `gh pc` and `gh pb` (§8).
 
@@ -244,8 +247,8 @@ decides the repo (§4).
 | --- | --- |
 | `plan list` | Print Next up in plan order, both trackers merged ([architecture §7.6](docs/architecture.md#ready-file)) |
 | `plan view <KEY>` | Print one issue; reads only |
-| `plan new <PREFIX> "<title>"` | Make a store ticket from the template, check it and open it in `$EDITOR` |
-| `plan set <KEY> field=value…` | Change a ticket's front matter, all or nothing, checked first; `blocked_by+=SK-0004` and `blocked_by-=SK-0004` add and remove one blocker |
+| `plan new <PREFIX> "<title>"` | Make a store ticket from `templates/issue.md` with `issue-create`'s code, check it with `outline.py` (findings print to stderr) and open it in `$EDITOR`; a prefix `store.yml` doesn't list is refused |
+| `plan set <KEY> field=value…` | Change a ticket's front matter with `issue-update`'s code, all or nothing, checked first (`status`, `type`, `ordinal`, dates, a `milestone` that has a file, `parent` and `blocked_by` keys that exist); `blocked_by+=SK-0004` and `blocked_by-=SK-0004` add and remove one blocker |
 | `plan milestone new\|set\|list` | Manage milestones, through the checker |
 | `plan start <KEY>`, `plan open <KEY>` | Start or Open (§4); one command, one code path |
 | `plan ship [KEY]` | Ship (§5); the key defaults to the current worktree's branch |
@@ -262,6 +265,8 @@ decides the repo (§4).
 | `plan init-store` | Make the store's missing folders (`milestones/`, `active/`, `archive/`, `reviews/`, `queries/`) at `issueStore`, printing each; refuses a missing store folder, changes no file, and a second run makes nothing |
 | `pr [done] [KEY]` | Send a round (§5) |
 | `plan review KEY` | Write the next review round's request and start Claude's review on it in the plan window's `Review KEY` terminal; `pr` runs it when a review is due (§5), and it is how to start one by hand |
+| `issue-create "<title>" [field=value…]` | Write a new ticket: the next free key and ordinal, `ticket_id` first, the outline and a `## Log` with `Filed.`; prints the path |
+| `issue-update <KEY> [field=value…] [--log "text"]` | Change a ticket's front-matter fields and append a dated `## Log` line, all or nothing; an unknown field refuses, naming it; prints the path. With `issue-create`, the only writers of a ticket file |
 | `issue-check [PATH…]` | Check ticket files, or the whole store; exits non-zero naming file, line and rule |
 | `issue-watch` | The store's watcher; launchd runs it |
 | `jira-get <path>` | One read-only Jira GET with `~/.netrc` auth, so an agent can read Jira without seeing the token |
@@ -291,9 +296,9 @@ runs only when it has something to do:
    has finished.
 6. **Move the issue to "in progress", and read it back.** Jira: `lib/jira.py` finds the
    transition whose target status matches the configured name (default `"In Progress"`), posts it,
-   and refuses if the read-back `statusCategory` isn't `indeterminate`. Store: `FileStore` sets
-   `status: in-progress` and reads the file back. Then "Started" is logged: an ADF comment in
-   Jira, a `## Log` line in the ticket.
+   and refuses if the read-back `statusCategory` isn't `indeterminate`. Store: `FileStore` runs
+   `issue-update <KEY> status=in-progress` and reads the file back. Then "Started" is logged: an ADF
+   comment in Jira, an `issue-update --log` line in the ticket's `## Log`.
 7. **Add the issue to the issues file and the plan workspace.** `term.addIssue(key)` appends
    `<KEY>` as a line of `issuesFile`, unless it is there already, through a temp file and a
    rename, so a reader never sees a half-written file. The key stays until Done removes it,
@@ -357,11 +362,11 @@ Rules the files follow:
   first commit subject as the PR title, the squash merge keeps it, and Jira's GitHub integration
   matches the key in it.
 - **The commit message ends `Assisted-by: Claude:<model>`; the PR body carries no attribution.**
-  `ghbody.sh` refuses a body containing `Assisted-by` or `Co-authored-by`, which is why `gh pc` is
+  `ghbody` refuses a body containing `Assisted-by` or `Co-authored-by`, which is why `gh pc` is
   used instead of `gh pr create --fill`.
 - **No Jira smart commits.** A `#<word>` beside an issue key (`#close`, `#comment`, `#time`) in a
   commit message, PR title or PR body would let Jira's GitHub integration transition or comment on
-  the issue. `pr.sh` and `ghbody.sh` refuse any line that names a key and carries a `#<word>` after
+  the issue. `pr` and `ghbody` refuse any line that names a key and carries a `#<word>` after
   whitespace or at the line's start, and the `no_terminal_jira_transition.py` hook refuses the same
   in a `git commit` or `gh pr` command typed directly.
 - **A reply file opens with an HTML comment** holding the thread's path, line, comment and diff
@@ -394,7 +399,7 @@ runs only when it has something to do, so `pr` is safe to repeat:
 | push | always | `GIT_TERMINAL_PROMPT=0 git push -u origin HEAD` |
 | PR | always | `gh pc` with no PR, else `gh pb` |
 | hand-off | always | records the PR on the branch's git config and prints its URL |
-| review | HEAD isn't the head of the last review's record, or there is no record, and no round is unfinished for HEAD (`review.py due`) | `plan review KEY`, which starts Claude's review in the plan window's `Review KEY` terminal and returns without waiting |
+| review | `reviewer` is `claude`, and HEAD isn't the head of the last review's record, or there is no record, and no round is unfinished for HEAD (`review.py due`) | `plan review KEY`, which starts Claude's review in the plan window's `Review KEY` terminal and returns without waiting |
 | round | `replies/` or `issue.md` exist | `pr_threads.py --post`, then `checklist.py`, after the push |
 
 `pr done` runs the merged-PR step and refuses an unmerged PR. The review is due from the record, not from what this push moved, so a `pr` that stopped after its
@@ -408,8 +413,17 @@ round again in its own folder at HEAD; `pr` prints that refusal. A review that c
 why and the command to start it by hand; the review never fails `pr`. The review starts straight after
 the PR and its URL, before the round's replies and ticks, so a failed send doesn't skip it. `pr`
 runs the `bin/plan` of the repo its own script is in, and the `plan` on `PATH` only when that file
-is missing, so the script and the CLI it calls are the same version. `pr` asks no one else to
-review: not Copilot, and `gh pc` and `gh pb` don't either.
+is missing, so the script and the CLI it calls are the same version.
+
+The machine config's `reviewer` (`~/.config/skuld/config.json`) chooses who reviews: `copilot`, the
+default and what a config without the key gets, or `claude`. Changing it is one edit, and changes the
+next `pr`. With `claude`, `pr` does what the rest of this section describes and never asks Copilot.
+With `copilot`, `pr` asks Copilot to review a new PR and asks again when the push moved the PR's
+branch, but not when nothing was pushed; `gh pc` asks for Copilot on the PR it opens; Claude's review
+isn't started. `pr`, `gh pc` and `gh pb` all read the field; there is no per-command flag. `pr` prints
+the reviewer it asked. A request that fails never fails `pr`: it prints why and the command to ask by
+hand (`gh pr edit <branch> --add-reviewer @copilot`). A value other than `copilot` and `claude`
+refuses `pr` before the commit, naming `reviewer`.
 
 ### Claude's review: how it runs and what it keeps
 
@@ -709,7 +723,7 @@ fast-forward to `origin/<base>`.
 
 The changes: fast-forward the base, `git worktree remove`, delete the workspace file (a warning if it won't go), delete every
 branch named for the issue whose tip is in the PR, note the PR and merge commit on the issue (an ADF
-comment in Jira, a `## Log` line in a ticket), remove the issue's lines from the issues file and the pulses file and its folder from the plan
+comment in Jira, an `issue-update --log` line in a ticket), remove the issue's lines from the issues file and the pulses file and its folder from the plan
 workspace (the ticket store's folder stays), and print the close note:
 
 ```text
@@ -802,9 +816,9 @@ checking a change. Neither runs in the plan window, whose integrated browser is 
 
 ## 8. The helpers
 
-All are stdlib Python or shell, in `skills/jira-issues/scripts/`.
+`pr`, `ghbody` and their Python helpers (`pr_threads.py`, `checklist.py`, `review.py`, `reviewer.py`, `ghread.py`) are stdlib Python or shell, in `bin/` and `bin/pr-helpers/`; `new_issue` and `outline.py` are in `skills/jira-issues/scripts/`.
 
-- **`ghbody.sh`**, run as `gh pc` and `gh pb`. `gh pc` takes the title from the branch's first
+- **`ghbody`**, run as `gh pc` and `gh pb`. `gh pc` takes the title from the branch's first
   commit subject (`git log --reverse origin/<base>..HEAD`) and the body from `pr-body.md`. `gh pb` replaces the body (`gh pr edit --body-file`). Both refuse an
   attribution line and a smart-commit token. `GHBODY_DRY=1` prints the command instead of running
   it.
@@ -819,7 +833,7 @@ All are stdlib Python or shell, in `skills/jira-issues/scripts/`.
   `summary`, `blocked_by`, `relates`) and a body. `CIAM` needs Compliance Tags
   (`customfield_11325`, default `"Not Required"`) and `duedate` at creation; the
   `jira-ciam-create` skill's script builds that payload. `--check` only reads. A second run finds
-  the issue by summary and adds only the missing links. Store tickets are made with `plan new`.
+  the issue by summary and adds only the missing links. Store tickets are made with `plan new`, which calls `issue-create`'s code.
 - **`outline.py FILE`** checks an issue body for Task, Guardrails, Lenses and Done, at least two
   Done boxes, and a Done line naming every ticked lens. The checker runs it on every ticket.
 - **`ghread.py`** reads GitHub for the other scripts.
@@ -879,6 +893,8 @@ These recur through the code, and they're worth taking away even without the too
 python3 -m unittest discover -s lib -t .
 uv run python -m unittest discover -s lib -t .     # adds lib/test_server.py, which needs Flask
 python3 -m unittest discover -s skills/jira-issues/scripts -p 'test_*.py'
+python3 -m unittest discover -s bin -p 'test_*.py'
+python3 -m unittest discover -s bin/pr-helpers -p 'test_*.py'
 python3 claude/hooks/test_no_ai_attribution.py
 python3 claude/hooks/test_no_terminal_jira_transition.py
 python3 claude/hooks/test_no_bare_open.py
@@ -911,6 +927,10 @@ store.yml                  the store's projects (key, name, repo remotes), archi
 bin/
   plan                     plan's entry point
   jira-get                 one read-only Jira GET with ~/.netrc auth
+  pr                       commit, push, open or update the PR, ask the reviewer, send the round
+  ghbody                   gh pc and gh pb; test_pr.py tests it and pr
+  pr-helpers/              pr's Python helpers: pr_threads.py, checklist.py, review.py,
+                           reviewer.py, ghread.py, and test_review.py
   gh-aliases.yml           gh pc and gh pb
   install-agents           installs the LaunchAgent running plan agents tick --watch and the
                            claude-waiting hook, or --uninstall removes both
@@ -936,8 +956,7 @@ lib/
 templates/issue.md         what plan new fills in
 templates/*.html           the local server's pages, Jinja templates that autoescape
 skills/jira-issues/        SKILL.md, references/ (pr-body.md, jira-issue.md),
-                           scripts/ (pr.sh, ghbody.sh, pr_threads.py, checklist.py,
-                           new_issue.py, outline.py, ghread.py, test_scripts.py)
+                           scripts/ (new_issue.py, outline.py, test_scripts.py)
 claude/
   CLAUDE.md                a configured repo's Claude instructions
   settings.json            attribution, permissions, the hooks

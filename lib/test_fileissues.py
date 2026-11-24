@@ -5,9 +5,10 @@
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
-from lib.fileissues import STORE_FOLDERS, FileIssues, canonicalKey, initStore, isFileBacked
+from lib.fileissues import STORE_FOLDERS, FileIssues, _parse, canonicalKey, initStore, isFileBacked
 
 
 def writeIssue(dir, name, text):
@@ -65,6 +66,10 @@ class FileIssuesTests(unittest.TestCase):
         self.dir = tempfile.mkdtemp(prefix="jira-plan-jp-")
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
         self.fi = FileIssues({"dir": self.dir})
+        # transition() and addComment() write through issue_update, which runs store-index.
+        patcher = mock.patch("lib.issue_update.reindexStore")
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     # --- parsing + status/type mapping -----------------------------------------------------
 
@@ -314,6 +319,23 @@ class MergedListTests(unittest.TestCase):
         self.assertIn("after", skRow)
         self.assertIsNone(skRow["after"])
         self.assertNotIn("after", jiraRows[0])
+
+    # --- ticket_id -----------------------------------------------------------------------------
+
+    def test_parse_reads_ticket_id_first_key_and_accepts_files_without_it(self):
+        withId = "---\nticket_id: SK-0001\n" + OPEN_BUG[len("---\n"):]
+        front = _parse(withId)[0]
+        self.assertEqual(list(front)[0], "ticket_id")
+        self.assertEqual(front["ticket_id"], "SK-0001")
+        withoutId = _parse(OPEN_BUG)[0]
+        self.assertNotIn("ticket_id", withoutId)
+        self.assertEqual(withoutId["status"], "open")
+
+    def test_fileissues_writes_no_issue_file_itself(self):
+        source = (Path(__file__).parent / "fileissues.py").read_text(encoding="utf8")
+        self.assertNotIn("write_text", source)
+        self.assertNotIn("_setField", source)
+        self.assertNotIn("_appendLog", source)
 
 
 class StoreLayoutTests(unittest.TestCase):
