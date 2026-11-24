@@ -314,6 +314,81 @@ class CreateTests(StoreCase):
         self.assertEqual(self.create().parent, self.store)
 
 
+class ReviewRoundTests(StoreCase):
+    def test_a_tab_before_a_hash_refuses_because_the_reader_cuts_there_too(self):
+        path = self.write("SK-0001-a-ticket.md", TICKET)
+        before = path.read_bytes()
+        with self.assertRaisesRegex(RuntimeError, 'field "pr"'):
+            self.update("SK-0001", {"pr": "https://example.test/pull/1\t#note"})
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_blocked_by_set_directly_refuses_the_same_ticket_spelled_two_ways(self):
+        self.write("SK-0002-other.md", NO_TICKET_ID.replace("SK-0001", "SK-0002"))
+        path = self.write("SK-0001-a-ticket.md", TICKET)
+        before = path.read_bytes()
+        with self.assertRaisesRegex(RuntimeError, 'field "blocked_by".*twice'):
+            self.update("SK-0001", {"blocked_by": "SK-2, SK-0002"})
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_blocked_by_set_directly_is_written_with_padded_keys(self):
+        self.write("SK-0002-other.md", TICKET)
+        path = self.write("SK-0001-a-ticket.md", TICKET)
+        self.update("SK-0001", {"blocked_by": "SK-2"})
+        self.assertEqual(_parse(path.read_text(encoding="utf8"))[0]["blocked_by"], "SK-0002")
+
+    def blockedTicket(self):
+        self.write("SK-0002-other.md", TICKET)
+        self.write("SK-0003-third.md", TICKET)
+        return self.write("SK-0001-a-ticket.md", TICKET.replace("closed:", "closed:\nblocked_by: SK-0002"))
+
+    def test_blocker_edits_compare_tickets_not_spellings(self):
+        path = self.blockedTicket()
+        before = path.read_bytes()
+        for spelled, word in (("SK-1", "itself"), ("SK-2", "already")):
+            with self.subTest(add=spelled), self.assertRaisesRegex(RuntimeError, word):
+                updateTicket(self.store, "SK-0001", {}, edits=[("blocked_by", "+", spelled)], reindex=noIndex)
+            self.assertEqual(path.read_bytes(), before)
+        updateTicket(self.store, "SK-0001", {}, edits=[("blocked_by", "-", "SK-2")], reindex=noIndex)
+        self.assertEqual(_parse(path.read_text(encoding="utf8"))[0]["blocked_by"], "")
+
+    def test_a_blocker_added_by_a_short_key_is_written_padded(self):
+        path = self.blockedTicket()
+        updateTicket(self.store, "SK-0001", {}, edits=[("blocked_by", "+", "SK-3")], reindex=noIndex)
+        self.assertEqual(_parse(path.read_text(encoding="utf8"))[0]["blocked_by"], "SK-0002, SK-0003")
+
+    def test_an_indexer_that_cannot_be_launched_is_a_warning_not_a_failure(self):
+        err = io.StringIO()
+        with (
+            mock.patch("lib.issue_update.shutil.which", return_value="/gone/store-index"),
+            mock.patch("lib.issue_update.subprocess.run", side_effect=OSError("bad interpreter")),
+            contextlib.redirect_stderr(err),
+        ):
+            issue_update.reindexStore(self.store)
+        self.assertIn("bad interpreter", err.getvalue())
+        self.assertIn("store-index", err.getvalue())
+
+    def stubChecker(self, body):
+        script = self.store / "stub_outline.py"
+        script.write_text(body, encoding="utf8")
+        return mock.patch("lib.issue_update.OUTLINE_PY", script)
+
+    def test_the_outline_check_opens_a_ticket_named_by_a_relative_path(self):
+        self.write("SK-0001-a-ticket.md", TICKET)
+        stub = "import sys\nprint('read ' + open(sys.argv[1]).readline().strip())\nsys.exit(1)\n"
+        relative = Path("active") / "SK-0001-a-ticket.md"
+        cwd = os.getcwd()
+        os.chdir(self.store)
+        self.addCleanup(os.chdir, cwd)
+        with self.stubChecker(stub):
+            self.assertEqual(issue_update.outlineProblems(relative), ["read ---"])
+
+    def test_a_checker_that_fails_without_findings_reports_its_error(self):
+        path = self.write("SK-0001-a-ticket.md", TICKET)
+        stub = "import sys\nsys.stderr.write('boom: cannot start\\n')\nsys.exit(2)\n"
+        with self.stubChecker(stub):
+            self.assertEqual(issue_update.outlineProblems(path), ["the outline check failed: boom: cannot start"])
+
+
 class CommandLineTests(StoreCase):
     def run_command(self, command, argv):
         out, err = io.StringIO(), io.StringIO()

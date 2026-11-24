@@ -624,7 +624,8 @@ so a failed write leaves the file as it was. Each prints the path it wrote, refu
 refuses an unknown field or a value that is not one line, naming it, with nothing written;
 `issue-update` never adds `ticket_id` to a ticket that has none. Values are checked against the
 field: `status` and `type` against their enums, `ordinal` a whole number, `opened` and `closed` ISO
-dates, and none may hold a newline or " #". Each runs `store-index` after a
+dates, and none may hold a newline or whitespace before `#`. A key list is written as padded keys
+(`SK-0002, SK-0003`), and a duplicate by canonical key is refused. Each runs `store-index` after a
 write, and says so when it cannot. Start's transition (§7.1), its "Started" line and Done's closing note
 reach a ticket through `FileIssues`, which calls `issue-update`'s code; Ship and `pr` write no ticket. A
 person and Claude run the same commands, and nobody writes front matter by hand. `plan new <PREFIX>

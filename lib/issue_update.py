@@ -106,9 +106,10 @@ def fieldProblem(field, value):
         return f'field "{field}" is not a front-matter field; the fields are {", ".join(FIELDS)}'
     if re.search(r"[\r\n]", value):
         return f'field "{field}": the value is more than one line'
-    # A reader cuts a value at " #" as a comment, so the value would not read back as written.
-    if " #" in value:
-        return f'field "{field}": the value has " #", which a reader takes as a comment'
+    # The reader (fileissues._parse) cuts a value at whitespace then "#" as a comment, so the value
+    # would not read back as written.
+    if re.search(r"\s#", value):
+        return f'field "{field}": the value has whitespace before "#", which a reader takes as a comment'
     return valueProblem(field, value)
 
 
@@ -146,17 +147,17 @@ def keyListProblem(field, value):
     bad = next((key for key in keys if not KEY_RE.match(key)), None)
     if bad is not None:
         return f'field "{field}": "{bad}" is not a ticket key; write keys like SK-0002, SK-0003'
-    if len(set(keys)) != len(keys):
+    if len({canonicalKey(key) for key in keys}) != len(keys):
         return f'field "{field}": "{value}" lists a key twice'
     if field == "parent" and len(keys) > 1:
         return f'field "parent": "{value}" is more than one key'
     return None
 
 
-# The value as written: keys joined by ", ", whatever spacing the caller used.
+# The value as written: padded keys joined by ", ", whatever spelling and spacing the caller used.
 def writtenValue(field, value):
     if field in KEY_LIST_FIELDS and value:
-        return ", ".join(key.strip() for key in value.split(","))
+        return ", ".join(canonicalKey(key.strip()) for key in value.split(","))
     return value
 
 
@@ -244,7 +245,11 @@ def reindexStore(store):
     if not command:
         print(f"INDEX.md not regenerated: store-index is not on PATH; run: store-index {store}", file=sys.stderr)
         return
-    result = subprocess.run([command, str(store)], capture_output=True, text=True)
+    try:
+        result = subprocess.run([command, str(store)], capture_output=True, text=True)
+    except OSError as error:
+        print(f"INDEX.md not regenerated: store-index could not start ({error}); run: store-index {store}", file=sys.stderr)
+        return
     if result.returncode:
         print(f"INDEX.md not regenerated: {result.stderr.strip()}; run: store-index {store}", file=sys.stderr)
 
@@ -305,7 +310,8 @@ def editedBlockers(store, ticketKey, current, field, op, value):
         raise RuntimeError(f'field "{field}": {op}= works on blocked_by only')
     if not KEY_RE.match(value):
         raise RuntimeError(f'field "blocked_by": "{value}" is not a ticket key')
-    blockers = currentBlockers(current)
+    value = canonicalKey(value)
+    blockers = [canonicalKey(key) for key in currentBlockers(current)]
     if op == "+":
         blockers = addedBlocker(store, ticketKey, blockers, value)
     else:
@@ -476,12 +482,17 @@ def parseArgs(argv, usage):
 
 # What outline.py finds wrong with the ticket at path: one line per finding, none when it conforms.
 def outlineProblems(path):
-    result = subprocess.run(
-        [sys.executable, str(OUTLINE_PY), str(path)], capture_output=True, text=True, cwd=Path(path).parent
-    )
+    path = Path(path).resolve()  # the checker runs in the ticket's folder, so a relative path would miss
+    result = subprocess.run([sys.executable, str(OUTLINE_PY), str(path)], capture_output=True, text=True, cwd=path.parent)
     if result.returncode == 0:
         return []
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    findings = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return findings or [f"the outline check failed: {lastLine(result.stderr)}"]
+
+
+def lastLine(text):
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return lines[-1] if lines else "no output"
 
 
 def storeFromConfig():
