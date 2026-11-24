@@ -133,7 +133,7 @@ import uuid
 from collections import namedtuple
 from pathlib import Path
 
-PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
+PROMPTS = Path(__file__).resolve().parents[2] / "skills" / "jira-issues" / "prompts"
 FIRST_PROMPT = "first-review.md"
 ROUND_PROMPT = "review-round.md"
 

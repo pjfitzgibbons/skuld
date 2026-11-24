@@ -167,8 +167,8 @@ def pullRequest(root, ref, fields="url,number,title"):
     return json.loads(run("gh", ["pr", "view", ref, "--json", fields], root))
 
 
-# A PR as ghbody.sh's title convention links it: [<repo>#<n>](<url>). The PR title itself (ending
-# `(CIAM-123)` rather than Redmine's `(fixes #n)`) is built in ghbody.sh, not here.
+# A PR as ghbody's title convention links it: [<repo>#<n>](<url>). The PR title itself (ending
+# `(CIAM-123)` rather than Redmine's `(fixes #n)`) is built in ghbody, not here.
 def prLink(pr):
     path_parts = urlparse(pr["url"]).path.split("/")
     return f'[{path_parts[2]}#{pr["number"]}]({pr["url"]})'

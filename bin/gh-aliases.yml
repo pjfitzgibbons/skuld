@@ -1,6 +1,6 @@
 co: pr checkout
-pb: '!~/.claude/skills/jira-issues/scripts/ghbody.sh pr-edit "$@"'
-pc: '!~/.claude/skills/jira-issues/scripts/ghbody.sh pr-create "$@"'
+pb: '!~/.local/bin/ghbody pr-edit "$@"'
+pc: '!~/.local/bin/ghbody pr-create "$@"'
 squash: |-
     !f=$(mktemp) &&
     gh pr view "$1" --json title,number,body --template "{{.title}} (#{{.number}})

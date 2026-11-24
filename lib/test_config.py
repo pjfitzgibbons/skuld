@@ -20,6 +20,9 @@ class ConfigTest(unittest.TestCase):
     def test_the_config_file_is_skulds(self):
         self.assertEqual(config.CONFIG_FILE, os.path.expanduser("~/.config/skuld/config.json"))
 
+    def test_the_reviewer_defaults_to_copilot(self):
+        self.assertEqual(config.defaults()["reviewer"], "copilot")
+
     def test_a_missing_file_is_the_defaults(self):
         missing = os.path.join(tempfile.mkdtemp(prefix="skuld-config-"), "config.json")
         self.assertEqual(config.load(missing), config.defaults())
