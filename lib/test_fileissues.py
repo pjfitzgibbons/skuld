@@ -373,6 +373,21 @@ class StoreLayoutTests(unittest.TestCase):
             initStore(root)
         self.assertFalse(root.exists())
 
+    def test_a_key_in_both_folders_is_refused_whatever_the_file_names(self):
+        for activeName, archiveName in (("SK-0001.md", "SK-0001.md"), ("SK-0001.md", "SK-0001-old.md"), ("SK-0001-a.md", "SK-0001-b.md")):
+            with self.subTest(active=activeName, archive=archiveName):
+                store = Path(tempfile.mkdtemp(prefix="skuld-dup-"))
+                self.addCleanup(shutil.rmtree, store, ignore_errors=True)
+                initStore(store)
+                (store / "active" / activeName).write_text(OPEN_BUG, encoding="utf8")
+                (store / "archive" / archiveName).write_text(OPEN_BUG, encoding="utf8")
+                fi = FileIssues({"dir": str(store)})
+                with self.assertRaisesRegex(RuntimeError, "more than one ticket file matches SK-0001"):
+                    fi.issue("SK-0001")
+                with self.assertRaisesRegex(RuntimeError, "more than one ticket file matches SK-0001"):
+                    fi.addComment("SK-0001", fi.textComment("a note"))
+                self.assertEqual((store / "active" / activeName).read_text(encoding="utf8"), OPEN_BUG)
+
     def test_active_and_archive_are_read_together(self):
         writeIssue(self.dir, "SK-0001-a.md", OPEN_BUG)
         archive = Path(self.dir) / "archive"

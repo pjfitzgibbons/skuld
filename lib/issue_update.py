@@ -440,7 +440,7 @@ def createTicket(store, title, fields=None, reindex=None):
     with storeLocked(store):
         key = nextKey(store)
         folder = Path(store) / "active"
-        folder = folder if folder.is_dir() else Path(store)
+        folder.mkdir(exist_ok=True)  # a fresh clone has no empty active/; the store's root is not a ticket folder
         path = folder / f"{key}-{slugOf(title)}.md"
         text = ticketText(key, title, nextOrdinal(store), fields)
         atomicCreate(path, text)

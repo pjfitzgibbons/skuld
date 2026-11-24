@@ -11,9 +11,14 @@
 #   abort     puts the branch back as it was before start
 #   status    the base commit being merged and the files in conflict
 #
+# --base belongs to start. continue and status read the merge under way (MERGE_HEAD), so they never
+# recompute a base; any argument the command doesn't know is refused before git is touched.
+#
 # It pushes only when origin's branch is at the tip the merge started from, so nothing unshipped
 # goes out; a branch origin doesn't have isn't pushed, since pr creates it. The merge result is a
 # descendant of origin's branch, so the push is never forced.
+# The merged tip is recorded as refs/rebase-main-merged/<branch>; a rerun after a failed push pushes
+# only while HEAD is still that tip, and commits made since go out by Ship.
 #
 # Exit 0: merged (and pushed, if origin has the branch), or already holding the base's tip.
 # 1: stopped on a conflict (status printed). 2: refused, nothing changed. 3: merged, not pushed.
@@ -79,8 +84,8 @@ def isAncestor(older, newer):
     return gitOk("merge-base", "--is-ancestor", older, newer)
 
 
-def commitsAhead(base, ref="HEAD"):
-    return gitOut("rev-list", "--count", f"origin/{base}..{ref}")
+def commitsAhead(target):
+    return gitOut("rev-list", "--count", f"{target}..HEAD")
 
 
 def defaultBase():
@@ -89,15 +94,27 @@ def defaultBase():
 
 
 def parseArgs(argv):
-    """(command, base or None); `start` when no command is given."""
+    """(command, base or None, flags left over); `start` when no command is given."""
     args = list(argv)
     command = args.pop(0) if args[:1] and args[0] in COMMANDS else "start"
     base = None
     if args[:1] == ["--base"]:
         if len(args) < 2:
-            complain("--base needs a branch", 2)
+            complain(USAGE, 2)
         base = args[1]
+        args = args[2:]
     return command, base, args
+
+
+def refuseUnknownArgs(leftover):
+    if leftover:
+        complain(f"unknown argument {leftover[0]}; {USAGE}", 2)
+
+
+def refuseBaseOutsideStart(command, base):
+    """The base is the merge's own record once it has started; a --base here would be ignored."""
+    if base and command != "start":
+        complain(f"--base applies to start only; {command} finishes the merge already under way", 2)
 
 
 def originsTip(branch):
@@ -116,6 +133,17 @@ def hasUnshippedCommits(remote, shipped):
     return bool(shipped) and isAncestor(remote, shipped)
 
 
+def mergedRef(branch):
+    return f"refs/rebase-main-merged/{branch}"
+
+
+def hasWorkSinceMerge(branch):
+    """The merge finished at a tip recorded in mergedRef, and HEAD has moved on from it: those
+    commits were never merged by this script, so a retried push must not carry them."""
+    merged = gitOut("rev-parse", "-q", "--verify", mergedRef(branch))
+    return bool(merged) and merged != gitOut("rev-parse", "HEAD")
+
+
 def push(branch):
     """Pushes the branch, never forced, when origin has it at the tip this script merged from, so
     only the merge goes out: commits origin's branch lacks were never shipped, and go out by Ship."""
@@ -125,12 +153,15 @@ def push(branch):
         say(f"origin has no {branch}; not pushed")
     elif remote == gitOut("rev-parse", "HEAD"):
         say(f"origin's {branch} is already at {short('HEAD')}")
+    elif remote == shipped and hasWorkSinceMerge(branch):
+        say(f"{branch} has commits made since the merge, which haven't been shipped; not pushed. Ship pushes them")
     elif remote != shipped and hasUnshippedCommits(remote, shipped):
         say(f"{branch} has commits origin's {branch} lacks, which haven't been shipped; not pushed. Ship pushes them")
     elif remote != shipped:
         unseenCommits(branch)
     elif git("push", "-q", "origin", branch).returncode == 0:
         say(f"pushed {branch} to origin ({short(remote)} -> {short('HEAD')})")
+        git("update-ref", "-d", mergedRef(branch))
     else:
         complain("the push failed; check the network and rerun", 3)
 
@@ -140,10 +171,10 @@ def unseenCommits(branch):
     complain(f"git fetch origin {branch}, look at git log HEAD..origin/{branch}, take what's needed, then rerun", 3)
 
 
-def reportStatus(base):
+def reportStatus():
     branch = currentBranch()
     backup = gitOut("rev-parse", "--short", f"refs/rebase-main/{branch}") or "none"
-    say(f"merging origin/{base} into {branch}; backup refs/rebase-main/{branch} = {backup}")
+    say(f"merging into {branch}; backup refs/rebase-main/{branch} = {backup}")
     say(f"merging {gitOut('log', '-1', '--format=%h %s', 'MERGE_HEAD')}")
     files = unmergedFiles()
     if files:
@@ -197,40 +228,46 @@ def mergeBaseIn(branch, base):
         git("merge", "-q", "--no-ff", "-m", f"Merge {target} into {branch}", target, capture=False)
 
 
-def finish(branch, base):
+def finish(branch, target):
     """After mergeBaseIn or merge --continue: stop for conflicts, refuse a merge git couldn't start,
-    else push."""
+    else push. target is the commit being merged in: a ref at start, MERGE_HEAD's commit at continue,
+    so a continue never depends on which base start was given."""
     if isMerging():
-        reportStatus(base)
+        reportStatus()
         raise Exit(1)
-    if not isAncestor(f"origin/{base}", "HEAD"):
+    if not isAncestor(target, "HEAD"):
         complain("the merge didn't start (git's message is above); nothing changed", 2)
-    say(f"{branch} holds origin/{base} ({short(f'origin/{base}')}), {commitsAhead(base)} commits ahead")
+    git("update-ref", mergedRef(branch), "HEAD")
+    say(f"{branch} holds {target} ({short(target)}), {commitsAhead(target)} commits ahead")
     push(branch)
 
 
-def runStatus(base):
+def runStatus():
     if not isMerging():
         say(f"no merge under way on {currentBranch()}")
         return 0
-    reportStatus(base)
+    reportStatus()
     return 1
 
 
 def runAbort():
     if not isMerging():
         complain("no merge under way", 2)
-    git("merge", "--abort")
+    aborted = git("merge", "--abort")
+    if aborted.returncode != 0:
+        print(aborted.stderr.strip(), file=sys.stderr)
+        complain("git couldn't abort; the merge is still under way. Save or revert the files named above, then rerun abort", 2)
     say(f"aborted; {currentBranch()} is back at {short('HEAD')}")
     return 0
 
 
-def runContinue(base):
+def runContinue():
     if not isMerging():
         complain("no merge under way", 2)
     refuseUnresolved()
+    target = gitOut("rev-parse", "MERGE_HEAD")
     subprocess.run(["git", "merge", "--continue"], env={**os.environ, "GIT_EDITOR": "true"})
-    finish(currentBranch(), base)
+    finish(currentBranch(), target)
     return 0
 
 
@@ -245,9 +282,9 @@ def runStart(base):
         push(branch)
         return 0
     git("update-ref", f"refs/rebase-main/{branch}", "HEAD")
-    say(f"merging {target} ({short(target)}) into {branch} ({commitsAhead(base)} commits of its own); backup refs/rebase-main/{branch}")
+    say(f"merging {target} ({short(target)}) into {branch} ({commitsAhead(target)} commits of its own); backup refs/rebase-main/{branch}")
     mergeBaseIn(branch, base)
-    finish(branch, base)
+    finish(branch, target)
     return 0
 
 
@@ -258,13 +295,14 @@ def rebaseMain(argv=None):
         return 0
     try:
         command, base, args = parseArgs(argv)
-        base = base or defaultBase()
+        refuseUnknownArgs(args)
+        refuseBaseOutsideStart(command, base)
         if command == "status":
-            return runStatus(base)
+            return runStatus()
         if command == "abort":
             return runAbort()
         if command == "continue":
-            return runContinue(base)
-        return runStart(base)
+            return runContinue()
+        return runStart(base or defaultBase())
     except Exit as stop:
         return stop.code

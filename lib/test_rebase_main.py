@@ -186,6 +186,90 @@ class RebaseMainTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(git(self.work, "rev-parse", "HEAD"), git(self.work, "rev-parse", "origin/develop"))
 
+    def testContinueFinishesTheMergeStartWasGivenNotTheDefaultBase(self):
+        git(self.origin, "checkout", "-q", "-b", "develop")
+        commit(self.origin, "a.txt", "one\nTWO develop\nthree\n", "develop edits two")
+        git(self.origin, "checkout", "-q", "main")
+        commit(self.origin, "c.txt", "main moved\n", "main moved")
+        commit(self.work, "a.txt", "one\nTWO feature\nthree\n", "feature edits two")
+        git(self.work, "fetch", "-q", "origin")  # origin/main is now ahead of the branch, off the merge
+        self.assertEqual(merge(self.work, "--base", "develop").returncode, 1)
+        (self.work / "a.txt").write_text("one\nTWO both\nthree\n")
+        git(self.work, "add", "a.txt")
+        r = merge(self.work, "continue")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(git(self.work, "rev-parse", "HEAD^2"), git(self.work, "rev-parse", "origin/develop"))
+        self.assertNotIn("didn't start", r.stderr)
+
+    def testABaseFlagOnContinueStatusOrAbortIsRefused(self):
+        conflicted(self.origin, self.work)
+        self.assertEqual(merge(self.work).returncode, 1)
+        for command in ("continue", "status", "abort"):
+            r = merge(self.work, command, "--base", "develop")
+            self.assertEqual(r.returncode, 2, command)
+            self.assertIn("--base applies to start only", r.stderr)
+        self.assertEqual(merge(self.work, "status").returncode, 1)  # the merge is still under way
+
+    def testAbortThatGitRefusesIsReportedAndTheMergeStays(self):
+        commit(self.origin, "c.txt", "main added\n", "main adds c")
+        commit(self.origin, "a.txt", "one\nTWO main\nthree\n", "main edits two")
+        commit(self.work, "a.txt", "one\nTWO feature\nthree\n", "feature edits two")
+        self.assertEqual(merge(self.work).returncode, 1)
+        (self.work / "c.txt").write_text("edited after the merge stopped\n")  # git won't reset over it
+        r = merge(self.work, "abort")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("couldn't abort", r.stderr)
+        self.assertNotIn("aborted;", r.stdout)
+        self.assertEqual(merge(self.work, "status").returncode, 1)
+
+    def testACommitMadeAfterAFailedPushIsNotPushedByTheRetry(self):
+        commit(self.work, "b.txt", "feature\n", "feature")
+        pushed(self.work)
+        shipped = git(self.origin, "rev-parse", "feat/1-x")
+        commit(self.origin, "c.txt", "main moved\n", "main moved")
+        hook = self.origin / ".git" / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\nexit 1\n")
+        hook.chmod(0o755)
+        self.assertEqual(merge(self.work).returncode, 3)  # merged; the push is refused
+        hook.unlink()
+        commit(self.work, "e.txt", "made after the merge\n", "new work")
+        r = merge(self.work)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("since the merge", r.stdout)
+        self.assertEqual(git(self.origin, "rev-parse", "feat/1-x"), shipped)
+
+    def testARetryWithNothingNewPushesTheMerge(self):
+        commit(self.work, "b.txt", "feature\n", "feature")
+        pushed(self.work)
+        commit(self.origin, "c.txt", "main moved\n", "main moved")
+        hook = self.origin / ".git" / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\nexit 1\n")
+        hook.chmod(0o755)
+        self.assertEqual(merge(self.work).returncode, 3)
+        hook.unlink()
+        r = merge(self.work)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("pushed feat/1-x", r.stdout)
+        self.assertEqual(git(self.origin, "rev-parse", "feat/1-x"), git(self.work, "rev-parse", "HEAD"))
+
+    def assertRefusedUnchanged(self, *args):
+        commit(self.origin, "c.txt", "main moved\n", "main moved")
+        head = git(self.work, "rev-parse", "HEAD")
+        r = merge(self.work, *args)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("usage: rebase-main", r.stderr)
+        self.assertEqual(git(self.work, "rev-parse", "HEAD"), head)
+        self.assertEqual(git(self.work, "for-each-ref", "refs/rebase-main"), "")
+
+    def testAMisspelledFlagAfterTheCommandIsRefused(self):
+        self.assertRefusedUnchanged("start", "--bsae", "main")
+
+    def testALeftoverArgumentAfterBaseIsRefused(self):
+        self.assertRefusedUnchanged("--base", "main", "extra")
+
+    def testABareBaseFlagIsRefused(self):
+        self.assertRefusedUnchanged("start", "--base")
+
 
 if __name__ == "__main__":
     unittest.main()

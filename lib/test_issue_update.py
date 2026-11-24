@@ -209,6 +209,15 @@ class UpdateTests(StoreCase):
         self.assertIn("store-index", err.getvalue())
 
 
+    def test_a_ticket_at_the_stores_top_level_refuses_and_nothing_is_written(self):
+        stray = self.store / "SK-0001-stray.md"
+        stray.write_text(TICKET, encoding="utf8")
+        with self.assertRaisesRegex(RuntimeError, r"SK-0001-stray\.md.*active/"):
+            self.update("SK-0001", {"status": "done"})
+        self.assertEqual(stray.read_text(encoding="utf8"), TICKET)
+        self.assertEqual(os.listdir(self.store / "active"), [])
+
+
 class CreateTests(StoreCase):
     def create(self, title="Make a thing", fields=None):
         return createTicket(self.store, title, fields, reindex=noIndex)
@@ -309,9 +318,20 @@ class CreateTests(StoreCase):
         self.assertEqual(taken.read_bytes(), before)
         self.assertEqual(os.listdir(self.store / "active"), ["SK-0001-make-a-thing.md"])
 
-    def test_a_store_without_active_takes_the_file_in_its_own_folder(self):
+    def test_a_ticket_at_the_stores_top_level_refuses_and_nothing_is_written(self):
+        stray = self.store / "SK-0001-stray.md"
+        stray.write_text(TICKET, encoding="utf8")
+        with self.assertRaisesRegex(RuntimeError, r"SK-0001-stray\.md.*active/"):
+            self.create()
+        self.assertEqual(os.listdir(self.store / "active"), [])
+        self.assertEqual(sorted(os.listdir(self.store)), ["SK-0001-stray.md", "active", "archive"])
+
+    def test_a_store_without_active_gets_the_folder_and_the_ticket_is_readable(self):
         shutil.rmtree(self.store / "active")
-        self.assertEqual(self.create().parent, self.store)
+        path = self.create()
+        self.assertEqual(path.parent, self.store / "active")
+        self.assertEqual(issue_update.ticketPath(self.store, "SK-0001"), path)
+        self.assertEqual(self.create().name, "SK-0002-make-a-thing.md")
 
 
 class ReviewRoundTests(StoreCase):
