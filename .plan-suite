@@ -1,0 +1,9 @@
+# This repo's test suite, run by `plan suite` (GUIDE §11).
+uv run python -m unittest discover -s lib -t .
+python3 -m unittest discover -s skills/jira-issues/scripts -p 'test_*.py'
+python3 -m unittest discover -s bin -p 'test_*.py'
+python3 -m unittest discover -s bin/pr-helpers -p 'test_*.py'
+python3 claude/hooks/test_no_ai_attribution.py
+python3 claude/hooks/test_no_terminal_jira_transition.py
+python3 claude/hooks/test_no_bare_open.py
+cd vscode/plan-window && node --test
