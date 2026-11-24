@@ -753,7 +753,7 @@ class CmdShipTests(unittest.TestCase):
         shipWindow.assert_called_once_with("CIAM-5", self.DIR, "/Users/t/.local/bin/pr")
 
     def test_plan_go_is_an_unknown_command_now(self):
-        with self.assertRaisesRegex(RuntimeError, r'unknown command "go"; try: list, view, start, open, browse, review, ship, done'):
+        with self.assertRaisesRegex(RuntimeError, r'unknown command "go"; try: list, view, new, set, start, open, browse, review, ship, done'):
             main(["go", "CIAM-5"])
 
 

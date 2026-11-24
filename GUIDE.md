@@ -134,6 +134,8 @@ macOS only. In order:
    ```sh
    ln -s "$(pwd)/bin/plan" ~/.local/bin/plan
    ln -s "$(pwd)/bin/jira-get" ~/.local/bin/jira-get
+   ln -s "$(pwd)/bin/issue-create" ~/.local/bin/issue-create
+   ln -s "$(pwd)/bin/issue-update" ~/.local/bin/issue-update
    ln -s "$(pwd)/bin/pr" ~/.local/bin/pr
    ln -s "$(pwd)/bin/ghbody" ~/.local/bin/ghbody
    ln -s ~/.claude/skills/jira-issues/scripts/new_issue.py ~/.local/bin/new_issue
@@ -245,8 +247,8 @@ decides the repo (§4).
 | --- | --- |
 | `plan list` | Print Next up in plan order, both trackers merged ([architecture §7.6](docs/architecture.md#ready-file)) |
 | `plan view <KEY>` | Print one issue; reads only |
-| `plan new <PREFIX> "<title>"` | Make a store ticket from the template, check it and open it in `$EDITOR` |
-| `plan set <KEY> field=value…` | Change a ticket's front matter, all or nothing, checked first; `blocked_by+=SK-0004` and `blocked_by-=SK-0004` add and remove one blocker |
+| `plan new <PREFIX> "<title>"` | Make a store ticket from `templates/issue.md` with `issue-create`'s code, check it with `outline.py` (findings print to stderr) and open it in `$EDITOR`; a prefix `store.yml` doesn't list is refused |
+| `plan set <KEY> field=value…` | Change a ticket's front matter with `issue-update`'s code, all or nothing, checked first (`status`, `type`, `ordinal`, dates, a `milestone` that has a file, `parent` and `blocked_by` keys that exist); `blocked_by+=SK-0004` and `blocked_by-=SK-0004` add and remove one blocker |
 | `plan milestone new\|set\|list` | Manage milestones, through the checker |
 | `plan start <KEY>`, `plan open <KEY>` | Start or Open (§4); one command, one code path |
 | `plan ship [KEY]` | Ship (§5); the key defaults to the current worktree's branch |
@@ -263,6 +265,8 @@ decides the repo (§4).
 | `plan init-store` | Make an empty store's folders |
 | `pr [done] [KEY]` | Send a round (§5) |
 | `plan review KEY` | Write the next review round's request and start Claude's review on it in the plan window's `Review KEY` terminal; `pr` runs it when a review is due (§5), and it is how to start one by hand |
+| `issue-create "<title>" [field=value…]` | Write a new ticket: the next free key and ordinal, `ticket_id` first, the outline and a `## Log` with `Filed.`; prints the path |
+| `issue-update <KEY> [field=value…] [--log "text"]` | Change a ticket's front-matter fields and append a dated `## Log` line, all or nothing; an unknown field refuses, naming it; prints the path. With `issue-create`, the only writers of a ticket file |
 | `issue-check [PATH…]` | Check ticket files, or the whole store; exits non-zero naming file, line and rule |
 | `issue-watch` | The store's watcher; launchd runs it |
 | `jira-get <path>` | One read-only Jira GET with `~/.netrc` auth, so an agent can read Jira without seeing the token |
@@ -292,9 +296,9 @@ runs only when it has something to do:
    has finished.
 6. **Move the issue to "in progress", and read it back.** Jira: `lib/jira.py` finds the
    transition whose target status matches the configured name (default `"In Progress"`), posts it,
-   and refuses if the read-back `statusCategory` isn't `indeterminate`. Store: `FileStore` sets
-   `status: in-progress` and reads the file back. Then "Started" is logged: an ADF comment in
-   Jira, a `## Log` line in the ticket.
+   and refuses if the read-back `statusCategory` isn't `indeterminate`. Store: `FileStore` runs
+   `issue-update <KEY> status=in-progress` and reads the file back. Then "Started" is logged: an ADF
+   comment in Jira, an `issue-update --log` line in the ticket's `## Log`.
 7. **Add the issue to the issues file and the plan workspace.** `term.addIssue(key)` appends
    `<KEY>` as a line of `issuesFile`, unless it is there already, through a temp file and a
    rename, so a reader never sees a half-written file. The key stays until Done removes it,
@@ -719,7 +723,7 @@ fast-forward to `origin/<base>`.
 
 The changes: fast-forward the base, `git worktree remove`, delete the workspace file (a warning if it won't go), delete every
 branch named for the issue whose tip is in the PR, note the PR and merge commit on the issue (an ADF
-comment in Jira, a `## Log` line in a ticket), remove the issue's lines from the issues file and the pulses file and its folder from the plan
+comment in Jira, an `issue-update --log` line in a ticket), remove the issue's lines from the issues file and the pulses file and its folder from the plan
 workspace (the ticket store's folder stays), and print the close note:
 
 ```text
@@ -829,7 +833,7 @@ checking a change. Neither runs in the plan window, whose integrated browser is 
   `summary`, `blocked_by`, `relates`) and a body. `CIAM` needs Compliance Tags
   (`customfield_11325`, default `"Not Required"`) and `duedate` at creation; the
   `jira-ciam-create` skill's script builds that payload. `--check` only reads. A second run finds
-  the issue by summary and adds only the missing links. Store tickets are made with `plan new`.
+  the issue by summary and adds only the missing links. Store tickets are made with `plan new`, which calls `issue-create`'s code.
 - **`outline.py FILE`** checks an issue body for Task, Guardrails, Lenses and Done, at least two
   Done boxes, and a Done line naming every ticked lens. The checker runs it on every ticket.
 - **`ghread.py`** reads GitHub for the other scripts.
