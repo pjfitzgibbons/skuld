@@ -263,7 +263,7 @@ class Rules(unittest.TestCase):
         self.assertEqual(review.comment_ids([{"id": 9, "body": None}]), {})
 
     def test_the_key_rule_is_lib_issuekeys_one(self):
-        canonical = (Path(__file__).resolve().parents[3] / "lib" / "issuekeys.py").read_text()
+        canonical = (Path(__file__).resolve().parents[2] / "lib" / "issuekeys.py").read_text()
         self.assertIn(f'ISSUE_KEY_PATTERN = r"{review.KEY_PATTERN.pattern[1:-1]}"', canonical)
         self.assertTrue(review.KEY_PATTERN.match("X-1"))
         self.assertFalse(review.KEY_PATTERN.match("AB2-5"))
