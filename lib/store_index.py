@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import config as config_mod
+from .fileissues import _keyFromFilename
 
 USAGE = "usage: store-index [--check] [STORE]"
 CLOSED = {"done", "wontfix"}
@@ -78,7 +79,7 @@ def readTicket(path: Path) -> Ticket:
     text = path.read_text()
     fields = frontMatter(text)
     return Ticket(
-        key=path.name[: path.name.index("-", 3)],
+        key=_keyFromFilename(path.name),
         file=f"{path.parent.name}/{path.name}",  # the link from INDEX.md, relative to the store
         title=titleOf(text),
         status=fields.get("status", "open"),
@@ -163,6 +164,7 @@ def indexText(tickets: list[Ticket], milestones: list[Milestone]) -> str:
 def readStore(store: Path) -> tuple[list[Ticket], list[Milestone]]:
     # archive/ is read too, so an issue waiting on an archived one doesn't list it as open.
     paths = [*store.glob("active/SK-*.md"), *store.glob("archive/SK-*.md")]
+    paths = [path for path in paths if _keyFromFilename(path.name)]  # a stray SK-*.md is not a ticket
     tickets = [readTicket(path) for path in sorted(paths, key=lambda p: p.name)]
     milestones = [readMilestone(path) for path in sorted((store / "milestones").glob("*.md"))]
     return tickets, milestones

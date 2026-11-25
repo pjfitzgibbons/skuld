@@ -363,14 +363,16 @@ def wholeProblems(store, front):
     return [why for why in found if why]
 
 
-# `closed` follows the status: a closing status with no date gets today's, any other status clears it.
+# `closed` follows the status. A closed date the caller gave is never discarded, so an open status with
+# one reaches closedProblem and is refused. A closing status with no date (given empty, or none given
+# and none on the ticket) gets today's; an open status clears the date; closing again keeps it.
 def withClosed(fields, front):
     status = fields.get("status")
-    if status is None:
+    if status is None or fields.get("closed"):
         return fields
     if status not in CLOSED_STATUSES:
         return {**fields, "closed": ""}
-    if fields.get("closed") or front.get("closed"):
+    if "closed" not in fields and front.get("closed"):
         return fields
     return {**fields, "closed": date.today().isoformat()}
 
@@ -446,7 +448,7 @@ def updateTicket(store, key, fields, log=None, reindex=None, edits=()):
     for field, op, value in edits:
         current = _parse(text)[0].get("blocked_by", "")
         text = setField(text, field, editedBlockers(store, ticketKey, current, field, op, value))
-    if fields:  # a log line alone doesn't re-judge a ticket written before these rules
+    if fields or edits:  # a log line alone doesn't re-judge a ticket written before these rules
         refuseBadTicket(store, _parse(text)[0])
     if log is not None:
         text = appendLog(text, log)

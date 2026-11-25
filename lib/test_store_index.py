@@ -81,6 +81,13 @@ class ReadStoreTests(unittest.TestCase):
         self.assertEqual([t.file for t in tickets], ["active/SK-0001-a.md", "archive/SK-0002-b.md"])
 
 
+    def test_a_ticket_file_without_a_slug_is_indexed_under_its_key(self):
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "active").mkdir()
+            (Path(root) / "active" / "SK-0001.md").write_text("---\nstatus: open\n---\n\n# T\n")
+            tickets, _ = readStore(Path(root))
+        self.assertEqual([(t.key, t.file) for t in tickets], [("SK-0001", "active/SK-0001.md")])
+
 
 class CommandTests(unittest.TestCase):
     def setUp(self):

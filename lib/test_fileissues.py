@@ -9,7 +9,7 @@ from datetime import date
 from unittest import mock
 from pathlib import Path
 
-from lib.fileissues import STORE_FOLDERS, FileIssues, _parse, canonicalKey, closingFields, initStore, isFileBacked, untickedBoxes
+from lib.fileissues import STORE_FOLDERS, FileIssues, _parse, canonicalKey, closingFields, headingSpan, initStore, isFileBacked, untickedBoxes
 
 
 def writeIssue(dir, name, text):
@@ -434,6 +434,35 @@ class CloseHelperTests(unittest.TestCase):
             "```\n- [ ] in a fence\n## Log\n```\n- [X] three\n\n## Log\n\n- 2026-11-09: x\n- [ ] after\n"
         )
         self.assertEqual(untickedBoxes(text), ["two"])
+
+
+class FencedHeadingTests(unittest.TestCase):
+    REAL_TICKED = "\n## Done\n\n- [x] real\n"
+
+    def test_a_four_backtick_fence_holding_three_backticks_hides_its_fake_done(self):
+        text = "# T\n\n````\n```\n## Done\n\n- [x] fake\n````\n\n## Done\n\n- [ ] real\n"
+        self.assertEqual(untickedBoxes(text), ["real"])
+
+    def test_a_tilde_fence_holding_backticks_hides_its_fake_done(self):
+        text = "# T\n\n~~~\n```\n## Done\n\n- [ ] fake\n~~~\n" + self.REAL_TICKED
+        self.assertEqual(untickedBoxes(text), [])
+
+    def test_a_shorter_closing_fence_does_not_close(self):
+        text = "# T\n\n~~~~\n~~~\n## Done\n\n- [ ] fake\n~~~~\n" + self.REAL_TICKED
+        self.assertEqual(untickedBoxes(text), [])
+
+    def test_a_closing_fence_with_trailing_text_does_not_close(self):
+        text = "# T\n\n```\n``` not a close\n## Done\n\n- [ ] fake\n```\n" + self.REAL_TICKED
+        self.assertEqual(untickedBoxes(text), [])
+
+    def test_an_unclosed_fence_runs_to_the_end(self):
+        text = "# T\n\n## Done\n\n- [x] one\n\n```\n- [ ] never closed\n"
+        self.assertEqual(untickedBoxes(text), [])
+
+    def test_a_fake_log_inside_a_longer_fence_is_not_the_log(self):
+        text = "# T\n\n````\n```\n## Log\n````\n\n## Log\n\n- 2026-11-09: x\n"
+        start, _end = headingSpan(text, "Log")
+        self.assertTrue(text[start:].startswith("## Log\n\n- 2026-11-09"))
 
 
 if __name__ == "__main__":

@@ -440,6 +440,45 @@ class ClosedFollowsStatusTests(StoreCase):
         self.update("SK-0001", {"status": "done", "closed": ""})
         self.assertEqual(self.front()["closed"], self.today)
 
+    def test_closed_follows_status_for_every_combination(self):
+        today, given, kept = self.today, "2026-01-02", "2026-11-03"
+        refused = "closed"
+        noClosed = ("open", "")
+        # (status given, closed given, ticket before) -> (status, closed) written, or the refusal
+        rows = [
+            # an open status
+            ("in-progress", given, "open", refused),
+            ("in-progress", given, "done", refused),
+            ("in-progress", "", "open", ("in-progress", "")),
+            ("in-progress", "", "done", ("in-progress", "")),
+            ("in-progress", None, "open", ("in-progress", "")),
+            ("in-progress", None, "done", ("in-progress", "")),
+            # a closing status
+            ("done", given, "open", ("done", given)),
+            ("done", given, "done", ("done", given)),
+            ("done", "", "open", ("done", today)),
+            ("done", "", "done", ("done", today)),
+            ("done", None, "open", ("done", today)),
+            ("done", None, "done", ("done", kept)),
+            # no status given: closed is judged against the ticket's own status
+            (None, given, "open", refused),
+            (None, given, "done", ("done", given)),
+            (None, "", "open", noClosed),
+            (None, "", "done", "closed ticket needs the date"),
+            (None, None, "open", noClosed),
+            (None, None, "done", ("done", kept)),
+        ]
+        before = {"open": TICKET, "done": TICKET.replace("status: open", "status: done").replace("closed:", f"closed: {kept}")}
+        for status, closed, existing, expected in rows:
+            with self.subTest(status=status, closed=closed, existing=existing):
+                self.path.write_text(before[existing], encoding="utf8")
+                fields = {name: value for name, value in (("status", status), ("closed", closed)) if value is not None}
+                if isinstance(expected, str):
+                    self.assertRefusedChangingNothing(expected, fields)
+                else:
+                    self.update("SK-0001", fields)
+                    self.assertEqual((self.front()["status"], self.front()["closed"]), expected)
+
     def test_status_done_keeps_a_closed_the_caller_gave(self):
         self.update("SK-0001", {"status": "done", "closed": "2026-01-02"})
         self.assertEqual(self.front()["closed"], "2026-01-02")
@@ -461,6 +500,17 @@ class ClosedFollowsStatusTests(StoreCase):
     def test_a_log_line_alone_does_not_re_judge_a_ticket_with_a_closed_milestone(self):
         self.addMilestone("shipped", "closed")
         self.path.write_text(self.path.read_text(encoding="utf8").replace("closed:\n", "closed:\nmilestone: shipped\n"), encoding="utf8")
+        self.update("SK-0001", log="noted")
+        self.assertIn("noted", self.path.read_text(encoding="utf8"))
+
+    def test_a_blocker_edit_re_judges_the_ticket_and_a_log_line_alone_does_not(self):
+        self.addMilestone("shipped", "closed")
+        self.write("SK-0002-other.md", TICKET.replace("ticket_id: SK-0001", "ticket_id: SK-0002"))
+        self.path.write_text(self.path.read_text(encoding="utf8").replace("closed:\n", "closed:\nmilestone: shipped\n"), encoding="utf8")
+        before = self.path.read_bytes()
+        with self.assertRaisesRegex(RuntimeError, 'milestone: "shipped" is closed'):
+            updateTicket(self.store, "SK-0001", {}, edits=[("blocked_by", "+", "SK-0002")], reindex=noIndex)
+        self.assertEqual(self.path.read_bytes(), before)
         self.update("SK-0001", log="noted")
         self.assertIn("noted", self.path.read_text(encoding="utf8"))
 

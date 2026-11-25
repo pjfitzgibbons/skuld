@@ -59,7 +59,9 @@ TYPE_NAME_MAP = {"bug": "Bug", "task": "Task", "question": "Task"}
 # The statuses that end a ticket (issues/README.md's enum).
 CLOSED_STATUSES = ("done", "wontfix")
 
-FENCES = ("```", "~~~")
+# A fenced code block (CommonMark 0.31.2 §4.5): up to three spaces, then three or more backticks or
+# tildes. A closing fence is the same character, at least as long, followed by nothing but whitespace.
+FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 BOX_RE = re.compile(r"^- \[([ xX])\]\s*(.*)$")
 
 # Shared with lib/issue_update.py, which edits the front matter and Log this module reads.
@@ -102,15 +104,28 @@ def _flatten(doc):
     return " ".join(parts)
 
 
-# (offset, line) for each line of text outside a code fence, fence lines included in neither.
+# The fence a line opens ("````", "~~~"), or None. A backtick fence's info string has no backtick.
+def openingFence(line):
+    found = FENCE_RE.match(line.rstrip("\r\n"))
+    if not found or ("`" in found[1] and "`" in found[2]):
+        return None
+    return found[1]
+
+
+def closesFence(line, fence):
+    found = FENCE_RE.match(line.rstrip("\r\n"))
+    return bool(found) and found[1][0] == fence[0] and len(found[1]) >= len(fence) and not found[2].strip()
+
+
+# (offset, line) for each line of text outside a code fence, fence lines included in neither. A fence
+# left open runs to the end of the text.
 def linesOutsideFences(text):
     fence = None
     offset = 0
     for line in text.splitlines(keepends=True):
-        stripped = line.strip()
-        if fence is None and stripped[:3] in FENCES:
-            fence = stripped[:3]
-        elif fence is not None and stripped.startswith(fence):
+        if fence is None and (opened := openingFence(line)):
+            fence = opened
+        elif fence is not None and closesFence(line, fence):
             fence = None
         elif fence is None:
             yield offset, line

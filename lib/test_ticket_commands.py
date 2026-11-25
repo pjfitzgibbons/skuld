@@ -146,6 +146,15 @@ class PlanSetTests(CommandCase):
         self.run_plan("set", "SK-0001", "blocked_by-=SK-0003")
         self.assertEqual(_parse(self.read("SK-0001-a-ticket.md"))[0]["blocked_by"], "")
 
+    def test_a_blocker_edit_on_an_open_ticket_in_a_closed_milestone_refuses_naming_it(self):
+        (self.store / "milestones" / "shipped.md").write_text("---\nid: shipped\nstatus: closed\n---\n", encoding="utf8")
+        path = self.store / "active" / "SK-0001-a-ticket.md"
+        path.write_text(TICKET.replace("closed:\n", "closed:\nmilestone: shipped\n"), encoding="utf8")
+        before = path.read_bytes()
+        with self.assertRaisesRegex(RuntimeError, 'milestone: "shipped" is closed'):
+            self.run_plan("set", "SK-0001", "blocked_by+=SK-0003")
+        self.assertEqual(path.read_bytes(), before)
+
     def test_a_bracketed_blocked_by_is_malformed_so_a_blocker_edit_refuses_naming_it(self):
         path = self.store / "active" / "SK-0001-a-ticket.md"
         path.write_text(TICKET.replace("blocked_by: SK-0002", "blocked_by: [SK-0002]"), encoding="utf8")
