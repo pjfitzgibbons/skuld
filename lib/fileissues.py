@@ -10,17 +10,15 @@
 #
 # Three decisions this implements (2026-11-05):
 #  1. Every plan command (list/picker, view, start/open, ship, done) works on a SK key.
-#  2. Writes edit the file: Start's transition sets frontmatter `status: in-progress`, then reads
-#     it back (transition()), the same refuse-if-it-didn't-take guard Jira's own transition()
-#     uses. Every addComment call appends a dated `- YYYY-MM-DD: <text>` line under a `## Log`
-#     heading at the end of the file (created if absent). Done's close(key) sets `status: done` and
-#     `closed:` through lib/issue_update.py, after the merge line; Done never changes a Jira
+#  2. Writes go through lib/issue_update.py, the one writer of an issue file (the `issue-update`
+#     command): Start's transition runs `status=in-progress`, then reads it back (transition()),
+#     the same refuse-if-it-didn't-take guard Jira's own transition() uses. Every addComment call
+#     is an `issue-update --log` line under the `## Log` heading. Done's close(key) sets
+#     `status: done` and `closed:` the same way, after the merge line; Done never changes a Jira
 #     issue's status (docs/architecture.md §7.3).
 #  3. `plan list`/the picker merge Jira's JQL results with every SK file whose status is `open` or
 #     `in-progress` (lib/cli.py's issueRows()).
 import re
-import textwrap
-from datetime import date
 from pathlib import Path
 
 from .issuekeys import KEY_RE, projectOf
@@ -34,6 +32,11 @@ PROJECT = "SK"
 # in number order. A number past 9999 simply grows a digit.
 KEY_DIGITS = 4
 
+# The store's folders (docs/architecture.md §7.7): tickets live in the first two, read together.
+# `plan init-store` makes all of them.
+TICKET_FOLDERS = ("active", "archive")
+STORE_FOLDERS = ("milestones", *TICKET_FOLDERS, "reviews", "queries")
+
 # issues/README.md's status enum -> the Jira-shaped (status name, statusCategory key) pair a
 # caller reads off issue["fields"]["status"]. done/wontfix both read as Jira's "done" category --
 # neither is a status Start or Done need to tell apart from the other.
@@ -44,8 +47,8 @@ STATUS_MAP = {
     "wontfix": ("Won't Fix", "done"),
 }
 
-# The only write-back transition FileIssues supports: Start's "to In Progress" move. Done's close of
-# a ticket is close(key), not a transition.
+# The only write-back transition FileIssues supports: Start's "to In Progress" move. Nothing else
+# in this tool transitions an issue (Done never does, Jira or file).
 TARGET_TO_STATUS_VALUE = {"In Progress": "in-progress"}
 
 # issues/README.md's type enum -> a Jira issuetype name that start.py's DEFAULT_TYPE_MAP (and any
@@ -59,9 +62,8 @@ CLOSED_STATUSES = ("done", "wontfix")
 FENCES = ("```", "~~~")
 BOX_RE = re.compile(r"^- \[([ xX])\]\s*(.*)$")
 
+# Shared with lib/issue_update.py, which edits the front matter and Log this module reads.
 FRONTMATTER_RE = re.compile(r"^---\n(.*?\n)---\n?(.*)$", re.DOTALL)
-# A ## Log line wraps here, continuation lines indented two spaces, as the store's tickets are.
-LOG_WIDTH = 100
 LOG_LINE_RE = re.compile(r"^-\s*(\d{4}-\d{2}-\d{2}):\s*(.*)$")
 
 
@@ -190,50 +192,20 @@ def _logEntries(log_text):
     return entries
 
 
-# Replaces frontmatter field's value in text (the "field: ..." line inside the --- block), leaving
-# everything else -- comments, spacing, the rest of the file -- untouched. Raises if the field
-# isn't already there: a transition never invents a field issues/README.md doesn't define.
-def _setField(text, field, value):
-    m = FRONTMATTER_RE.match(text)
-    if not m:
-        raise RuntimeError("issue file has no --- frontmatter block")
-    block = m.group(1)
-    pattern = re.compile(rf"(?m)^{re.escape(field)}:.*$")
-    if not pattern.search(block):
-        raise RuntimeError(f'issue file has no "{field}" field in its frontmatter')
-    new_block = pattern.sub(f"{field}: {value}".rstrip(), block, count=1)
-    start, end = m.span(1)
-    return text[:start] + new_block + text[end:]
-
-
-# Sets frontmatter field to value: the field's own line is replaced, or, when the file has no line
-# for it (a ticket written before the field existed), one is added at the end of the block.
-def setFrontField(text, field, value):
-    m = FRONTMATTER_RE.match(text)
-    if not m:
-        raise RuntimeError("issue file has no --- frontmatter block")
-    if re.search(rf"(?m)^{re.escape(field)}:", m.group(1)):
-        return _setField(text, field, value)
-    end = m.end(1)
-    return text[:end] + f"{field}: {value}".rstrip() + "\n" + text[end:]
-
-
-# A dated log entry, wrapped to width: continuation lines indent two spaces.
-def logEntry(line_text, width=LOG_WIDTH):
-    entry = f"- {date.today().isoformat()}: {line_text}"
-    # A lone "-" or "*" is held to the word before it, so no wrapped line starts like a list item.
-    glued = re.sub(r"(?<=\S) ([-*])(?= )", "\0\\1", entry)
-    wrapped = textwrap.fill(glued, width=width, subsequent_indent="  ", break_long_words=False, break_on_hyphens=False)
-    return wrapped.replace("\0", " ")
-
-
-# Appends a dated log line at the true end of the file, under a ## Log heading -- created, once,
-# if the file doesn't have one outside a code fence.
-def appendLog(text, line_text, width=LOG_WIDTH):
-    entry = logEntry(line_text, width)
-    if headingSpan(text, "Log"):
-        return text.rstrip("\n") + "\n" + entry + "\n"
-    return text.rstrip("\n") + "\n\n## Log\n" + entry + "\n"
+# Makes the store's folders that are missing and returns the ones it made. Only creates: the
+# store's root must already exist (it is the store's git checkout), and nothing in it is moved,
+# rewritten or deleted, so a second run makes nothing.
+def initStore(root):
+    root = Path(root)
+    if not root.is_dir():
+        raise RuntimeError(f"the issue store {root} doesn't exist; git init it first, then run plan init-store")
+    for name in STORE_FOLDERS:
+        if (root / name).exists() and not (root / name).is_dir():
+            raise RuntimeError(f"{root / name} is a file; the store needs a folder there")
+    made = [name for name in STORE_FOLDERS if not (root / name).is_dir()]
+    for name in made:
+        (root / name).mkdir()
+    return made
 
 
 # The front matter a Done writes to close a ticket: nothing when it is closed with its date, else the
@@ -268,27 +240,11 @@ class FileIssues:
         self.dir = Path(d).resolve()
         self.settings = {"dir": str(self.dir)}
 
-    # Open tickets live in active/ (architecture §7.7).
-    # shortcut: the store root is read too while its tickets move into active/; drop it once none are left there.
-    def _ticketFiles(self, pattern):
-        return [p for folder in (self.dir / "active", self.dir) for p in folder.glob(pattern)]
-
+    # The ticket file for key, in the store's folder, its active/ or its archive/.
     def _path(self, key):
-        key = canonicalKey(key)
-        matches = sorted(self._ticketFiles(f"{key}-*.md"))
-        if not matches:
-            exact = self.dir / f"{key}.md"
-            if exact.exists():
-                return exact
-            raise RuntimeError(f"no issue file for {key} in {self.dir}")
-        if len(matches) > 1:
-            names = ", ".join(p.name for p in matches)
-            raise RuntimeError(f"more than one issue file matches {key} in {self.dir}: {names}")
-        return matches[0]
+        from .issue_update import ticketPath  # issue_update imports this module, so not at the top
 
-    # The ticket's file.
-    def ticketPath(self, key):
-        return self._path(key)
+        return ticketPath(self.dir, canonicalKey(key))
 
     # Every SK file whose status is open or in-progress, in the shape lib/jira.py's Jira.list()
     # returns, so lib/cli.py's issueRows() can concatenate the two lists untouched (decision #3).
@@ -299,8 +255,10 @@ class FileIssues:
     # order holds even past SK-9999, where the padding runs out). Glob order is irrelevant
     # here -- every candidate is parsed first, then the whole batch is sorted by workOrder().
     def list(self, jql=None):
+        from .issue_update import ticketFiles  # see _path()
+
         candidates = []
-        for path in self._ticketFiles(f"{PROJECT}-*.md"):
+        for path in ticketFiles(self.dir):
             key = _keyFromFilename(path.name)
             if not key:
                 continue
@@ -377,9 +335,10 @@ class FileIssues:
     # Sets frontmatter status, then reads the file back and refuses if it didn't take -- the same
     # guard Jira.transition() applies after its POST (decision #2).
     def transition(self, key, targetStatusName):
+        from .issue_update import updateTicket  # see _path()
+
         value = self.statusTransitionId(key, targetStatusName)
-        path = self._path(key)
-        path.write_text(_setField(path.read_text(encoding="utf8"), "status", value), encoding="utf8")
+        updateTicket(self.dir, canonicalKey(key), {"status": value})
         issue = self.issue(key)
         if issue["fields"]["status"]["name"] != targetStatusName:
             raise RuntimeError(
@@ -397,8 +356,9 @@ class FileIssues:
     # Appends a dated log line (decision #2). Accepts either an ADF doc (what textComment()
     # returns) or a plain string.
     def addComment(self, key, doc):
-        path = self._path(key)
-        path.write_text(appendLog(path.read_text(encoding="utf8"), _flatten(doc)), encoding="utf8")
+        from .issue_update import updateTicket  # see _path()
+
+        updateTicket(self.dir, canonicalKey(key), {}, log=_flatten(doc))
 
     # What plan view/Start print instead of a Jira browse URL: the file itself.
     def browseUrl(self, key):
@@ -407,21 +367,22 @@ class FileIssues:
     # Refuses, before Done changes anything, when close() would: a Done box unticked, or a field the
     # checker rejects.
     def checkClose(self, key):
-        from .issue_update import closeProblems  # lib/issue_update.py imports this module
+        from .issue_update import closeProblems  # see _path()
 
         problems = closeProblems(self.dir, self._path(key).read_text(encoding="utf8"))
         if problems:
             raise RuntimeError(f"{canonicalKey(key)} can't be closed; nothing changed: " + "; ".join(problems))
 
-    # Done's close of a ticket: status done, closed today, INDEX.md regenerated. A ticket already
+    # Done's close of a ticket: status done, closed today, INDEX.md regenerated (a failed reindex warns). A ticket already
     # closed with its date set is left as it is. Returns what Done prints.
     def close(self, key):
-        from .issue_update import updateTicket
+        from .issue_update import updateTicket  # see _path()
 
         key = canonicalKey(key)
         front = _parse(self._path(key).read_text(encoding="utf8"))[0]
         fields = closingFields(front)
         if not fields:
             return f"{key} is already closed."
-        _path, written = updateTicket(self.dir, key, fields)
-        return f"Closed {key}: status {written['status']}, closed {written['closed']}, INDEX.md regenerated."
+        updateTicket(self.dir, key, fields)
+        closed = _parse(self._path(key).read_text(encoding="utf8"))[0]
+        return f"Closed {key}: status {closed['status']}, closed {closed['closed']}."

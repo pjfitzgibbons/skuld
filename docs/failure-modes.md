@@ -75,14 +75,14 @@ instead).
 
 Four independent checks, each catching a different point the text could reach GitHub from:
 
-- `pr.sh` refuses to commit if `.tmp/KEY/commit.txt` carries a `#<word>` right after whitespace or
+- `pr` refuses to commit if `.tmp/KEY/commit.txt` carries a `#<word>` right after whitespace or
   line-start on a line that also names a Jira key.
-- `pr.sh` also scans the whole commit range it's about to push (`git log --format=%B HEAD --not
+- `pr` also scans the whole commit range it's about to push (`git log --format=%B HEAD --not
   --remotes=origin`), not only the message it just wrote to `commit.txt` — so a smart commit
   already on the branch some other way (`git commit -am`, an amend, a squash, a cherry-pick) is
   caught too, and the scan always runs rather than being skipped when `origin/<base>` is not a
   local ref.
-- `ghbody.sh` refuses `gh pr create`/`gh pr edit` the same way, checking the PR title (`pr-create`,
+- `ghbody` refuses `gh pr create`/`gh pr edit` the same way, checking the PR title (`pr-create`,
   from the branch's first commit subject) and `pr-body.md`'s content.
 - Claude's own `no_terminal_jira_transition.py` `PreToolUse` hook blocks two shapes of the same Bash
   call: the inline text itself (`git commit -m`/`--message`, or `gh pr create|edit --title|--body`,
@@ -204,7 +204,7 @@ issue, so Open, Done and `pr` on the same issue exclude each other.
 | Remove the worktree | The next Done removes it, or drops git's entry for a folder already gone | Skipped once gone | Behind the lock | Checked before any change: changes, commits the PR's merged head lacks, or an ignored file or folder outside the disposable list refuse it, naming each folder once | Only the disposable list's entries go with the worktree: `.tmp/` and what a tool makes again |
 | Delete the branch | The next Done deletes it | Skipped once gone | Behind the lock | Every branch named for the issue, deleted only when its tip holds nothing the PR's merged head lacks | — |
 | **Change a Redmine issue's status** | **N/A: Done has no step that does it** | **N/A** | **N/A** | **N/A** | Structural: Done makes no status write. The one automated close is Redmine's own, from `fixes <KEY>` when it fetches the merge commit |
-| Close a store ticket | The next Done closes it; a Done stopped after the merge line adds no second line | A ticket already closed (`done` or `wontfix`) with `closed:` set is untouched | Behind the lock | Checked before any change: every box under the ticket's `## Done` is ticked, and the closed ticket passes the checker; either failing refuses Done, naming it. A closed ticket without `closed:` gets only the date | `issue_update`'s code writes the front matter and runs `store-index` on the store; if that fails after the write, the error names it and a person runs `store-index` by hand (the next Done leaves the closed ticket untouched and does not rerun it); nothing is committed, the watcher commits (§7.7); never a Jira issue |
+| Close a store ticket | The next Done closes it; a Done stopped after the merge line adds no second line | A ticket already closed (`done` or `wontfix`) with `closed:` set is untouched | Behind the lock | Checked before any change: every box under the ticket's `## Done` is ticked, and the closed ticket passes the checker; either failing refuses Done, naming it. A closed ticket without `closed:` gets only the date | `issue-update`'s code writes the front matter and runs `store-index` on the store; if `store-index` is missing or fails after the write, stderr says so with the command to run, Done still closes the ticket, and a person runs `store-index` by hand (the next Done leaves the closed ticket untouched and does not rerun it); nothing is committed, the watcher commits (§7.7); never a Jira issue |
 | Journal the PR and its merge commit (core) | The next Done journals what's missing | Journals a second entry: see [§4.1](#done-open) | Open | — | A journal entry, never a status change |
 | Print the close note | — | Printed every time; harmless | — | Done reads the issue back each time: "closed by <commit>" when Redmine has closed it, else a warning that Redmine has not closed it yet | Done never opens a page |
 | Delete the issue workspace file | — | Skipped once gone | Behind the lock | A file that won't delete is a warning in Done's notes, never a failure; delete it by hand | Deletes `<KEY>.code-workspace` in `workspaceDir`, and an older one beside the worktree |

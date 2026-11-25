@@ -94,7 +94,7 @@ ADR 0001's Status reads "Accepted, amended by ADR 0006" and names these amendmen
 
 ### 3.4 Writes and sync
 
-The `plan` CLI, and `bin/issue_update`, is the only writer. `plan list --json` prints the tickets
+The `plan` CLI, and `bin/issue-create` and `bin/issue-update`, are the only writers. `plan list --json` prints the tickets
 for readers other than the server. A checker rejects dependency cycles (SK-0019).
 
 Sync between Macs: `issue-watch` commits and pushes (SK-0026), with `INDEX.md` regenerated in the

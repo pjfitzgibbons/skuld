@@ -28,7 +28,7 @@
 
 `plan` and `pr` exist twice. In gh-plan they run through a VS Code extension, the gh-issues scripts and
 a `plan` package that [ADR 0014](../../gh-plan/docs/adr/0014-terminal-client.md) starts. In this repo they run
-against Jira Cloud as a terminal CLI (`lib/`), with `pr` still a shell script in `skills/jira-issues/scripts/pr.sh`.
+against Jira Cloud as a terminal CLI (`lib/`), with `pr` still a shell script, `bin/pr`.
 
 This repo also already has a small file tracker: `lib/fileissues.py` stores `JP-<n>` issues as Markdown with front
 matter in `issues/` ([architecture §7.7](architecture.md#file-backed-issues)). It answers in Jira's shapes (ADF
@@ -263,7 +263,7 @@ Plan order, which the picker, `plan list` and `plan next` all use:
 
 <a id="blockers"></a>
 
-**Blockers.** An issue records what blocks it in `blocked_by: [SK-0004, SK-0007]`, the store's form of Jira's issue links. Only the blocked side is written; "blocks" is derived by reading every file, so the two
+**Blockers.** An issue records what blocks it in `blocked_by: SK-0004, SK-0007`, the store's form of Jira's issue links. Only the blocked side is written; "blocks" is derived by reading every file, so the two
 directions can't disagree. The relation is tracked end to end:
 
 - The checker refuses a `blocked_by` key that exists in neither `active/` nor `archive/`, and any cycle.
@@ -273,7 +273,7 @@ directions can't disagree. The relation is tracked end to end:
   does for a Jira issue.
 - The picker and `plan view` show an issue's open blockers and what it blocks; plan order puts blocking issues first
   within a milestone (rule 2 above).
-- A key from another tracker (`blocked_by: [CIAM-163]`) is allowed. The checker can't see it offline, so it skips that
+- A key from another tracker (`blocked_by: CIAM-163`) is allowed. The checker can't see it offline, so it skips that
   key, and Start asks that tracker's adapter whether it is still open.
 - `plan set SK-0012 blocked_by+=SK-0004` and `blocked_by-=SK-0004` add and remove one, checked first.
 
@@ -283,7 +283,7 @@ directions can't disagree. The relation is tracked end to end:
 
 ```markdown
 ---
-key: SK-0012
+ticket_id: SK-0012
 title: Read and write issues through an IssueStore port
 status: open # open | in-progress | done | wontfix
 type: task # task | bug | question
@@ -293,7 +293,7 @@ milestone: m5-terminal # optional; a milestones/ id
 ordinal: 300 # optional; steps of 100
 after: # optional; a Jira key to sort after in the merged picker
 parent: # optional key
-blocked_by: [] # keys, flow list; see Blockers
+blocked_by: # keys, comma-separated (SK-0002, SK-0003); see Blockers
 points: # optional: 1 2 3 5 8 13 (Fibonacci story points; ADR 0006 §3.3)
 ---
 
@@ -318,7 +318,7 @@ points: # optional: 1 2 3 5 8 13 (Fibonacci story points; ADR 0006 §3.3)
 - 2026-11-07: Started on `feat/SK-0012-issue-store-port`, in ~/programming/skuld.worktrees/SK-0012.
 ```
 
-Changes from today's `issues/README.md`: `key` and `title` move into the front matter, so the checker can compare the
+Changes from today's `issues/README.md`: `ticket_id` and `title` move into the front matter, `ticket_id` first, so the checker can compare the
 key with the file name and the title isn't a heading convention; `guide:` drops (it was this repo's own); `rank` becomes
 `ordinal`; `milestone`, `parent`, `blocked_by` and `points` arrive. No `repo` field: the project's repos come from `store.yml`, and Start uses the one `plan` is run in ([4.3](#environment)). The body is the house outline (Task,
 Guardrails, Lenses, Done), the one `skills/jira-issues/scripts/outline.py` already checks. `## Log` stays: git says who
@@ -334,9 +334,9 @@ it needs no `--follow`.
 `issue-check [PATH…]`, stdlib Python, exits non-zero on any error, naming file, line and rule. With no path it checks
 the whole store. Rules:
 
-- The front matter parses under the restricted subset (scalars, comments, flow lists), every key is known, every
+- The front matter parses under the restricted subset (scalars and comments; `blocked_by` is a comma-separated scalar), every key is known, every
   required key is present, and each value has its type and enum.
-- `key` matches the file name; the prefix is one `store.yml` lists; no key appears twice in `active/` and `archive/`.
+- `ticket_id`, the first key, matches the file name; a file without it is read by its file name's key; the prefix is one `store.yml` lists; no key appears twice in `active/` and `archive/`.
 - `parent` and `blocked_by` name store keys that exist, or keys of another tracker, left unchecked; no `blocked_by`
   cycle ([Blockers](#blockers)).
 - Every repo remote in `store.yml` appears under one project only.
@@ -353,10 +353,13 @@ would refuse. The checker is the module; `issue-check` is its command line.
 
 ### 4.7 The template and `plan new`
 
-`plan new <PREFIX> "<title>"` takes the next number, fills skuld's `templates/issue.md` (key, title, `opened`,
+`plan new <PREFIX> "<title>"` takes the next number, fills skuld's `templates/issue.md` (`ticket_id`, title, `opened`,
 `status: open`, the empty outline with every lens listed), writes `active/<KEY>-<slug>.md`, runs the checker on it, and
-opens it in `$EDITOR`. An agent drafting an issue runs the same command and edits the file it prints, so no agent writes
-front matter by hand. `plan set <KEY> field=value…` changes front-matter fields, all or nothing, checked first.
+opens it in `$EDITOR`. It calls `issue-create "<title>"`, which writes `ticket_id` first, the outline and a `## Log` with
+`Filed.`. An agent drafting an issue runs the same command and edits the file it prints, so no agent writes front matter by
+hand. `plan set <KEY> field=value…` calls `issue-update`, which changes front-matter fields and appends `## Log` lines;
+it writes the whole file or leaves it as it was, refuses an unknown field naming it, and never adds `ticket_id` to a file
+that has none. `issue-create` and `issue-update` are the only writers of an issue file.
 
 <a id="archiving"></a>
 
@@ -395,7 +398,7 @@ Each phase is usable on its own, and the files written in phase 1 stay valid thr
 | 1   | Format                        | in skuld: the file spec `docs/issue-format.md` (replacing `issues/README.md`), `templates/issue.md`, the `store.yml` and milestone schemas, the checker and `issue-check`                                                                                                                                | `outline.py`, today's `_parse`      |
 | 2   | FileStore, dogfooded on Skuld | `FileIssues` generalized: projects from `store.yml` instead of `PROJECT = "JP"`, `active/` and `archive/`, a store outside this repo, `parent` and `blocked_by` for `blockers()`; the store created with one project, `SK` (Skuld), and `JP-1`–`JP-9` moved into it as `SK-0001`–`SK-0009` ([§4.3](#projects)) | `lib/fileissues.py` and its tests   |
 | 3   | `plan` on the store           | `plan new`, `plan set`, `plan milestone`, list/picker/view/start/ship/done against `FileStore` in plan order ([§4.4](#milestones)); the neutral `Issue` model; `storeFor()`                                                                                                                              | `lib/cli.py`, `start.py`, `done.py` |
-| 4   | Ports and `pr`                | `IssueStore`, `ReviewStore`, `PullRequests`, `GitRemote` as modules; `pr` ported from shell to Python behind them; review files moved from `.tmp/<KEY>/` to `<store>/reviews/<KEY>/` and their format specified                                                                                          | `pr.sh`, `pr_threads.py`, `ship.py` |
+| 4   | Ports and `pr`                | `IssueStore`, `ReviewStore`, `PullRequests`, `GitRemote` as modules; `pr` ported from shell to Python behind them; review files moved from `.tmp/<KEY>/` to `<store>/reviews/<KEY>/` and their format specified                                                                                          | `pr`, `pr_threads.py`, `ship.py` |
 | 5   | Archive                       | `plan archive` and its schedule                                                                                                                                                                                                                                                                          | —                                   |
 | 6   | Git store                     | the store as its own repo with a remote; `plan` refuses nothing new, it only reads and writes files                                                                                                                                                                                                      | —                                   |
 | 7   | Watcher                       | `issue-watch`, launchd plist, debounce, checker gate, loud failure, push                                                                                                                                                                                                                                 | —                                   |

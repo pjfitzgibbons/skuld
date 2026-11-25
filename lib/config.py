@@ -74,14 +74,17 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #   workspaceDir   Folder for each issue's throwaway <KEY>.code-workspace file (its plan.*
 #                  settings), outside every repo, which Done deletes, and for the plan window's
 #                  plan.code-workspace (lib/term.py). Default: "~/.cache/plan/code-workspaces".
-#   issueStore     The issue store's checkout: the folder of SK-<nnnn> ticket files
-#                  (lib/fileissues.py's FileIssues), its own git repo, e.g.
+#   issueStore     The issue store's checkout: the folder whose active/ and archive/
+#                  hold the SK-<nnnn> ticket files (lib/fileissues.py's FileIssues), its own git repo, e.g.
 #                  "~/programming/skuld-project/issues". `~` is expanded. Default: None -- the
 #                  store lives outside skuld, so a machine that works tickets sets it; a command
 #                  that needs the store without it refuses, naming this key (issueStoreFrom()).
 #   claudeCommand  The `claude` CLI `plan agents` asks for its sessions (`claude agents --json`),
 #                  as a path, since the LaunchAgent's PATH doesn't hold it.
 #                  Default: "~/.local/bin/claude".
+#   reviewer       Who reviews each round `pr` ends: "copilot" or "claude". Read by pr and
+#                  ghbody (bin/pr-helpers/reviewer.py), which `pr`, `gh pc` and
+#                  `gh pb` run; a value other than the two refuses `pr`. Default: "copilot".
 #   serverPort     The local page server's port on 127.0.0.1 (lib/server.py, `plan serve`).
 #                  Default: 8765.
 def defaults():
@@ -100,6 +103,7 @@ def defaults():
         "workspaceDir": "~/.cache/plan/code-workspaces",
         "issueStore": None,
         "claudeCommand": "~/.local/bin/claude",
+        "reviewer": "copilot",
         "serverPort": 8765,
     }
 

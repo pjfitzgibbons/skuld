@@ -358,7 +358,7 @@ def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result,
     if resolved and not resolved["main"]:
         left = unsentIn(resolved["dir"])
         if left:
-            scripts = "python3 ~/.claude/skills/jira-issues/scripts"
+            scripts = "python3 " + os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "pr-helpers")
             raise RuntimeError(
                 f'{resolved["dir"]} has replies or checklist ticks pr hasn\'t sent; send them from there with '
                 f"{scripts}/pr_threads.py <PR> --post .tmp/<KEY>/replies and {scripts}/checklist.py <KEY> "

@@ -21,13 +21,13 @@ An issue is a Jira issue, `<KEY>` (e.g. `CIAM-123`), its description in the issu
 
 ## Aliases and commands
 
-`gh pc` and `gh pb` are gh aliases over `scripts/ghbody.sh`. Each takes an optional Jira key and otherwise reads it from the branch name (`fix/CIAM-88-go-requests-copilot-s-review` → `CIAM-88`). `pr`, `new_issue` and `jira-get` are in `~/.local/bin/`.
+`gh pc` and `gh pb` are gh aliases over `bin/ghbody`. Each takes an optional Jira key and otherwise reads it from the branch name (`fix/CIAM-88-go-requests-copilot-s-review` → `CIAM-88`). `pr`, `ghbody`, `new_issue` and `jira-get` are in `~/.local/bin/`; `pr`, `ghbody` and `jira-get` link to skuld's `bin/`.
 
 | Command | Does |
 |---|---|
-| `gh pc [KEY]` | `gh pr create`, titled with the branch's first commit subject, body `.tmp/<KEY>/pr-body.md` |
+| `gh pc [KEY]` | `gh pr create`, titled with the branch's first commit subject, body `.tmp/<KEY>/pr-body.md`; asks Copilot to review it when `reviewer` is `copilot` |
 | `gh pb [KEY]` | `gh pr edit` on this branch's PR with `.tmp/<KEY>/pr-body.md` |
-| `pr [KEY]` | What Ship runs: commits with `.tmp/<KEY>/commit.txt`, pushes, opens or updates the PR, prints its URL, then, when a review is due by Claude's review record (HEAD isn't the head the last round reviewed, and no unfinished round was requested for it), starts Claude's review of the PR in the plan window's `Review <KEY>` terminal (`plan review <KEY>`), and then sends the replies and ticks (`plan review <KEY> --restart` writes an unfinished round for an older HEAD again, once its reviewer's terminal is closed) |
+| `pr [KEY]` | What Ship runs: commits with `.tmp/<KEY>/commit.txt`, pushes, opens or updates the PR, prints its URL, then asks the reviewer the machine config's `reviewer` names and prints which. `copilot` (the default): asks Copilot on a new PR and when the push moved the branch. `claude`: when a review is due by Claude's review record (HEAD isn't the head the last round reviewed, and no unfinished round was requested for it), starts Claude's review of the PR in the plan window's `Review <KEY>` terminal (`plan review <KEY>`). Then it sends the replies and ticks (`plan review <KEY> --restart` writes an unfinished round for an older HEAD again, once its reviewer's terminal is closed) |
 | `pr done [KEY]` | After the merge: sends any replies and ticks left, then says to press Done in `plan`, which cleans up and tells you to close the issue in Jira. Bare `pr` does the same once the PR has merged |
 
 `gh pc` and `gh pb` refuse a body containing `Assisted-by` or `Co-authored-by`. `GHBODY_DRY=1` prints the command instead.
@@ -52,15 +52,15 @@ When the work is done and tested, run `/ponytail:ponytail-review` on the uncommi
 
 ## Store tickets
 
-An `SK-<n>` ticket is a file in the issue store (`issueStore` in the machine config), not a Jira issue. Claude changes its front matter and `## Log` only with `issue_update`; it never edits the front matter by hand and never runs `store-index` itself, since `issue_update` runs it every time. The command prints the ticket's path and commits nothing: the store's watcher commits.
+An `SK-<n>` ticket is a file in the issue store (`issueStore` in the machine config), not a Jira issue. It is written by two commands and no other way: `issue-create "<title>" [field=value ...]` makes a new one, with `ticket_id` first, the outline and a `## Log` with `Filed.`; `issue-update` changes its front matter and `## Log`. Claude never edits a ticket's front matter or `## Log` by hand and never runs `store-index` itself, since both commands run it after every write. Each prints the ticket's path and commits nothing: the store's watcher commits. `issue-update` does not add `ticket_id` to a ticket that has none.
 
 ```
-issue_update SK-0047 [field=value …] [--log "text"]
+issue-update SK-0047 [field=value …] [--log "text"]
 ```
 
-- **Status.** Start sets `in-progress` itself. A ticket worked without Start gets `issue_update SK-<n> status=in-progress`. Never set `status=done` before the merge: Done does it, with `closed:` today, so tick every `## Done` box on the branch first.
-- **Fields.** `status`, `type`, `guide`, `opened`, `closed`, `milestone`, `ordinal`, `blocked_by`, `after`, `pr`, `parent`, `host` and `points` go through one call: `issue_update SK-<n> milestone=issue-round ordinal=160 points=3`. Every field is checked before any is written, so one bad value changes nothing and the command names it: `points` is 1 2 3 5 8 or 13, `ordinal` a whole number, dates ISO, `parent` and each `blocked_by` key a ticket in the store, `milestone` one with a file in `milestones/`. `closed` follows the status: `done` or `wontfix` without `closed=` gets today's date, an open status clears it. `issue_update --help` prints the usage.
-- **Log lines.** One dated line per thing done: `issue_update SK-<n> --log "Started the lib module."`. It adds `- <today>: <text>` under `## Log`, wrapped to the store's width.
+- **Status.** Start sets `in-progress` itself. A ticket worked without Start gets `issue-update SK-<n> status=in-progress`. Never set `status=done` before the merge: Done does it, with `closed:` today, so tick every `## Done` box on the branch first.
+- **Fields.** `status`, `type`, `guide`, `opened`, `closed`, `milestone`, `ordinal`, `blocked_by`, `after`, `pr`, `parent`, `host` and `points` go through one call: `issue-update SK-<n> milestone=issue-round ordinal=160 points=3`. Every field is checked before any is written, so one bad value changes nothing and the command names it: `points` is 1 2 3 5 8 or 13, `ordinal` a whole number, dates ISO, `parent` and each `blocked_by` key a ticket in the store, `milestone` one with a file in `milestones/`. `closed` follows the status: `done` or `wontfix` without `closed=` gets today's date, an open status clears it. `issue-update --help` prints the usage.
+- **Log lines.** One dated line per thing done: `issue-update SK-<n> --log "Started the lib module."`. It adds `- <today>: <text>` under `## Log`, wrapped to the store's width.
 - **Ticking the Done list.** Tick a `## Done` box in the ticket's body with an ordinary edit, when its condition is verified, and say how in a `--log` line.
 - It refuses a Jira key: a Jira issue's description, comments and status stay Jira's (rule 2).
 
@@ -77,13 +77,13 @@ issue_update SK-0047 [field=value …] [--log "text"]
 
 How the reviewer co-signs, records a disposition per file, and resolves a verbatim-applied fix
 immediately is GUIDE.md §5, "Review: co-signing and dispositions." This section is the author's
-side of that same round. The review is Claude's own, started by `pr` when the review record says one is due
+side of that same round. With `reviewer: claude` in the machine config (`copilot` is the default; GUIDE.md §5), the review is Claude's own, started by `pr` when the review record says one is due
 (GUIDE.md §5, "Claude's review"): it posts its findings on the PR, and keeps its record in the next round's folder, `.tmp/<KEY>/rounds/<n>/review.json`. Findings on lines of the PR's diff are review threads, which `pr_threads.py`
 lists and `pr` answers like any other. A finding on a file's lines outside the diff is a file-level
 comment, also a thread. A finding on a file outside the PR goes in the review's body: it is not a
 thread, never appears in `pr_threads.py` or `--drafts`, and gets no reply in `replies/`; it is
 answered in the next round's review record. The author
-doesn't write that file, and doesn't ask Copilot or anyone else to review.
+doesn't write that file, and doesn't ask Copilot or anyone else to review: `pr` asks the reviewer the config names.
 
 When a Claude is handed a review request (`<KEY> review: read <path of request.md> and do the review it
 describes.`), it follows request.md and nothing else: it never commits, pushes, replies
@@ -94,8 +94,9 @@ The PR's declared scope binds every review: the ticket's `## Task` and `## Guard
 Fix the findings first. When the code resists a fix, find and state its root cause before writing code, and fix the cause; a fix that adds a layer, flag, special case or parallel path to get past a conflict states the root cause it addresses in its reply. Then run `/ponytail:ponytail-review` on the uncommitted changes and act on its Must fix and Should fix, or say in the PR body why not. Then write each open thread's context into `.tmp/<KEY>/replies/`, one `<comment id>.md` each, and write the reply below it: "Fixed: …" saying what changed, or why not. The context, the path and line, the review comment and the last lines of the diff hunk it's on, is an HTML comment at the top, so Peter reads each reply against what it answers; `pr` strips it before posting. Run `--drafts` again after writing replies without it, and it adds the context above them.
 
 ```
-python3 ~/.claude/skills/jira-issues/scripts/pr_threads.py 73          # open threads: comment id, path:line, first line
-python3 ~/.claude/skills/jira-issues/scripts/pr_threads.py 73 --drafts .tmp/<KEY>/replies
+helpers=$(dirname "$(realpath ~/.local/bin/pr)")/pr-helpers    # skuld's bin/pr-helpers, through the pr link
+python3 $helpers/pr_threads.py 73          # open threads: comment id, path:line, first line
+python3 $helpers/pr_threads.py 73 --drafts .tmp/<KEY>/replies
 ```
 
 A file with no reply below its context stops `pr` before the first post; delete the file for a thread that gets no reply.
@@ -112,4 +113,10 @@ In jira-plan, `uv run pytest` runs them with the rest. Alone:
 
 ```
 cd ~/.claude/skills/jira-issues/scripts && python3 -m unittest test_scripts
+```
+
+The tests of `pr` and `ghbody` are `bin/test_pr.py`, and of the review script `bin/pr-helpers/test_review.py`:
+
+```
+cd <skuld>/bin && python3 -m unittest test_pr
 ```

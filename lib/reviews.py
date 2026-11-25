@@ -5,7 +5,7 @@
 #
 # It reads the issue's round folders, .tmp/<KEY>/rounds/<n>/, in each worktree: the highest round
 # whose review.json has a head is the last review, and a round with a request.json and no
-# review.json is unfinished (skills/jira-issues/scripts/review.py writes them). HEAD comes from a
+# review.json is unfinished (bin/pr-helpers/review.py writes them). HEAD comes from a
 # local `git rev-parse`; no gh is called. The rule itself, is_orange(), and where the rounds are,
 # rounds_folder(), are review.py's, loaded from there, so the script that writes a review and the
 # engine that reads it can't differ.
@@ -21,7 +21,7 @@ import sys
 from .start import git
 
 REVIEW_SCRIPT = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skills", "jira-issues", "scripts", "review.py"
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "pr-helpers", "review.py"
 )
 
 

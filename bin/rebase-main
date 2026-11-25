@@ -4,11 +4,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
-from lib.issue_update import main
+from lib.rebase_main import rebaseMain
 
 if __name__ == "__main__":
     try:
-        sys.exit(main() or 0)
+        sys.exit(rebaseMain())
     except Exception as error:
         print(str(error), file=sys.stderr)
         sys.exit(1)

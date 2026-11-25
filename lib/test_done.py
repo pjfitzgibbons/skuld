@@ -23,7 +23,7 @@ from lib import done as done_mod
 from lib import pulses, term
 from lib.fileissues import FileIssues
 from lib.store_index import indexIsCurrent
-from lib.store_sandbox import FILE_NAME, KEY as SK_KEY, TODAY, freezeToday, head, makeStore
+from lib.store_sandbox import FILE_NAME, KEY as SK_KEY, TODAY, freezeToday, head, makeStore, reindexInProcess
 from lib.done import DISPOSABLE, branchForKey, doneNote, finish
 from lib.start import worktreeDir
 
@@ -462,6 +462,7 @@ def writeIgnoredFolder(dir, relative, count):
 class FinishStoreTicketTests(unittest.TestCase):
     def setUp(self):
         freezeToday(self)
+        reindexInProcess(self)
         self.s = sandbox(key=SK_KEY)
         self.addCleanup(shutil.rmtree, self.s["root"], ignore_errors=True)
         self.useStore(makeStore(self.s["root"]))
@@ -496,7 +497,7 @@ class FinishStoreTicketTests(unittest.TestCase):
         self.assertRegex(text, r"- \d{4}-\d{2}-\d{2}: Done: \[origin#1\]")
         self.assertTrue(indexIsCurrent(self.store))
         self.assertNotIn(f"[{SK_KEY}]", (self.store / "INDEX.md").read_text())
-        self.assertIn(f"Closed {SK_KEY}: status done, closed {TODAY}, INDEX.md regenerated.", result["notes"])
+        self.assertIn(f"Closed {SK_KEY}: status done, closed {TODAY}.", result["notes"])
         self.assertEqual(head(self.store), before)
         self.assertEqual(git(self.store, "diff", "--cached", "--name-only"), "")
 

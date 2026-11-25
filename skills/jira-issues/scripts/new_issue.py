@@ -41,7 +41,10 @@ import tempfile
 from pathlib import Path
 
 import outline
-from checklist import Jira, Refused
+
+# checklist.py is one of `pr`'s helpers, in the repo's bin/.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "bin" / "pr-helpers"))
+from checklist import Jira, Refused  # noqa: E402
 
 FIELDS = ["project", "type", "summary", "status", "compliance", "duedate", "parent", "blocked_by", "relates"]
 CREATE_CIAM_ISSUE = Path.home() / ".claude/skills/jira-ciam-create/create-ciam-issue.sh"

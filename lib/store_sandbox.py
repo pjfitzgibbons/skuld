@@ -41,12 +41,18 @@ class FixedDate(date):
         return cls.fromisoformat(TODAY)
 
 
-# Makes today TODAY for the issue_update and fileissues modules until the test ends.
+# Makes today TODAY for lib/issue_update.py until the test ends.
 def freezeToday(testcase):
-    for module in ("lib.fileissues.date", "lib.issue_update.date"):
-        patch = mock.patch(module, FixedDate)
-        patch.start()
-        testcase.addCleanup(patch.stop)
+    patch = mock.patch("lib.issue_update.date", FixedDate)
+    patch.start()
+    testcase.addCleanup(patch.stop)
+
+
+# Makes issue_update's reindex step write INDEX.md in this process, as `store-index` would on PATH.
+def reindexInProcess(testcase):
+    patch = mock.patch("lib.issue_update.reindexStore", writeIndex)
+    patch.start()
+    testcase.addCleanup(patch.stop)
 
 
 KEY = "SK-0047"
@@ -58,7 +64,7 @@ def git(cwd, *args):
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout
 
 
-# Makes the store under root, commits it, and returns its folder.
+# Makes the store under root (tickets in active/), commits it, and returns its folder.
 def makeStore(root, status="in-progress", done="- [x] It works.\n"):
     store = Path(root) / "store"
     (store / "milestones").mkdir(parents=True)

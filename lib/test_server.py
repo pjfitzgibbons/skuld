@@ -28,7 +28,8 @@ class RouteTests(unittest.TestCase):
         self.dir.cleanup()
 
     def write(self, name, text):
-        with open(os.path.join(self.store, name), "w", encoding="utf8") as f:
+        os.makedirs(os.path.join(self.store, "active"), exist_ok=True)
+        with open(os.path.join(self.store, "active", name), "w", encoding="utf8") as f:
             f.write(text)
 
     def client(self, cfg=None):

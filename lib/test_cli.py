@@ -490,8 +490,8 @@ class CmdReviewTests(unittest.TestCase):
 
     def test_a_store_issue_s_ticket_file_is_passed_to_the_request(self):
         store = os.path.join(self.top, "store")
-        os.makedirs(store)
-        ticket = os.path.join(store, "SK-0001-the-slug.md")
+        os.makedirs(os.path.join(store, "active"))
+        ticket = os.path.join(store, "active", "SK-0001-the-slug.md")
         open(ticket, "w").close()
         with mock.patch.dict(self.cfg, {"issueStore": store}):
             self.review("SK-0001")
@@ -753,7 +753,7 @@ class CmdShipTests(unittest.TestCase):
         shipWindow.assert_called_once_with("CIAM-5", self.DIR, "/Users/t/.local/bin/pr")
 
     def test_plan_go_is_an_unknown_command_now(self):
-        with self.assertRaisesRegex(RuntimeError, r'unknown command "go"; try: list, view, start, open, browse, review, ship, done'):
+        with self.assertRaisesRegex(RuntimeError, r'unknown command "go"; try: list, view, new, set, start, open, browse, review, ship, done'):
             main(["go", "CIAM-5"])
 
 
@@ -951,8 +951,9 @@ def writeStore():
         "SK-0002-second.md": ("in-progress", "1", "Underway, first in plan order"),
         "SK-0003-third.md": ("done", "", "Finished, never listed"),
     }
+    os.mkdir(os.path.join(store, "active"))
     for name, (status, ordinal, title) in tickets.items():
-        with open(os.path.join(store, name), "w", encoding="utf8") as f:
+        with open(os.path.join(store, "active", name), "w", encoding="utf8") as f:
             f.write(f"---\nstatus: {status}\ntype: task\nordinal: {ordinal}\n---\n\n# {title}\n")
     return store
 
@@ -1027,6 +1028,40 @@ class JiraOnTests(unittest.TestCase):
 
     def test_a_configured_projects_key_gets_jira(self):
         self.assertIsInstance(cli.jiraFrom(self.cfg, "CIAM-1"), cli.Jira)
+
+
+class InitStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.store = tempfile.mkdtemp(prefix="skuld-init-")
+        self.addCleanup(shutil.rmtree, self.store, ignore_errors=True)
+        self.cfg = {**cli.config_mod.defaults(), "issueStore": self.store}
+
+    def run_init(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.cmdInitStore(self.cfg)
+        return out.getvalue()
+
+    def test_it_prints_each_folder_it_made(self):
+        said = self.run_init()
+        for name in ("milestones", "active", "archive", "reviews", "queries"):
+            self.assertIn(os.path.join(self.store, name) + "/", said)
+
+    def test_a_second_run_says_there_was_nothing_to_make(self):
+        self.run_init()
+        before = sorted(os.listdir(self.store))
+        self.assertIn("nothing to make", self.run_init())
+        self.assertEqual(sorted(os.listdir(self.store)), before)
+
+    def test_a_missing_store_is_refused_naming_its_path(self):
+        self.cfg["issueStore"] = os.path.join(self.store, "gone")
+        with self.assertRaisesRegex(RuntimeError, "gone"):
+            self.run_init()
+
+    def test_no_store_set_is_refused(self):
+        self.cfg["issueStore"] = None
+        with self.assertRaisesRegex(RuntimeError, "no issue store set"):
+            self.run_init()
 
 
 if __name__ == "__main__":

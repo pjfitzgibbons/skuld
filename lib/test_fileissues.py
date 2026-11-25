@@ -5,13 +5,16 @@
 import shutil
 import tempfile
 import unittest
+from datetime import date
+from unittest import mock
 from pathlib import Path
 
-from lib.fileissues import FileIssues, canonicalKey, closingFields, isFileBacked, setFrontField, untickedBoxes
+from lib.fileissues import STORE_FOLDERS, FileIssues, _parse, canonicalKey, closingFields, initStore, isFileBacked, untickedBoxes
 
 
 def writeIssue(dir, name, text):
-    path = Path(dir) / name
+    path = Path(dir) / "active" / name
+    path.parent.mkdir(exist_ok=True)
     path.write_text(text, encoding="utf8")
     return path
 
@@ -64,6 +67,10 @@ class FileIssuesTests(unittest.TestCase):
         self.dir = tempfile.mkdtemp(prefix="jira-plan-jp-")
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
         self.fi = FileIssues({"dir": self.dir})
+        # transition() and addComment() write through issue_update, which runs store-index.
+        patcher = mock.patch("lib.issue_update.reindexStore")
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     # --- parsing + status/type mapping -----------------------------------------------------
 
@@ -204,6 +211,26 @@ class FileIssuesTests(unittest.TestCase):
         path = writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
         self.assertEqual(self.fi.browseUrl("SK-0001"), str(path.resolve()))
 
+    # --- checkClose / close --------------------------------------------------------------------
+
+    def test_close_sets_status_done_and_closed_today_and_says_so(self):
+        path = writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
+        self.fi.checkClose("SK-0001")
+        note = self.fi.close("SK-0001")
+        front = _parse(path.read_text(encoding="utf8"))[0]
+        self.assertEqual((front["status"], front["closed"]), ("done", date.today().isoformat()))
+        self.assertEqual(note, f"Closed SK-0001: status done, closed {front['closed']}.")
+
+    def test_close_leaves_a_ticket_already_closed_with_its_date(self):
+        text = OPEN_BUG.replace("status: open", "status: done").replace("closed:\n", "closed: 2026-11-03\n")
+        path = writeIssue(self.dir, "SK-0001-something-is-wrong.md", text)
+        self.assertEqual(self.fi.close("SK-0001"), "SK-0001 is already closed.")
+        self.assertEqual(path.read_text(encoding="utf8"), text)
+
+    def test_checkClose_refuses_an_unticked_done_box_naming_it(self):
+        writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG + "\n## Done\n\n- [ ] Not yet.\n")
+        with self.assertRaisesRegex(RuntimeError, "SK-0001 can't be closed.*Not yet"):
+            self.fi.checkClose("SK-0001")
 
     # --- list(): ordinal order -------------------------------------------------------------------
 
@@ -307,15 +334,93 @@ class MergedListTests(unittest.TestCase):
         self.assertIsNone(skRow["after"])
         self.assertNotIn("after", jiraRows[0])
 
+    # --- ticket_id -----------------------------------------------------------------------------
 
-class FrontMatterEditTests(unittest.TestCase):
-    def test_setFrontField_adds_a_field_the_block_lacks(self):
-        out = setFrontField(OPEN_BUG, "pr", "https://github.com/a/b/pull/1")
-        self.assertIn("closed:\npr: https://github.com/a/b/pull/1\n---\n", out)
+    def test_parse_reads_ticket_id_first_key_and_accepts_files_without_it(self):
+        withId = "---\nticket_id: SK-0001\n" + OPEN_BUG[len("---\n"):]
+        front = _parse(withId)[0]
+        self.assertEqual(list(front)[0], "ticket_id")
+        self.assertEqual(front["ticket_id"], "SK-0001")
+        withoutId = _parse(OPEN_BUG)[0]
+        self.assertNotIn("ticket_id", withoutId)
+        self.assertEqual(withoutId["status"], "open")
 
-    def test_setFrontField_replaces_a_field_it_has(self):
-        self.assertIn("status: done\n", setFrontField(OPEN_BUG, "status", "done"))
+    def test_fileissues_writes_no_issue_file_itself(self):
+        source = (Path(__file__).parent / "fileissues.py").read_text(encoding="utf8")
+        self.assertNotIn("write_text", source)
+        self.assertNotIn("_setField", source)
+        self.assertNotIn("_appendLog", source)
 
+
+class StoreLayoutTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="skuld-layout-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+
+    def folders(self):
+        return sorted(p.name for p in Path(self.dir).iterdir())
+
+    def test_init_on_an_empty_folder_makes_every_store_folder(self):
+        made = initStore(self.dir)
+        self.assertEqual(made, list(STORE_FOLDERS))
+        self.assertEqual(self.folders(), ["active", "archive", "milestones", "queries", "reviews"])
+
+    def test_a_file_named_like_a_store_folder_is_refused_naming_it(self):
+        (Path(self.dir) / "active").write_text("")
+        with self.assertRaisesRegex(RuntimeError, "active is a file"):
+            initStore(self.dir)
+
+    def test_a_second_init_makes_nothing_and_changes_nothing(self):
+        initStore(self.dir)
+        ticket = writeIssue(self.dir, "SK-0001-a.md", OPEN_BUG)
+        before = (self.folders(), ticket.read_text(encoding="utf8"))
+        self.assertEqual(initStore(self.dir), [])
+        self.assertEqual((self.folders(), ticket.read_text(encoding="utf8")), before)
+
+    def test_a_half_made_store_is_finished_by_running_init_again(self):
+        (Path(self.dir) / "active").mkdir()
+        self.assertEqual(initStore(self.dir), ["milestones", "archive", "reviews", "queries"])
+
+    def test_a_missing_store_root_is_refused_naming_it_and_not_made(self):
+        root = Path(self.dir) / "no-such-store"
+        with self.assertRaisesRegex(RuntimeError, "no-such-store"):
+            initStore(root)
+        self.assertFalse(root.exists())
+
+    def test_a_key_in_both_folders_is_refused_whatever_the_file_names(self):
+        for activeName, archiveName in (("SK-0001.md", "SK-0001.md"), ("SK-0001.md", "SK-0001-old.md"), ("SK-0001-a.md", "SK-0001-b.md")):
+            with self.subTest(active=activeName, archive=archiveName):
+                store = Path(tempfile.mkdtemp(prefix="skuld-dup-"))
+                self.addCleanup(shutil.rmtree, store, ignore_errors=True)
+                initStore(store)
+                (store / "active" / activeName).write_text(OPEN_BUG, encoding="utf8")
+                (store / "archive" / archiveName).write_text(OPEN_BUG, encoding="utf8")
+                fi = FileIssues({"dir": str(store)})
+                with self.assertRaisesRegex(RuntimeError, "more than one ticket file matches SK-0001"):
+                    fi.issue("SK-0001")
+                with self.assertRaisesRegex(RuntimeError, "more than one ticket file matches SK-0001"):
+                    fi.addComment("SK-0001", fi.textComment("a note"))
+                self.assertEqual((store / "active" / activeName).read_text(encoding="utf8"), OPEN_BUG)
+
+    def test_active_and_archive_are_read_together(self):
+        writeIssue(self.dir, "SK-0001-a.md", OPEN_BUG)
+        archive = Path(self.dir) / "archive"
+        archive.mkdir()
+        (archive / "SK-0002-b.md").write_text(IN_PROGRESS_TASK, encoding="utf8")
+        fi = FileIssues({"dir": self.dir})
+        self.assertEqual([r["id"] for r in fi.list()], ["SK-0001", "SK-0002"])
+        self.assertEqual(fi.issue("SK-0002")["key"], "SK-0002")
+
+    def test_a_ticket_at_the_top_level_is_refused_naming_the_file_and_active(self):
+        stray = Path(self.dir) / "SK-0003-stray.md"
+        stray.write_text(OPEN_BUG, encoding="utf8")
+        fi = FileIssues({"dir": self.dir})
+        for read in (fi.list, lambda: fi.issue("SK-0003")):
+            with self.assertRaisesRegex(RuntimeError, f"{stray.name}.*top level.*active/"):
+                read()
+
+
+class CloseHelperTests(unittest.TestCase):
     def test_closingFields_by_status(self):
         self.assertEqual(closingFields({"status": "in-progress", "closed": ""}), {"status": "done"})
         self.assertEqual(closingFields({"status": "done", "closed": ""}), {"status": "done"})
