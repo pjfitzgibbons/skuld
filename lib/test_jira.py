@@ -102,6 +102,19 @@ class JiraTests(unittest.TestCase):
         finally:
             cleanup()
 
+    # Done never moves a Jira issue (decision #5): its close only returns the note.
+    def test_close_sends_nothing_and_returns_the_close_note(self):
+        def handler(method, path, body):
+            raise AssertionError(f"unexpected {method} {path}")
+
+        jira, requests, cleanup = fakeJira(handler)
+        try:
+            jira.checkClose("CIAM-80")
+            self.assertEqual(jira.close("CIAM-80"), f"Close CIAM-80 in Jira: {jira.browseUrl('CIAM-80')}")
+            self.assertEqual(requests, [])
+        finally:
+            cleanup()
+
     def test_transition_refuses_when_jira_accepts_post_but_keeps_old_status(self):
         def handler(method, path, body):
             if path == "/rest/api/3/issue/CIAM-80/transitions" and method == "GET":

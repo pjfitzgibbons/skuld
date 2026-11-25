@@ -2,7 +2,9 @@
 # of Jira. FileIssues implements the same surface lib/jira.py's Jira class does -- list(jql),
 # issue(key), blockers(issue), statusTransitionId(key, name), transition(key, name),
 # textComment(text), addComment(key, doc) -- returning dicts shaped the way callers (lib/cli.py,
-# lib/start.py, lib/done.py) already read Jira's, so none of them need a SK-specific branch.
+# lib/start.py, lib/done.py) already read Jira's, so none of them need a SK-specific branch. Done's
+# last step is the port's close(key), after its checkClose(key): a ticket closes, a Jira issue
+# returns the note to close it by hand.
 # isFileBacked(key) is the dispatch: lib/cli.py's jiraFrom(cfg, key) calls it to decide whether a
 # key's commands go to Jira or to a FileIssues instance -- user decision 2026-11-05.
 #
@@ -11,8 +13,9 @@
 #  2. Writes go through lib/issue_update.py, the one writer of an issue file (the `issue-update`
 #     command): Start's transition runs `status=in-progress`, then reads it back (transition()),
 #     the same refuse-if-it-didn't-take guard Jira's own transition() uses. Every addComment call
-#     is an `issue-update --log` line under the `## Log` heading. Done never changes status --
-#     same hard rule as Jira (docs/architecture.md §7.3); the human sets `status: done`.
+#     is an `issue-update --log` line under the `## Log` heading. Done's close(key) sets
+#     `status: done` and `closed:` the same way, after the merge line; Done never changes a Jira
+#     issue's status (docs/architecture.md §7.3).
 #  3. `plan list`/the picker merge Jira's JQL results with every SK file whose status is `open` or
 #     `in-progress` (lib/cli.py's issueRows()).
 import re
@@ -53,9 +56,16 @@ TARGET_TO_STATUS_VALUE = {"In Progress": "in-progress"}
 # anything else -> chore. bug -> Bug (fix); task and question -> Task (feat).
 TYPE_NAME_MAP = {"bug": "Bug", "task": "Task", "question": "Task"}
 
+# The statuses that end a ticket (issues/README.md's enum).
+CLOSED_STATUSES = ("done", "wontfix")
+
+# A fenced code block (CommonMark 0.31.2 §4.5): up to three spaces, then three or more backticks or
+# tildes. A closing fence is the same character, at least as long, followed by nothing but whitespace.
+FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+BOX_RE = re.compile(r"^- \[([ xX])\]\s*(.*)$")
+
 # Shared with lib/issue_update.py, which edits the front matter and Log this module reads.
 FRONTMATTER_RE = re.compile(r"^---\n(.*?\n)---\n?(.*)$", re.DOTALL)
-LOG_HEADING_RE = re.compile(r"(?m)^## Log\s*$")
 LOG_LINE_RE = re.compile(r"^-\s*(\d{4}-\d{2}-\d{2}):\s*(.*)$")
 
 
@@ -94,6 +104,62 @@ def _flatten(doc):
     return " ".join(parts)
 
 
+# The fence a line opens ("````", "~~~"), or None. A backtick fence's info string has no backtick.
+def openingFence(line):
+    found = FENCE_RE.match(line.rstrip("\r\n"))
+    if not found or ("`" in found[1] and "`" in found[2]):
+        return None
+    return found[1]
+
+
+def closesFence(line, fence):
+    found = FENCE_RE.match(line.rstrip("\r\n"))
+    return bool(found) and found[1][0] == fence[0] and len(found[1]) >= len(fence) and not found[2].strip()
+
+
+# (offset, line) for each line of text outside a code fence, fence lines included in neither. A fence
+# left open runs to the end of the text.
+def linesOutsideFences(text):
+    fence = None
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        if fence is None and (opened := openingFence(line)):
+            fence = opened
+        elif fence is not None and closesFence(line, fence):
+            fence = None
+        elif fence is None:
+            yield offset, line
+        offset += len(line)
+
+
+# The start and end of the first `## <name>` line in text that is outside a code fence, or None. A
+# heading inside a fenced block, or in inline code, is quoted text, not a section.
+def headingSpan(text, name):
+    for offset, line in linesOutsideFences(text):
+        if re.match(rf"## {name}\s*$", line):
+            return offset, offset + len(line)
+    return None
+
+
+# The lines under the `## <name>` heading, up to the next `## ` heading, leaving out code fences.
+def sectionLines(text, name):
+    span = headingSpan(text, name)
+    if not span:
+        return []
+    lines = []
+    for _offset, line in linesOutsideFences(text[span[1] :]):
+        if line.startswith("## "):
+            break
+        lines.append(line.rstrip("\n"))
+    return lines
+
+
+# The `## Done` boxes still unticked, each as its text.
+def untickedBoxes(text):
+    boxes = (BOX_RE.match(line.strip()) for line in sectionLines(text, "Done"))
+    return [m.group(2).strip() for m in boxes if m and m.group(1) == " "]
+
+
 # frontmatter dict, title, description body (everything between the title and ## Log, or end of
 # file), and the ## Log entries (each { date, text }), from one issue file's full text.
 def _parse(text):
@@ -110,8 +176,8 @@ def _parse(text):
         front[key.strip()] = value
 
     rest = m.group(2)
-    log_match = LOG_HEADING_RE.search(rest)
-    before, log_text = (rest[: log_match.start()], rest[log_match.end() :]) if log_match else (rest, "")
+    log_span = headingSpan(rest, "Log")
+    before, log_text = (rest[: log_span[0]], rest[log_span[1] :]) if log_span else (rest, "")
 
     title = ""
     body_lines = []
@@ -124,12 +190,21 @@ def _parse(text):
         body_lines.append(line)
     body = "\n".join(body_lines).strip("\n")
 
+    return front, title, body, _logEntries(log_text)
+
+
+# The ## Log entries (each { date, text }) in log_text. A wrapped entry's indented continuation
+# lines join its text, so a long line reads back whole; an indented list item under an entry is its
+# own line, not part of the entry.
+def _logEntries(log_text):
     entries = []
     for line in log_text.strip("\n").split("\n"):
         lm = LOG_LINE_RE.match(line.strip())
         if lm:
             entries.append({"date": lm.group(1), "text": lm.group(2)})
-    return front, title, body, entries
+        elif entries and line.startswith("  ") and line.strip() and not line.strip().startswith(("- ", "* ")):
+            entries[-1]["text"] += " " + line.strip()
+    return entries
 
 
 # Makes the store's folders that are missing and returns the ones it made. Only creates: the
@@ -146,6 +221,15 @@ def initStore(root):
     for name in made:
         (root / name).mkdir()
     return made
+
+
+# The front matter a Done writes to close a ticket: nothing when it is closed with its date, else the
+# closed status it has (or done); issue_update's closed rule fills the date in.
+def closingFields(front):
+    status = front.get("status")
+    if status in CLOSED_STATUSES:
+        return {} if front.get("closed") else {"status": status}
+    return {"status": "done"}
 
 
 def _keyFromFilename(name):
@@ -295,7 +379,25 @@ class FileIssues:
     def browseUrl(self, key):
         return str(self._path(key))
 
-    # What Done prints instead of "Close KEY in Jira: <url>" -- there is no Jira transition to ask
-    # for; the human sets status: done in the file by hand (decision #2).
-    def closeNote(self, key):
-        return f"{key} is file-backed: set status: done in {self._path(key)} when it's settled."
+    # Refuses, before Done changes anything, when close() would: a Done box unticked, or a field the
+    # checker rejects.
+    def checkClose(self, key):
+        from .issue_update import closeProblems  # see _path()
+
+        problems = closeProblems(self.dir, self._path(key).read_text(encoding="utf8"))
+        if problems:
+            raise RuntimeError(f"{canonicalKey(key)} can't be closed; nothing changed: " + "; ".join(problems))
+
+    # Done's close of a ticket: status done, closed today, INDEX.md regenerated (a failed reindex warns). A ticket already
+    # closed with its date set is left as it is. Returns what Done prints.
+    def close(self, key):
+        from .issue_update import updateTicket  # see _path()
+
+        key = canonicalKey(key)
+        front = _parse(self._path(key).read_text(encoding="utf8"))[0]
+        fields = closingFields(front)
+        if not fields:
+            return f"{key} is already closed."
+        updateTicket(self.dir, key, fields)
+        closed = _parse(self._path(key).read_text(encoding="utf8"))[0]
+        return f"Closed {key}: status {closed['status']}, closed {closed['closed']}."

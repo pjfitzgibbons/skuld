@@ -8,8 +8,11 @@
 #  - every field is checked before anything is written, and a refusal names the field or key;
 #  - a Jira key is refused; `ticket_id` is written first by issue-create, and never added by
 #    issue-update to a file that has none;
+#  - `closed` follows `status`: a closing status gets today's date unless it has one, any other status
+#    clears it; an open ticket is never in a milestone whose file says it is closed (§4.1);
 #  - each command prints the path it wrote, then runs `store-index` on the store. It commits
 #    nothing: the store's watcher does.
+# Done's close of a ticket (FileIssues.checkClose and close, lib/fileissues.py) runs the same checks.
 import fcntl
 import os
 import re
@@ -17,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 from string import Template
 from contextlib import contextmanager
 from datetime import date
@@ -26,20 +30,29 @@ from . import config as config_mod
 from .issuekeys import KEY_RE
 from .fileissues import (
     _parse,
+    CLOSED_STATUSES,
     FRONTMATTER_RE,
     KEY_DIGITS,
-    LOG_HEADING_RE,
     PROJECT,
     STATUS_MAP,
     TICKET_FOLDERS,
     _keyFromFilename,
     canonicalKey,
+    closingFields,
+    headingSpan,
     isFileBacked,
+    untickedBoxes,
 )
 
 # issues/README.md's front matter, less `ticket_id`, which only issue-create writes.
 # issues/README.md's `type` values.
 TYPES = ("bug", "task", "question")
+
+# issues/README.md's story points (Fibonacci).
+FIBONACCI = ("1", "2", "3", "5", "8", "13")
+
+# A ## Log line wraps here, continuation lines indented two spaces, as the store's tickets are.
+LOG_WIDTH = 100
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -131,6 +144,8 @@ def valueProblem(field, value):
         return f'field "status": "{value}" is not a status; the statuses are {", ".join(STATUS_MAP)}'
     if field == "type" and value not in TYPES:
         return f'field "type": "{value}" is not a type; the types are {", ".join(TYPES)}'
+    if field == "points" and value not in FIBONACCI:
+        return f'field "points": "{value}" is not a story-point number; the numbers are {", ".join(FIBONACCI)}'
     if field == "ordinal" and not value.isdigit():
         return f'field "ordinal": "{value}" is not a whole number'
     if field in ("opened", "closed") and not isIsoDate(value):
@@ -198,10 +213,20 @@ def setField(text, field, value):
     return text[:start] + newBlock + text[end:]
 
 
-# A dated line at the end of the file, under a ## Log heading added once if the file has none.
-def appendLog(text, line):
+# A dated log entry, wrapped to width: continuation lines indent two spaces.
+def logEntry(line, width=LOG_WIDTH):
     entry = f"- {date.today().isoformat()}: {line}"
-    if LOG_HEADING_RE.search(text):
+    # A lone "-" or "*" is held to the word before it, so no wrapped line starts like a list item.
+    glued = re.sub(r"(?<=\S) ([-*])(?= )", "\0\\1", entry)
+    wrapped = textwrap.fill(glued, width=width, subsequent_indent="  ", break_long_words=False, break_on_hyphens=False)
+    return wrapped.replace("\0", " ")
+
+
+# The entry at the end of the file, under a ## Log heading added once if the file has none outside a
+# code fence.
+def appendLog(text, line, width=LOG_WIDTH):
+    entry = logEntry(line, width)
+    if headingSpan(text, "Log"):
         return text.rstrip("\n") + "\n" + entry + "\n"
     return text.rstrip("\n") + "\n\n## Log\n" + entry + "\n"
 
@@ -306,6 +331,78 @@ def refuseBadStoreValues(store, fields):
         raise RuntimeError("nothing written; " + "; ".join(problems))
 
 
+def milestoneStatus(store, milestone):
+    return _parse((Path(store) / "milestones" / f"{milestone}.md").read_text(encoding="utf8"))[0].get("status")
+
+
+# `closed` is set exactly when the status is closed.
+def closedProblem(front):
+    if "status" not in front:
+        return None
+    closing = front["status"] in CLOSED_STATUSES
+    if closing and not front.get("closed"):
+        return "closed: a closed ticket needs the date it closed"
+    if not closing and front.get("closed"):
+        return f'closed: an open ticket ("{front["status"]}") has no closing date'
+    return None
+
+
+# An open ticket is never in a closed milestone (docs/architecture.md §4.1).
+def closedMilestoneProblem(store, front):
+    milestone = front.get("milestone")
+    if not milestone or milestone not in milestoneIds(store) or front.get("status") in CLOSED_STATUSES:
+        return None
+    if milestoneStatus(store, milestone) == "closed":
+        return f'milestone: "{milestone}" is closed, and an open ticket can\'t be in it'
+    return None
+
+
+# The rules that read the whole ticket, not one field.
+def wholeProblems(store, front):
+    found = [closedProblem(front), closedMilestoneProblem(store, front)]
+    return [why for why in found if why]
+
+
+# `closed` follows the status. A closed date the caller gave is never discarded, so an open status with
+# one reaches closedProblem and is refused. A closing status with no date (given empty, or none given
+# and none on the ticket) gets today's; an open status clears the date; closing again keeps it.
+def withClosed(fields, front):
+    status = fields.get("status")
+    if status is None or fields.get("closed"):
+        return fields
+    if status not in CLOSED_STATUSES:
+        return {**fields, "closed": ""}
+    if "closed" not in fields and front.get("closed"):
+        return fields
+    return {**fields, "closed": date.today().isoformat()}
+
+
+# Every problem with a whole ticket's front matter, as sentences: its known fields, then the whole-ticket
+# rules. The checker Done runs on the ticket it is about to close.
+def ticketProblems(store, front):
+    known = {field: value for field, value in front.items() if field in FIELDS}
+    found = [fieldProblem(field, value) or storeProblem(store, field, value) for field, value in known.items()]
+    return [why for why in found if why] + wholeProblems(store, front)
+
+
+# What stops Done closing the ticket in text, each as a sentence; none when it can close, or is
+# already closed. All of them are found before Done changes anything.
+def closeProblems(store, text):
+    front = _parse(text)[0]
+    fields = closingFields(front)
+    if not fields:
+        return []
+    problems = [f'the Done box "{box}" is not ticked' for box in untickedBoxes(text)]
+    problems += [f"the closed ticket fails the checker, {why}" for why in ticketProblems(store, {**front, **withClosed(fields, front)})]
+    return problems
+
+
+def refuseBadTicket(store, front):
+    problems = wholeProblems(store, front)
+    if problems:
+        raise RuntimeError("nothing written; " + "; ".join(problems))
+
+
 # `blocked_by+=KEY` and `blocked_by-=KEY`: one blocker added or removed, as ("blocked_by", "+", KEY).
 # Returns the new blocked_by value, or refuses naming the key or field.
 def editedBlockers(store, ticketKey, current, field, op, value):
@@ -345,11 +442,14 @@ def updateTicket(store, key, fields, log=None, reindex=None, edits=()):
     ticketKey = canonicalKey(key)
     path = ticketPath(store, ticketKey)
     text = path.read_text(encoding="utf8")
+    fields = withClosed(fields, _parse(text)[0])
     for field, value in fields.items():
         text = setField(text, field, writtenValue(field, value))
     for field, op, value in edits:
         current = _parse(text)[0].get("blocked_by", "")
         text = setField(text, field, editedBlockers(store, ticketKey, current, field, op, value))
+    if fields or edits:  # a log line alone doesn't re-judge a ticket written before these rules
+        refuseBadTicket(store, _parse(text)[0])
     if log is not None:
         text = appendLog(text, log)
     atomicWrite(path, text)
@@ -432,7 +532,7 @@ def ticketText(key, title, ordinal, given):
 # Writes a new ticket in store and returns its path: the next free key and ordinal, `ticket_id`
 # first, the outline and a Log with `Filed.`, from templates/issue.md.
 def createTicket(store, title, fields=None, reindex=None):
-    fields = fields or {}
+    fields = withClosed(fields or {}, {})
     if not title.strip() or re.search(r"[\r\n]", title):
         raise RuntimeError("title: the title must be one non-empty line")
     refuseBadFields(fields)
@@ -443,6 +543,7 @@ def createTicket(store, title, fields=None, reindex=None):
         folder.mkdir(exist_ok=True)  # a fresh clone has no empty active/; the store's root is not a ticket folder
         path = folder / f"{key}-{slugOf(title)}.md"
         text = ticketText(key, title, nextOrdinal(store), fields)
+        refuseBadTicket(store, _parse(text)[0])
         atomicCreate(path, text)
     (reindex or reindexStore)(store)
     return path

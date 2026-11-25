@@ -16,7 +16,7 @@ from unittest import mock
 
 from lib import issue_update
 from lib.fileissues import _parse
-from lib.issue_update import createMain, createTicket, updateMain, updateTicket
+from lib.issue_update import LOG_WIDTH, closeProblems, createMain, createTicket, setField, updateMain, updateTicket
 
 OUTLINE_PY = Path(__file__).parent.parent / "skills" / "jira-issues" / "scripts" / "outline.py"
 
@@ -407,6 +407,185 @@ class ReviewRoundTests(StoreCase):
         stub = "import sys\nsys.stderr.write('boom: cannot start\\n')\nsys.exit(2)\n"
         with self.stubChecker(stub):
             self.assertEqual(issue_update.outlineProblems(path), ["the outline check failed: boom: cannot start"])
+
+
+class ClosedFollowsStatusTests(StoreCase):
+    def setUp(self):
+        super().setUp()
+        self.path = self.write("SK-0001-a-ticket.md", TICKET)
+        self.today = date.today().isoformat()
+
+    def front(self):
+        return _parse(self.path.read_text(encoding="utf8"))[0]
+
+    def addMilestone(self, name, status):
+        (self.store / "milestones").mkdir(exist_ok=True)
+        (self.store / "milestones" / f"{name}.md").write_text(f"---\nid: {name}\nstatus: {status}\n---\n", encoding="utf8")
+
+    def assertRefusedChangingNothing(self, pattern, fields):
+        before = self.path.read_bytes()
+        with self.assertRaisesRegex(RuntimeError, pattern):
+            self.update("SK-0001", fields)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_status_done_sets_closed_today(self):
+        self.update("SK-0001", {"status": "done"})
+        self.assertEqual((self.front()["status"], self.front()["closed"]), ("done", self.today))
+
+    def test_wontfix_sets_closed_today_too(self):
+        self.update("SK-0001", {"status": "wontfix"})
+        self.assertEqual(self.front()["closed"], self.today)
+
+    def test_an_empty_closed_with_a_closing_status_gets_today(self):
+        self.update("SK-0001", {"status": "done", "closed": ""})
+        self.assertEqual(self.front()["closed"], self.today)
+
+    def test_closed_follows_status_for_every_combination(self):
+        today, given, kept = self.today, "2026-01-02", "2026-11-03"
+        refused = "closed"
+        noClosed = ("open", "")
+        # (status given, closed given, ticket before) -> (status, closed) written, or the refusal
+        rows = [
+            # an open status
+            ("in-progress", given, "open", refused),
+            ("in-progress", given, "done", refused),
+            ("in-progress", "", "open", ("in-progress", "")),
+            ("in-progress", "", "done", ("in-progress", "")),
+            ("in-progress", None, "open", ("in-progress", "")),
+            ("in-progress", None, "done", ("in-progress", "")),
+            # a closing status
+            ("done", given, "open", ("done", given)),
+            ("done", given, "done", ("done", given)),
+            ("done", "", "open", ("done", today)),
+            ("done", "", "done", ("done", today)),
+            ("done", None, "open", ("done", today)),
+            ("done", None, "done", ("done", kept)),
+            # no status given: closed is judged against the ticket's own status
+            (None, given, "open", refused),
+            (None, given, "done", ("done", given)),
+            (None, "", "open", noClosed),
+            (None, "", "done", "closed ticket needs the date"),
+            (None, None, "open", noClosed),
+            (None, None, "done", ("done", kept)),
+        ]
+        before = {"open": TICKET, "done": TICKET.replace("status: open", "status: done").replace("closed:", f"closed: {kept}")}
+        for status, closed, existing, expected in rows:
+            with self.subTest(status=status, closed=closed, existing=existing):
+                self.path.write_text(before[existing], encoding="utf8")
+                fields = {name: value for name, value in (("status", status), ("closed", closed)) if value is not None}
+                if isinstance(expected, str):
+                    self.assertRefusedChangingNothing(expected, fields)
+                else:
+                    self.update("SK-0001", fields)
+                    self.assertEqual((self.front()["status"], self.front()["closed"]), expected)
+
+    def test_status_done_keeps_a_closed_the_caller_gave(self):
+        self.update("SK-0001", {"status": "done", "closed": "2026-01-02"})
+        self.assertEqual(self.front()["closed"], "2026-01-02")
+
+    def test_an_open_status_clears_closed(self):
+        self.update("SK-0001", {"status": "done"})
+        self.update("SK-0001", {"status": "in-progress"})
+        self.assertEqual((self.front()["status"], self.front()["closed"]), ("in-progress", ""))
+
+    def test_closed_with_an_open_status_is_refused(self):
+        self.assertRefusedChangingNothing("closed", {"closed": "2026-01-02"})
+
+    def test_an_open_ticket_is_refused_a_closed_milestone_and_a_closed_one_is_not(self):
+        self.addMilestone("shipped", "closed")
+        self.assertRefusedChangingNothing('milestone: "shipped" is closed', {"milestone": "shipped"})
+        self.update("SK-0001", {"milestone": "shipped", "status": "done"})
+        self.assertEqual(self.front()["milestone"], "shipped")
+
+    def test_a_log_line_alone_does_not_re_judge_a_ticket_with_a_closed_milestone(self):
+        self.addMilestone("shipped", "closed")
+        self.path.write_text(self.path.read_text(encoding="utf8").replace("closed:\n", "closed:\nmilestone: shipped\n"), encoding="utf8")
+        self.update("SK-0001", log="noted")
+        self.assertIn("noted", self.path.read_text(encoding="utf8"))
+
+    def test_a_blocker_edit_re_judges_the_ticket_and_a_log_line_alone_does_not(self):
+        self.addMilestone("shipped", "closed")
+        self.write("SK-0002-other.md", TICKET.replace("ticket_id: SK-0001", "ticket_id: SK-0002"))
+        self.path.write_text(self.path.read_text(encoding="utf8").replace("closed:\n", "closed:\nmilestone: shipped\n"), encoding="utf8")
+        before = self.path.read_bytes()
+        with self.assertRaisesRegex(RuntimeError, 'milestone: "shipped" is closed'):
+            updateTicket(self.store, "SK-0001", {}, edits=[("blocked_by", "+", "SK-0002")], reindex=noIndex)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.update("SK-0001", log="noted")
+        self.assertIn("noted", self.path.read_text(encoding="utf8"))
+
+    def test_a_new_ticket_is_refused_a_closed_milestone(self):
+        self.addMilestone("shipped", "closed")
+        with self.assertRaisesRegex(RuntimeError, "shipped"):
+            createTicket(self.store, "New one", {"milestone": "shipped"}, reindex=noIndex)
+
+    def test_story_points_are_fibonacci(self):
+        self.assertRefusedChangingNothing('field "points"', {"points": "4"})
+        self.update("SK-0001", {"points": "5"})
+        self.assertEqual(self.front()["points"], "5")
+
+
+class CloseProblemsTests(StoreCase):
+    DONE_TICKET = TICKET.replace("## Log", "## Done\n\n- [x] One.\n{more}\n## Log")
+
+    def problems(self, text):
+        return closeProblems(self.store, text)
+
+    def test_a_ticked_ticket_with_valid_fields_has_none(self):
+        self.assertEqual(self.problems(self.DONE_TICKET.format(more="")), [])
+
+    def test_an_unticked_box_is_named(self):
+        found = self.problems(self.DONE_TICKET.format(more="- [ ] Two.\n"))
+        self.assertEqual(found, ['the Done box "Two." is not ticked'])
+
+    def test_a_field_the_checker_rejects_is_named(self):
+        found = self.problems(self.DONE_TICKET.format(more="").replace("closed:\n", "closed:\nblocked_by: SK-9999\n"))
+        self.assertEqual(len(found), 1)
+        self.assertIn('field "blocked_by"', found[0])
+
+    def test_a_ticket_already_closed_with_its_date_has_none(self):
+        text = self.DONE_TICKET.format(more="- [ ] Two.\n").replace("status: open", "status: done").replace("closed:\n", "closed: 2026-11-02\n")
+        self.assertEqual(self.problems(text), [])
+
+
+class FrontMatterAndLogTests(StoreCase):
+    def test_setField_adds_a_field_the_block_lacks_and_replaces_one_it_has(self):
+        self.assertIn("closed:\npr: https://example.test/pull/1\n---\n", setField(TICKET, "pr", "https://example.test/pull/1"))
+        self.assertIn("status: done\n", setField(TICKET, "status", "done"))
+
+    def test_a_long_log_wraps_at_the_house_width_and_reads_back_whole(self):
+        path = self.write("SK-0001-a-ticket.md", TICKET)
+        text = " ".join(["word"] * 60)
+        self.update("SK-0001", log=text)
+        lines = path.read_text(encoding="utf8").rstrip("\n").split("\n")
+        entry = lines[lines.index("- 2026-11-01: Filed.") + 1 :]
+        self.assertGreater(len(entry), 1)
+        self.assertTrue(all(len(line) <= LOG_WIDTH for line in entry))
+        self.assertTrue(all(line.startswith("  ") for line in entry[1:]))
+        self.assertEqual(_parse(path.read_text(encoding="utf8"))[3][-1]["text"], text)
+
+    def test_a_wrapped_entry_with_a_spaced_dash_at_the_wrap_reads_back_whole(self):
+        path = self.write("SK-0001-a-ticket.md", TICKET)
+        text = "word " * 17 + "x - then the rest of it"
+        self.update("SK-0001", log=text)
+        self.assertEqual(_parse(path.read_text(encoding="utf8"))[3][-1]["text"], text.strip())
+        self.assertTrue(all(len(line) <= LOG_WIDTH for line in path.read_text(encoding="utf8").splitlines()))
+
+    def test_a_log_heading_inside_a_code_fence_is_not_the_log(self):
+        fenced = TICKET.replace("## Log", "```\n## Log\n```\n\n## Log")
+        path = self.write("SK-0001-a-ticket.md", fenced)
+        self.update("SK-0001", log="new")
+        self.assertEqual(path.read_text(encoding="utf8"), fenced.rstrip("\n") + f"\n- {date.today().isoformat()}: new\n")
+        self.assertEqual([e["text"] for e in _parse(path.read_text(encoding="utf8"))[3]], ["Filed.", "new"])
+
+    def test_a_log_heading_only_in_a_code_fence_gets_a_real_log(self):
+        path = self.write("SK-0001-a-ticket.md", NO_LOG + "```\n## Log\n```\n")
+        self.update("SK-0001", log="new")
+        self.assertEqual([e["text"] for e in _parse(path.read_text(encoding="utf8"))[3]], ["new"])
+
+    def test_an_indented_sub_bullet_reads_back_apart_from_the_entry_above(self):
+        text = TICKET + "  - a detail\n"
+        self.assertEqual(_parse(text)[3], [{"date": "2026-11-01", "text": "Filed."}])
 
 
 class CommandLineTests(StoreCase):

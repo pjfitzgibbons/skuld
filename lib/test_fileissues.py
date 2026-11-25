@@ -5,10 +5,11 @@
 import shutil
 import tempfile
 import unittest
+from datetime import date
 from unittest import mock
 from pathlib import Path
 
-from lib.fileissues import STORE_FOLDERS, FileIssues, _parse, canonicalKey, initStore, isFileBacked
+from lib.fileissues import STORE_FOLDERS, FileIssues, _parse, canonicalKey, closingFields, headingSpan, initStore, isFileBacked, untickedBoxes
 
 
 def writeIssue(dir, name, text):
@@ -204,19 +205,32 @@ class FileIssuesTests(unittest.TestCase):
         row = self.fi.list()[0]
         self.assertEqual(row["after"], "CIAM-163")
 
-    # --- browseUrl / closeNote -----------------------------------------------------------------
+    # --- browseUrl -----------------------------------------------------------------
 
     def test_browseUrl_is_the_absolute_file_path(self):
         path = writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
         self.assertEqual(self.fi.browseUrl("SK-0001"), str(path.resolve()))
 
-    def test_closeNote_names_the_file_not_a_jira_url(self):
-        writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
-        note = self.fi.closeNote("SK-0001")
-        self.assertIn("SK-0001", note)
-        self.assertIn(self.dir, note)
-        self.assertNotIn("atlassian", note)
+    # --- checkClose / close --------------------------------------------------------------------
 
+    def test_close_sets_status_done_and_closed_today_and_says_so(self):
+        path = writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG)
+        self.fi.checkClose("SK-0001")
+        note = self.fi.close("SK-0001")
+        front = _parse(path.read_text(encoding="utf8"))[0]
+        self.assertEqual((front["status"], front["closed"]), ("done", date.today().isoformat()))
+        self.assertEqual(note, f"Closed SK-0001: status done, closed {front['closed']}.")
+
+    def test_close_leaves_a_ticket_already_closed_with_its_date(self):
+        text = OPEN_BUG.replace("status: open", "status: done").replace("closed:\n", "closed: 2026-11-03\n")
+        path = writeIssue(self.dir, "SK-0001-something-is-wrong.md", text)
+        self.assertEqual(self.fi.close("SK-0001"), "SK-0001 is already closed.")
+        self.assertEqual(path.read_text(encoding="utf8"), text)
+
+    def test_checkClose_refuses_an_unticked_done_box_naming_it(self):
+        writeIssue(self.dir, "SK-0001-something-is-wrong.md", OPEN_BUG + "\n## Done\n\n- [ ] Not yet.\n")
+        with self.assertRaisesRegex(RuntimeError, "SK-0001 can't be closed.*Not yet"):
+            self.fi.checkClose("SK-0001")
 
     # --- list(): ordinal order -------------------------------------------------------------------
 
@@ -404,6 +418,51 @@ class StoreLayoutTests(unittest.TestCase):
         for read in (fi.list, lambda: fi.issue("SK-0003")):
             with self.assertRaisesRegex(RuntimeError, f"{stray.name}.*top level.*active/"):
                 read()
+
+
+class CloseHelperTests(unittest.TestCase):
+    def test_closingFields_by_status(self):
+        self.assertEqual(closingFields({"status": "in-progress", "closed": ""}), {"status": "done"})
+        self.assertEqual(closingFields({"status": "done", "closed": ""}), {"status": "done"})
+        self.assertEqual(closingFields({"status": "wontfix", "closed": ""}), {"status": "wontfix"})
+        self.assertEqual(closingFields({"status": "done", "closed": "2026-11-03"}), {})
+        self.assertEqual(closingFields({"status": "wontfix", "closed": "2026-11-03"}), {})
+
+    def test_untickedBoxes_reads_the_done_section_outside_code_fences(self):
+        text = (
+            "# T\n\n## Task\n\n- [ ] not a Done box\n\n## Done\n\n- [x] one\n- [ ] two\n"
+            "```\n- [ ] in a fence\n## Log\n```\n- [X] three\n\n## Log\n\n- 2026-11-09: x\n- [ ] after\n"
+        )
+        self.assertEqual(untickedBoxes(text), ["two"])
+
+
+class FencedHeadingTests(unittest.TestCase):
+    REAL_TICKED = "\n## Done\n\n- [x] real\n"
+
+    def test_a_four_backtick_fence_holding_three_backticks_hides_its_fake_done(self):
+        text = "# T\n\n````\n```\n## Done\n\n- [x] fake\n````\n\n## Done\n\n- [ ] real\n"
+        self.assertEqual(untickedBoxes(text), ["real"])
+
+    def test_a_tilde_fence_holding_backticks_hides_its_fake_done(self):
+        text = "# T\n\n~~~\n```\n## Done\n\n- [ ] fake\n~~~\n" + self.REAL_TICKED
+        self.assertEqual(untickedBoxes(text), [])
+
+    def test_a_shorter_closing_fence_does_not_close(self):
+        text = "# T\n\n~~~~\n~~~\n## Done\n\n- [ ] fake\n~~~~\n" + self.REAL_TICKED
+        self.assertEqual(untickedBoxes(text), [])
+
+    def test_a_closing_fence_with_trailing_text_does_not_close(self):
+        text = "# T\n\n```\n``` not a close\n## Done\n\n- [ ] fake\n```\n" + self.REAL_TICKED
+        self.assertEqual(untickedBoxes(text), [])
+
+    def test_an_unclosed_fence_runs_to_the_end(self):
+        text = "# T\n\n## Done\n\n- [x] one\n\n```\n- [ ] never closed\n"
+        self.assertEqual(untickedBoxes(text), [])
+
+    def test_a_fake_log_inside_a_longer_fence_is_not_the_log(self):
+        text = "# T\n\n````\n```\n## Log\n````\n\n## Log\n\n- 2026-11-09: x\n"
+        start, _end = headingSpan(text, "Log")
+        self.assertTrue(text[start:].startswith("## Log\n\n- 2026-11-09"))
 
 
 if __name__ == "__main__":

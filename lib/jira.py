@@ -242,9 +242,12 @@ class Jira:
     def browseUrl(self, key):
         return f'{self.settings["baseUrl"]}/browse/{key}'
 
-    # What Done prints in place of a status change (decision #5/§7.3): there is no Jira write
-    # left to make once the note is posted, only a human transition.
-    def closeNote(self, key):
+    # Done's close, as this port has it: nothing to check, and no Jira write to make once the note is
+    # posted, only a human transition (decision #5/§7.3). Returns the note Done prints in its place.
+    def checkClose(self, key):
+        pass
+
+    def close(self, key):
         return f"Close {key} in Jira: {self.browseUrl(key)}"
 
     def addComment(self, key, adfDoc):

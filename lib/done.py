@@ -1,16 +1,19 @@
 # Finishing an issue once its PR has merged: its worktree and branch gone, the main checkout's base
-# at the merge, and a comment on the issue linking the merge, with a reminder to close it by hand.
+# at the merge, and a comment on the issue linking the merge. A store ticket is then closed (status
+# done, closed today, INDEX.md regenerated); a Jira issue is left for its human to close.
 # Ported from lib/done.js. Faithful, behavior-preserving port: no change in logic. Each step runs
 # only when it has something to do, so a Done that stopped part way is finished by the next, and a
 # second Done changes nothing.
 #
-# INVARIANT (decision #5): Done never transitions the Jira issue, to Done or anything else. Peter's
+# INVARIANT (decision #5): Done never transitions the Jira issue, to Done or anything else. (A store
+# ticket is a file, with no required fields or workflow: its client's close() writes its front
+# matter; Jira's close() only returns the note.) Peter's
 # PreToolUse hook already blocks any Bash command that looks like it moves an issue to a terminal
 # status, and a terminal transition needs a human regardless -- Jira issues can carry required-field
 # prompts or workflow conditions on close that only a person reviewing the issue can satisfy. So
 # finish() has no status write at all: it posts an ADF comment (jira.addComment) linking the PR and
 # merge commit, and its last note is the literal string "Close <KEY> in Jira: <browse URL>" for
-# Peter to act on himself. No function in this file calls jira.transition, and none should ever be
+# Peter to act on himself (a store ticket's last note says it was closed). No function in this file calls jira.transition, and none should ever be
 # added that does.
 import json
 import os
@@ -338,6 +341,10 @@ def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result,
     if repoOf(origin) != repoOf(repoUrl(pr)) and repoOf(named) != repoOf(repoUrl(pr)):
         raise RuntimeError(f"{link} isn't in {checkout}'s origin, {named}; link {key}'s PR from its own repo, then Done again")
 
+    # The close's own checks (a ticket's Done boxes, the checker) are made now,
+    # not after the merge line. Jira's has none.
+    jira.checkClose(key)
+
     # The issue's worktree is the one on the PR's head branch, whatever its name, so the branch can be
     # deleted; else the one Start would find. A head name counts only from this repo, in a worktree of
     # its own: a fork's, or a long-lived branch such as develop in the main checkout, isn't the issue's.
@@ -494,7 +501,7 @@ def finishIn(jira, key, project, checkout, common, pr, found, porcelain, result,
     if not noted:
         jira.addComment(key, jira.textComment(doneNote(pr)))
         notes.append(f"Added the note to {key}.")
-    notes.append(jira.closeNote(key))
+    notes.append(jira.close(key))
 
     # Rule 4: the issue is finished, so it leaves the issues file that Start/Open added it to
     # (term.addIssue), its colour leaves the pulses file, and its worktree's folder leaves the plan

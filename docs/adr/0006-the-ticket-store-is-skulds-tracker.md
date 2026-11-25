@@ -68,7 +68,7 @@ names a key prefix and a list of repos; and every ticket has a web page ([§3.5]
 repo is no longer stdlib-only: the server depends on Flask, markdown-it-py, mdit-py-plugins and DuckDB
 ([§3.5](#server), [§3.7](#duckdb)). Every other rule of ADR 0001 holds as written: `store.yml` lives
 in skuld; the front matter is a restricted YAML subset; numbers never repeat;
-one issue's work stays in one repo; Done never changes a status; a round's review files live in the
+one issue's work stays in one repo; Done closes a ticket once its checks pass and never changes a Jira issue's status; a round's review files live in the
 store.
 
 ADR 0001's Status reads "Accepted, amended by ADR 0006" and names these amendments.
@@ -86,15 +86,15 @@ ADR 0001's Status reads "Accepted, amended by ADR 0006" and names these amendmen
   round's report files (SK-0014).
 - `queries/*.sql`: saved DuckDB queries ([§3.7](#duckdb)).
 - `INDEX.md`: a generated copy of the ticket list, for reading on GitHub. `issue-watch` regenerates
-  it with `scripts/index.py` and stages it in the commit it makes ([§3.4](#writes)). A pre-commit
-  hook runs `scripts/index.py --check` and refuses a commit whose `INDEX.md` is stale, so a commit
+  it with skuld's `store-index` and stages it in the commit it makes ([§3.4](#writes)). A pre-commit
+  hook runs `store-index --check` and refuses a commit whose `INDEX.md` is stale, so a commit
   made by hand keeps it current too.
 
 <a id="writes"></a>
 
 ### 3.4 Writes and sync
 
-The `plan` CLI, and `bin/issue_update`, is the only writer. `plan list --json` prints the tickets
+The `plan` CLI, and `bin/issue-create` and `bin/issue-update`, are the only writers. `plan list --json` prints the tickets
 for readers other than the server. A checker rejects dependency cycles (SK-0019).
 
 Sync between Macs: `issue-watch` commits and pushes (SK-0026), with `INDEX.md` regenerated in the

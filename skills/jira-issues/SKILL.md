@@ -48,7 +48,21 @@ Person presses **Start** on the issue's row in `plan`'s Next up list. It makes t
 
 ## Shipping
 
-When the work is done and tested, run `/ponytail:ponytail-review` on the uncommitted changes (it lists Must fix, Should fix and Nice to have, and lines that could go, and changes no code) and act on its Must fix and Should fix, or say in the PR body why not. Then write `.tmp/<KEY>/commit.txt` (ending `Assisted-by: Claude:<model>`, subject ending `(<KEY>)`) and `.tmp/<KEY>/pr-body.md`, plus any replies and ticks below. Person reviews them in the issue window and presses **Ship**, which checks them and runs `pr <KEY>` in one of its terminals. Jira's dev panel picks up the PR automatically from the branch name and PR title; nothing writes a Jira field for it. Ship again runs `pr` again, for the next round. After the merge, **Done** cleans up the worktree/branch, posts an ADF comment summarizing the work, and prints "Close `<KEY>` in Jira" with the browse URL — it never transitions the issue itself.
+When the work is done and tested, run `/ponytail:ponytail-review` on the uncommitted changes (it lists Must fix, Should fix and Nice to have, and lines that could go, and changes no code) and act on its Must fix and Should fix, or say in the PR body why not. Then write `.tmp/<KEY>/commit.txt` (ending `Assisted-by: Claude:<model>`, subject ending `(<KEY>)`) and `.tmp/<KEY>/pr-body.md`, plus any replies and ticks below. Person reviews them in the issue window and presses **Ship**, which checks them and runs `pr <KEY>` in one of its terminals. Jira's dev panel picks up the PR automatically from the branch name and PR title; nothing writes a Jira field for it. Ship again runs `pr` again, for the next round. After the merge, **Done** cleans up the worktree/branch, posts an ADF comment summarizing the work, and prints "Close `<KEY>` in Jira" with the browse URL — it never transitions the issue itself. For a store ticket, Done writes the merge line, sets `status: done` and `closed:` today, and regenerates `INDEX.md`, once every box under `## Done` is ticked and the closed ticket passes the checker; otherwise it refuses and names what failed.
+
+## Store tickets
+
+An `SK-<n>` ticket is a file in the issue store (`issueStore` in the machine config), not a Jira issue. It is written by two commands and no other way: `issue-create "<title>" [field=value ...]` makes a new one, with `ticket_id` first, the outline and a `## Log` with `Filed.`; `issue-update` changes its front matter and `## Log`. Claude never edits a ticket's front matter or `## Log` by hand and never runs `store-index` itself, since both commands run it after every write. Each prints the ticket's path and commits nothing: the store's watcher commits. `issue-update` does not add `ticket_id` to a ticket that has none.
+
+```
+issue-update SK-0047 [field=value …] [--log "text"]
+```
+
+- **Status.** Start sets `in-progress` itself. A ticket worked without Start gets `issue-update SK-<n> status=in-progress`. Never set `status=done` before the merge: Done does it, with `closed:` today, so tick every `## Done` box on the branch first.
+- **Fields.** `status`, `type`, `guide`, `opened`, `closed`, `milestone`, `ordinal`, `blocked_by`, `after`, `pr`, `parent`, `host` and `points` go through one call: `issue-update SK-<n> milestone=issue-round ordinal=160 points=3`. Every field is checked before any is written, so one bad value changes nothing and the command names it: `points` is 1 2 3 5 8 or 13, `ordinal` a whole number, dates ISO, `parent` and each `blocked_by` key a ticket in the store, `milestone` one with a file in `milestones/`. `closed` follows the status: `done` or `wontfix` without `closed=` gets today's date, an open status clears it. `issue-update --help` prints the usage.
+- **Log lines.** One dated line per thing done: `issue-update SK-<n> --log "Started the lib module."`. It adds `- <today>: <text>` under `## Log`, wrapped to the store's width.
+- **Ticking the Done list.** Tick a `## Done` box in the ticket's body with an ordinary edit, when its condition is verified, and say how in a `--log` line.
+- It refuses a Jira key: a Jira issue's description, comments and status stay Jira's (rule 2).
 
 ## Drafting a new issue
 
@@ -58,10 +72,6 @@ When the work is done and tested, run `/ponytail:ponytail-review` on the uncommi
    new_issue --check .tmp/<KEY>/<slug>.md
    ```
 3. Give Peter the same command without `--check`, as `! new_issue .tmp/<KEY>/<slug>.md`. It creates the issue (via CIAM's required-fields helper, `~/.claude/skills/jira-ciam-create/create-ciam-issue.sh`, when `project` is `CIAM`), adds its issue links and reads it back. A second run finds the issue by its summary and adds only the relations still missing.
-
-## Changing a store ticket
-
-A store ticket (`SK-<nnnn>`) is written by two commands and no other way: `issue-create "<title>" [field=value ...]` makes a new one, with `ticket_id` first, the outline and a `## Log` with `Filed.`; `issue-update <KEY> [field=value ...] [--log "text"]` sets front-matter fields and appends a dated `## Log` line. Never edit a ticket file's front matter or `## Log` by hand. Each prints the path it wrote; an unknown field, a Jira key or a value that is not one line refuses, naming it, and writes nothing. `issue-update` does not add `ticket_id` to a ticket that has none. Both run `store-index` after a write. Neither commits: the store's watcher does.
 
 ## Answering a PR review
 

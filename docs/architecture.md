@@ -62,7 +62,7 @@ GitHub's, and they are the one GitHub integration; GitHub Issues is not used.
 | Issue workspace file | `<workspaceDir>/<KEY>.code-workspace`, the issue's record of its key, worktree, prompt and ticket (a store ticket's file in `plan.ticket`, or a Jira issue's browse URL in `plan.ticketUrl`), which `plan-window` reads to open the issue. It holds settings only: no folders, no window title and no terminal environment. No window opens on it (§7.1) |
 | Start | Moving an issue to "in progress" from `plan start`, which makes its branch and worktree and logs "Started" on the issue (§7.1) |
 | Round | One pass of review: the commit message, PR body and review replies in `<store>/reviews/<KEY>/` that `pr` sends (§7.2) |
-| Finish | The squash merge of the issue's PR, then Done, which notes the merge on the issue and leaves closing it to the human (§7.3) |
+| Finish | The squash merge of the issue's PR, then Done, which notes the merge on the issue and closes a store ticket; the human closes a Jira issue (§7.3) |
 | Next up | The open issues in plan order: the store's issues by milestone and ordinal, merged with the Jira project's JQL results (§7.6) |
 | Blocker | An open issue the issue depends on: a key in the ticket's `blocked_by`, or a Jira "Blocks" link read inward (§4.2) |
 
@@ -167,7 +167,7 @@ a module interface with one class per adapter:
 
 | Port | Does | Adapters |
 | --- | --- | --- |
-| `IssueStore` | list Next up, read an issue, create, set fields, transition, append a log line, close note | `FileStore`, `Jira` |
+| `IssueStore` | list Next up, read an issue, create, set fields, transition, append a log line, close with its pre-check (a ticket closes; Jira returns the close note) | `FileStore`, `Jira` |
 | `ReviewStore` | record a round, its findings and outcomes, and read them back | files under `<store>/reviews/<KEY>/` |
 | `PullRequests` | open or update a PR, read its state and threads, post replies | `gh` |
 | `GitRemote` | fetch, push, rebase onto the base, add and remove worktrees | `git` |
@@ -239,13 +239,13 @@ through its adapter.
    (2) SHIP ────────────────▶ pr <KEY>: commit, push, open/update PR ─▶ Done boxes ticked
                               review rounds: replies/                    (Jira: dev panel, native)
    (3) squash merge on GitHub; the PR title and branch carry <KEY>
-   (4) DONE ────────────────▶ worktree and branch removed, base up ───▶ merge noted;
-                                                                         the human closes <KEY>
+   (4) DONE ────────────────▶ worktree and branch removed, base up ───▶ merge noted; a ticket closed,
+                                                                         the human closes a Jira <KEY>
 ```
 
 The default branch carries the code, and everything reaches it by PR. An issue's status lives in its
-tracker, and the only status change this tool makes is Start's move to "in progress". **Done never
-changes an issue's status** (§7.3).
+tracker. This tool's status changes are Start's move to "in progress" and Done's close of a store
+ticket; **Done never changes a Jira issue's status** (§7.3).
 
 <a id="repo-resolution"></a>
 
@@ -486,18 +486,28 @@ Done shows once a PR for the issue's branch is found and merged. It removes the 
 its issue workspace file, brings the main checkout's base up to the merge, deletes the branch, and notes
 the PR and its merge commit on the issue: an ADF comment in Jira, a `## Log` line in a ticket.
 
-**Done never changes an issue's status.** `lib/done.py` contains no call to a transition. The
-human's Claude Code `PreToolUse` hook also blocks any Bash command recognized as moving a Jira issue
-to a terminal status (Done, Closed, Cancelled, Resolved), so a hand-run command can't do it from
-inside a Claude session either. Done's last step prints the close note (`closeNote(key)`): for Jira,
-`Close CIAM-123 in Jira` with the browse URL; for a ticket, the file to set `status: done` in. Done
-never calls `showUrl()`; the printed line is what points the human at the issue.
+**Done closes a store ticket and never changes a Jira issue's status.** After the merge line, Done
+sets the ticket's front matter to `status: done` and `closed: <today>` through `issue-update`'s code and
+regenerates the store's `INDEX.md` (§7.7); a ticket already `done` with `closed:` set is left as it
+is. Done checks the close before it changes anything: every box under the ticket's `## Done` is
+ticked, and the closed ticket passes the checker (§7.7). Either failing refuses Done, naming it,
+with nothing changed. It commits nothing: the watcher commits
+the closed ticket and `INDEX.md` (§7.7). A Jira issue can
+carry required fields or workflow conditions on close that only a person can satisfy, so
+`lib/done.py` contains no call to a Jira transition. The human's Claude Code `PreToolUse` hook also
+blocks any Bash command recognized as moving a Jira issue to a terminal status (Done, Closed,
+Cancelled, Resolved), so a hand-run command can't do it from inside a Claude session either. Done's
+last step is the issue store port's `close(key)`, after its `checkClose(key)` among Done's checks; no
+caller branches on the tracker. `FileStore` closes the ticket; for Jira, `close` only returns the
+close note (`Close CIAM-123 in Jira` with the browse URL). Done never calls `showUrl()`; the printed
+line is what points the human at the issue.
 
 Done accepts an issue that is in progress or already closed, reasoning from Jira's
 `statusCategory` or the ticket's `status`, since Jira's Done-category status names vary by issue
 type.
 
-It checks everything before it changes anything, and Done again finishes what a stopped one left
+It checks everything before it changes anything, including a ticket's close checks, and Done again finishes what a stopped one left (a Done that stopped after the merge line
+closes the ticket without a second line)
 ([failure-modes.md, *Done*](failure-modes.md)). Done also removes the issue from the issues file
 (`term.removeIssue(key)`), its worktree from the plan workspace file and its line from the pulses
 file. The issue leaves the Issues view, and its terminals stay open until the human closes them
@@ -597,9 +607,9 @@ The store is a folder of Markdown files with YAML front matter, in a git repo of
 `queries/` holds saved DuckDB `.sql` files that read the review files and `plan list --json` output
 in place. DuckDB is an analysis tool only: it stores nothing, and the files stay the source of
 truth ([ADR 0006 §3.7](adr/0006-the-ticket-store-is-skulds-tracker.md#duckdb)). `INDEX.md` is a
-generated copy of the ticket list, for reading on GitHub. `scripts/index.py` writes it: the
-watcher runs it before each commit and stages the result. A pre-commit hook runs
-`scripts/index.py --check` and refuses a commit whose `INDEX.md` is stale.
+generated copy of the ticket list, for reading on GitHub. skuld's `store-index` (`lib/store_index.py`)
+writes it; the store holds no scripts. The watcher runs it before each commit and stages the result.
+A pre-commit hook runs `store-index --check` and refuses a commit whose `INDEX.md` is stale.
 
 `FileStore` is the `IssueStore` adapter for it. It answers for every prefix `store.yml` lists, and
 reads `active/` and `archive/` together. A ticket's front matter opens with `ticket_id`, the file
@@ -626,10 +636,13 @@ so a failed write leaves the file as it was. Each prints the path it wrote, refu
 refuses an unknown field or a value that is not one line, naming it, with nothing written;
 `issue-update` never adds `ticket_id` to a ticket that has none. Values are checked against the
 field: `status` and `type` against their enums, `ordinal` a whole number, `opened` and `closed` ISO
-dates, and none may hold a newline or whitespace before `#`. A key list is written as padded keys
+dates, `points` a Fibonacci number, and none may hold a newline or whitespace before `#`. `closed`
+follows `status`: a closing status without a date gets today's, any other status clears it, and a
+ticket whose status and `closed` disagree is refused. An open ticket is refused a milestone whose
+file says it is closed (§4.1). A log line is wrapped to 100 columns. A key list is written as padded keys
 (`SK-0002, SK-0003`), and a duplicate by canonical key is refused. Each runs `store-index` after a
-write, and says so when it cannot. Start's transition (§7.1), its "Started" line and Done's closing note
-reach a ticket through `FileIssues`, which calls `issue-update`'s code; Ship and `pr` write no ticket. A
+write, and says so when it cannot; it commits nothing, and `INDEX.md` is written only by `store-index`.
+Start's transition (§7.1), its "Started" line and Done's close (§7.3) reach a ticket through `FileIssues`, which calls `issue-update`'s code; Ship and `pr` write no ticket. A
 person and Claude run the same commands, and nobody writes front matter by hand. `plan new <PREFIX>
 "<title>"` calls `issue-create`'s code, which fills `templates/issue.md`, then checks the file with
 `outline.py` and opens it in `$EDITOR`; a prefix `store.yml` does not list is refused, naming
@@ -640,11 +653,11 @@ none, and `blocked_by+=KEY` and `blocked_by-=KEY` add or remove one blocker. `Fi
 **The watcher.** `issue-watch` runs under launchd and watches `active/`, `archive/`, `milestones/`
 and `reviews/`. After a quiet period (`debounceSeconds` in `store.yml`), so a mass edit becomes
 one commit, it runs the checker. On failure it commits nothing, posts a macOS notification naming
-the file and rule, and logs the same. On success it runs `scripts/index.py`, commits every change
+the file and rule, and logs the same. On success it runs `store-index`, commits every change
 and the regenerated `INDEX.md` in one commit with a generated message (`SK-0012: status
 in-progress`, `12 issues: ordinal`), and pushes, retrying a failed push after `pull --rebase`. After a
 `pull --rebase` it regenerates `INDEX.md` and commits it, so the pushed tree passes
-`scripts/index.py --check`. A rebase conflict confined to `INDEX.md` is resolved by regenerating
+`store-index --check`. A rebase conflict confined to `INDEX.md` is resolved by regenerating
 it, with no person involved; a conflict in a ticket stops the sync and notifies. A
 commit the pre-commit hook refuses is a failure like the checker's: nothing is committed, and the
 notification and log line name the hook. The watcher watches the checkout that `issueStore` names.
@@ -730,8 +743,9 @@ they share:
 1. Issues live in a tracker, never in a development repo: the ticket store or Jira Cloud. Nothing
    tracker-related is committed in the repos the trackers plan.
 2. The default branch carries the code, and every change reaches it through a pull request. An
-   issue's status lives in its tracker: Start's one move sets it in progress, and **nothing else in
-   this tool changes an issue's status**; Done is structurally incapable of it (§7.3, §7.4).
+   issue's status lives in its tracker: Start's move sets it in progress, Done's close sets a store
+   ticket `done`, and **nothing else in this tool changes an issue's status**; Done is structurally
+   incapable of moving a Jira issue (§7.3, §7.4).
 3. Every outside system is reached through its port's adapter, and every call to Jira through
    `lib/jira.py` (§6.2).
 4. Every ticket file passes the checker. `FileStore` checks before it writes, and the watcher

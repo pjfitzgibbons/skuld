@@ -16,10 +16,14 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from lib import done as done_mod
 from lib import pulses, term
+from lib.fileissues import FileIssues
+from lib.store_index import indexIsCurrent
+from lib.store_sandbox import FILE_NAME, KEY as SK_KEY, TODAY, freezeToday, head, makeStore, reindexInProcess
 from lib.done import DISPOSABLE, branchForKey, doneNote, finish
 from lib.start import worktreeDir
 
@@ -98,7 +102,10 @@ class FakeJira:
         self.transitioned.append([key, target])
         raise RuntimeError("finish() must never call jira.transition -- decision #5")
 
-    def closeNote(self, key):
+    def checkClose(self, key):
+        pass
+
+    def close(self, key):
         return f'Close {key} in Jira: {self.settings["baseUrl"]}/browse/{key}'
 
 
@@ -108,7 +115,7 @@ def inProgressIssue(key=KEY):
 
 # Real git: a bare "origin", a clone simulating GitHub's side where the PR gets squash-merged, and
 # the main checkout with the issue's worktree, exactly as the source's sandbox() does.
-def sandbox(merged=True):
+def sandbox(merged=True, key=KEY):
     root = tempfile.mkdtemp(prefix="jira-plan-done-")
     bare = os.path.join(root, "origin.git")
     checkout = os.path.join(root, "demo")
@@ -131,8 +138,8 @@ def sandbox(merged=True):
     git(checkout, "config", "user.email", "t@example.com")
     git(checkout, "config", "user.name", "T")
 
-    branch = f"feat/{KEY}-go-requests"
-    dir = worktreeDir(checkout, KEY)
+    branch = f"feat/{key}-go-requests"
+    dir = worktreeDir(checkout, key)
     os.makedirs(os.path.dirname(dir), exist_ok=True)
     git(checkout, "worktree", "add", "--quiet", "-b", branch, dir, "origin/main")
     with open(os.path.join(dir, "b.txt"), "w") as f:
@@ -153,7 +160,7 @@ def sandbox(merged=True):
         git(github, "config", "user.name", "T")
         git(github, "fetch", "-q", "origin", branch)
         git(github, "merge", "-q", "--squash", f"origin/{branch}")
-        git(github, "commit", "-q", "-m", f"feature work (#1) ({KEY})")
+        git(github, "commit", "-q", "-m", f"feature work (#1) ({key})")
         git(github, "push", "-q", "origin", "main")
         mergeCommit = git(github, "rev-parse", "HEAD").strip()
 
@@ -166,7 +173,7 @@ def sandbox(merged=True):
     pr = {
         "url": f"https://github.com/{repoPart}/pull/1",
         "number": 1,
-        "title": f"feature work ({KEY})",
+        "title": f"feature work ({key})",
         "headRefName": branch,
         "headRefOid": headRefOid,
         "baseRefName": "main",
@@ -185,7 +192,7 @@ def sandbox(merged=True):
         "branch": branch,
         "pr": pr,
         "view": view,
-        "checkouts": {"CIAM": checkout},
+        "checkouts": {"CIAM": checkout, "SK": checkout},
     }
 
 
@@ -450,6 +457,94 @@ def writeIgnoredFolder(dir, relative, count):
     for i in range(count):
         with open(os.path.join(folder, "sub", f"f{i}.txt"), "w") as f:
             f.write("x\n")
+
+
+class FinishStoreTicketTests(unittest.TestCase):
+    def setUp(self):
+        freezeToday(self)
+        reindexInProcess(self)
+        self.s = sandbox(key=SK_KEY)
+        self.addCleanup(shutil.rmtree, self.s["root"], ignore_errors=True)
+        self.useStore(makeStore(self.s["root"]))
+
+    def useStore(self, store):
+        self.store = store
+        self.ticket = store / "active" / FILE_NAME
+        self.client = FileIssues({"dir": str(store)})
+
+    def done(self):
+        return finish(self.client, self.s["checkouts"], SK_KEY, view=self.s["view"], cwd=self.s["checkout"])
+
+    def text(self):
+        return self.ticket.read_text()
+
+    def assertRefusedChangingNothing(self, pattern):
+        original = self.text()
+        index = (self.store / "INDEX.md").read_text()
+        with self.assertRaisesRegex(RuntimeError, pattern):
+            self.done()
+        self.assertEqual(self.text(), original)
+        self.assertEqual((self.store / "INDEX.md").read_text(), index)
+        self.assertTrue(os.path.exists(self.s["dir"]))
+        self.assertTrue(git(self.s["checkout"], "branch", "--list", self.s["branch"]).strip())
+
+    def test_closes_the_ticket_with_its_merge_line_and_drops_it_from_index(self):
+        before = head(self.store)
+        result = self.done()
+        text = self.text()
+        self.assertIn("\nstatus: done\n", text)
+        self.assertIn(f"\nclosed: {TODAY}\n", text)
+        self.assertRegex(text, r"- \d{4}-\d{2}-\d{2}: Done: \[origin#1\]")
+        self.assertTrue(indexIsCurrent(self.store))
+        self.assertNotIn(f"[{SK_KEY}]", (self.store / "INDEX.md").read_text())
+        self.assertIn(f"Closed {SK_KEY}: status done, closed {TODAY}.", result["notes"])
+        self.assertEqual(head(self.store), before)
+        self.assertEqual(git(self.store, "diff", "--cached", "--name-only"), "")
+
+    def test_a_second_done_leaves_the_closed_ticket_untouched_with_one_merge_line(self):
+        self.done()
+        closed = self.text()
+        result = self.done()
+        self.assertEqual(self.text(), closed)
+        self.assertEqual(closed.count("Done: [origin#1]"), 1)
+        self.assertTrue(any("already closed" in n for n in result["notes"]))
+
+    def test_a_done_stopped_after_the_log_line_closes_on_the_next_run_without_a_second_line(self):
+        self.done()
+        # What a Done killed between the merge line and the close left: the line, an open ticket.
+        stopped = self.text().replace("status: done", "status: in-progress").replace(f"closed: {TODAY}", "closed:")
+        self.ticket.write_text(stopped)
+        (self.store / "INDEX.md").write_text("stale\n")
+        self.done()
+        text = self.text()
+        self.assertIn("\nstatus: done\n", text)
+        self.assertIn(f"\nclosed: {TODAY}\n", text)
+        self.assertEqual(text.count("Done: [origin#1]"), 1)
+        self.assertTrue(indexIsCurrent(self.store))
+
+    def test_an_unticked_done_box_stops_done_naming_it_before_anything_changes(self):
+        self.useStore(makeStore(Path(self.s["root"]) / "second", done="- [x] One.\n- [ ] Two is not done.\n"))
+        self.assertRefusedChangingNothing("Two is not done")
+
+    def test_a_ticket_the_checker_rejects_stops_done_naming_the_field(self):
+        self.ticket.write_text(self.text().replace("blocked_by:\n", "blocked_by: SK-9999\n"))
+        self.assertRefusedChangingNothing("blocked_by")
+
+    def test_a_milestone_without_a_file_stops_done_naming_the_field(self):
+        self.ticket.write_text(self.text().replace("milestone: issue-round", "milestone: nowhere"))
+        self.assertRefusedChangingNothing("milestone")
+
+    def test_a_ticket_already_closed_is_not_held_to_the_checks_again(self):
+        self.done()
+        self.ticket.write_text(self.text().replace("- [x] It works.", "- [ ] It works."))
+        self.assertTrue(any("already closed" in n for n in self.done()["notes"]))
+
+    def test_the_cli_client_for_a_store_key_is_the_file_client(self):
+        from lib.cli import jiraFrom
+
+        client = jiraFrom({"issueStore": str(self.store), "jira": {}}, SK_KEY)
+        self.assertIsInstance(client, FileIssues)
+        self.assertEqual(client.dir, self.store.resolve())
 
 
 class DisposableTests(unittest.TestCase):

@@ -146,6 +146,15 @@ class PlanSetTests(CommandCase):
         self.run_plan("set", "SK-0001", "blocked_by-=SK-0003")
         self.assertEqual(_parse(self.read("SK-0001-a-ticket.md"))[0]["blocked_by"], "")
 
+    def test_a_blocker_edit_on_an_open_ticket_in_a_closed_milestone_refuses_naming_it(self):
+        (self.store / "milestones" / "shipped.md").write_text("---\nid: shipped\nstatus: closed\n---\n", encoding="utf8")
+        path = self.store / "active" / "SK-0001-a-ticket.md"
+        path.write_text(TICKET.replace("closed:\n", "closed:\nmilestone: shipped\n"), encoding="utf8")
+        before = path.read_bytes()
+        with self.assertRaisesRegex(RuntimeError, 'milestone: "shipped" is closed'):
+            self.run_plan("set", "SK-0001", "blocked_by+=SK-0003")
+        self.assertEqual(path.read_bytes(), before)
+
     def test_a_bracketed_blocked_by_is_malformed_so_a_blocker_edit_refuses_naming_it(self):
         path = self.store / "active" / "SK-0001-a-ticket.md"
         path.write_text(TICKET.replace("blocked_by: SK-0002", "blocked_by: [SK-0002]"), encoding="utf8")
@@ -177,6 +186,13 @@ class PlanSetTests(CommandCase):
                 self.run_plan("set", "SK-0001", f"blocked_by={value}")
             self.assertEqual(path.read_bytes(), before)
 
+    # Story points are Fibonacci (SK-0094); an empty value clears them.
+    def test_points_takes_a_fibonacci_number_and_an_empty_value_clears_it(self):
+        self.run_plan("set", "SK-0001", "points=5")
+        self.assertEqual(_parse(self.read("SK-0001-a-ticket.md"))[0]["points"], "5")
+        self.run_plan("set", "SK-0001", "points=")
+        self.assertEqual(_parse(self.read("SK-0001-a-ticket.md"))[0]["points"], "")
+
     def test_a_jira_key_may_block_and_is_not_looked_up(self):
         self.run_plan("set", "SK-0001", "blocked_by+=CIAM-163")
         self.assertIn("CIAM-163", self.read("SK-0001-a-ticket.md"))
@@ -187,6 +203,7 @@ class PlanSetTests(CommandCase):
         cases = (
             (["status=bogus"], 'field "status"'),
             (["ordinal=abc"], 'field "ordinal"'),
+            (["points=4"], 'field "points"'),
             (["nosuchfield=x"], "nosuchfield"),
             (["status=done", "nosuchfield=x"], "nosuchfield"),
             (["blocked_by+=SK-9999"], "SK-9999"),

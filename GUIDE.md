@@ -48,8 +48,8 @@ the ticked checklist into `<store>/reviews/<KEY>/`. The human reads them and run
 A run touches up to three places: skuld holds the code, the ticket store holds tickets and review
 files, and the configured repo holds the code being changed
 ([architecture §3](docs/architecture.md#storage)). The default branch carries the code, and
-everything reaches it by PR. The only status change `plan` makes is Start's move to "in progress";
-**Done never changes an issue's status**, and the human closes the issue.
+everything reaches it by PR. `plan`'s status changes are Start's move to "in progress" and Done's close of a ticket;
+**Done closes a store ticket, and never changes a Jira issue's status**; the human closes the Jira issue.
 
 ## 2. Setting up
 
@@ -136,6 +136,7 @@ macOS only. In order:
    ln -s "$(pwd)/bin/jira-get" ~/.local/bin/jira-get
    ln -s "$(pwd)/bin/issue-create" ~/.local/bin/issue-create
    ln -s "$(pwd)/bin/issue-update" ~/.local/bin/issue-update
+   ln -s "$(pwd)/bin/store-index" ~/.local/bin/store-index
    ln -s "$(pwd)/bin/pr" ~/.local/bin/pr
    ln -s "$(pwd)/bin/ghbody" ~/.local/bin/ghbody
    ln -s ~/.claude/skills/jira-issues/scripts/new_issue.py ~/.local/bin/new_issue
@@ -267,7 +268,8 @@ decides the repo (§4).
 | `pr [done] [KEY]` | Send a round (§5) |
 | `plan review KEY` | Write the next review round's request and start Claude's review on it in the plan window's `Review KEY` terminal; `pr` runs it when a review is due (§5), and it is how to start one by hand |
 | `issue-create "<title>" [field=value…]` | Write a new ticket: the next free key and ordinal, `ticket_id` first, the outline and a `## Log` with `Filed.`; prints the path |
-| `issue-update <KEY> [field=value…] [--log "text"]` | Change a ticket's front-matter fields and append a dated `## Log` line, all or nothing; an unknown field refuses, naming it; prints the path. With `issue-create`, the only writers of a ticket file |
+| `issue-update <KEY> [field=value…] [--log "text"]` | Change a ticket's front-matter fields and append a dated `## Log` line, all or nothing; an unknown field refuses, naming it; `closed` follows `status` (`done` or `wontfix` without `closed=` gets today, an open status clears it), `points` is a Fibonacci number, and an open ticket is refused a milestone whose file says it is closed; the log line is wrapped to 100 columns; prints the path. With `issue-create`, the only writers of a ticket file |
+| `store-index [--check] [STORE]` | Write the store's `INDEX.md` from its tickets and milestones, the only writer of that file; `--check` exits 1, changing nothing, when it is out of date. `STORE` defaults to `issueStore`. `issue-create` and `issue-update` run it after every write. The store holds data only, so the script is skuld's |
 | `issue-check [PATH…]` | Check ticket files, or the whole store; exits non-zero naming file, line and rule |
 | `issue-watch` | The store's watcher; launchd runs it |
 | `jira-get <path>` | One read-only Jira GET with `~/.netrc` auth, so an agent can read Jira without seeing the token |
@@ -731,9 +733,19 @@ workspace (the ticket store's folder stays), and print the close note:
 Close CIAM-123 in Jira: https://cryoport.atlassian.net/browse/CIAM-123
 ```
 
-For a store ticket, the note names the file to set `status: done` in.
+For a store ticket, there is no note to act on: after the merge line, Done sets the ticket to
+`status: done` with `closed:` today and regenerates the store's `INDEX.md` (it runs `issue-update`'s
+code), and prints `Closed <KEY>: status done, closed <date>.` It commits
+nothing; the watcher commits the closed ticket and `INDEX.md`. A ticket already closed (`done` or
+`wontfix`) with `closed:` set is left as it is, and Done prints `<KEY> is already closed.`
 
-**Done never changes an issue's status.** `lib/done.py` has no call to a transition, and the
+Done checks the close with its other checks, before it changes anything: every box under the
+ticket's `## Done` is ticked, and the closed ticket passes the same checker `issue-update` runs. Either
+failing refuses Done, naming it, with the worktree, branch and ticket as they were. If `store-index`
+is missing or fails after the ticket is written, Done says so on stderr and closes the ticket; run
+`store-index` by hand.
+
+**Done never changes a Jira issue's status.** `lib/done.py` has no call to a transition, and the
 `no_terminal_jira_transition.py` hook refuses any Bash command that looks like it moves a Jira
 issue to a terminal status. Done accepts an issue that is in progress or already closed.
 
@@ -928,6 +940,9 @@ store.yml                  the store's projects (key, name, repo remotes), archi
 bin/
   plan                     plan's entry point
   jira-get                 one read-only Jira GET with ~/.netrc auth
+  issue-create             writes a new store ticket from templates/issue.md
+  issue-update             changes a store ticket's front matter and ## Log, checked first
+  store-index              writes the store's INDEX.md, or checks it with --check
   pr                       commit, push, open or update the PR, ask the reviewer, send the round
   ghbody                   gh pc and gh pb; test_pr.py tests it and pr
   pr-helpers/              pr's Python helpers: pr_threads.py, checklist.py, review.py,
@@ -943,6 +958,8 @@ lib/
   start.py                 Start and Open: repo resolution, names, worktrees, the lock
   ship.py                  Ship's checks and round-file naming
   done.py                  Done: checks, then changes, then the close note
+  issue_update.py          bin/issue-create, bin/issue-update and the checker Done's close shares
+  store_index.py           bin/store-index: INDEX.md from the store's tickets and milestones
   term.py                  the workspace files, the issues file, the code call, Ship's tmux window
   pulses.py                plan pulse: an issue's colour, written to the pulses file
   agents.py                plan agents: each Claude session's issue and state, and the
