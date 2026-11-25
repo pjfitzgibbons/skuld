@@ -177,6 +177,13 @@ class PlanSetTests(CommandCase):
                 self.run_plan("set", "SK-0001", f"blocked_by={value}")
             self.assertEqual(path.read_bytes(), before)
 
+    # Story points are Fibonacci (SK-0094); an empty value clears them.
+    def test_points_takes_a_fibonacci_number_and_an_empty_value_clears_it(self):
+        self.run_plan("set", "SK-0001", "points=5")
+        self.assertEqual(_parse(self.read("SK-0001-a-ticket.md"))[0]["points"], "5")
+        self.run_plan("set", "SK-0001", "points=")
+        self.assertEqual(_parse(self.read("SK-0001-a-ticket.md"))[0]["points"], "")
+
     def test_a_jira_key_may_block_and_is_not_looked_up(self):
         self.run_plan("set", "SK-0001", "blocked_by+=CIAM-163")
         self.assertIn("CIAM-163", self.read("SK-0001-a-ticket.md"))
@@ -187,6 +194,7 @@ class PlanSetTests(CommandCase):
         cases = (
             (["status=bogus"], 'field "status"'),
             (["ordinal=abc"], 'field "ordinal"'),
+            (["points=4"], 'field "points"'),
             (["nosuchfield=x"], "nosuchfield"),
             (["status=done", "nosuchfield=x"], "nosuchfield"),
             (["blocked_by+=SK-9999"], "SK-9999"),
