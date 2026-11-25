@@ -619,7 +619,7 @@ every write, so `plan` can't produce a file the watcher would refuse.
 
 **Writing tickets.** Two commands write ticket files, and nothing else does. `issue-create "<title>"
 [field=value…]` takes the next free key and ordinal and writes the ticket: `ticket_id` first, the
-house outline (Task, Guardrails, Lenses, Done) and a `## Log` with `Filed.`. `issue-update <KEY>
+house outline (Task, Guardrails, Lenses, Done) and a `## Log` with `Filed.`, in `active/`, which it makes when the store has none. `issue-update <KEY>
 [field=value…] [--log "text"]` changes front-matter fields and appends a dated line under `## Log`.
 Each writes the whole new text to a temporary file beside the ticket and renames it over the ticket,
 so a failed write leaves the file as it was. Each prints the path it wrote, refuses a Jira key, and

@@ -17,6 +17,7 @@ from . import pulses as pulses_mod
 from . import reviews as reviews_mod
 from . import serve as serve_mod
 from . import ship as ship_mod
+from . import suite as suite_mod
 from . import start as startLib
 from . import issue_update as issue_update_mod
 from . import store_projects as store_projects_mod
@@ -597,6 +598,16 @@ def cmdServe(cfg, action):
     print(serve_mod.control(cfg, action))
 
 
+# `plan init-store`: makes the store's missing folders and says which; never touches a file.
+def cmdInitStore(cfg):
+    root = config_mod.issueStoreFrom(cfg)
+    made = fileissues_mod.initStore(root)
+    for name in made:
+        print(f"made {os.path.join(root, name)}/")
+    if not made:
+        print(f"nothing to make: {root} has every folder")
+
+
 def cmdPicker(cfg, argv0=None):
     if argv0 is None:
         argv0 = sys.argv[0]
@@ -678,6 +689,8 @@ def cmdSet(cfg, args):
 def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
+    if argv[:1] == ["suite"]:  # reads no config: the suite is the environment's own
+        return suite_mod.runSuite(os.getcwd(), argv[1:])
     cfg = config_mod.load()
     cmd = argv[0] if argv else None
     rest = [fileissues_mod.canonicalKey(arg) for arg in argv[1:]]
@@ -707,6 +720,8 @@ def main(argv=None):
         return cmdAgents(cfg, argv[1:])
     if cmd == "serve":
         return cmdServe(cfg, rest[0] if rest else None)
+    if cmd == "init-store":
+        return cmdInitStore(cfg)
     if KEY_RE.match(cmd):  # `plan CIAM-123` is shorthand for view
         return cmdView(cfg, fileissues_mod.canonicalKey(cmd))
-    raise RuntimeError(f'unknown command "{cmd}"; try: list, view, new, set, start, open, browse, review, ship, done, serve, pulse, agents')
+    raise RuntimeError(f'unknown command "{cmd}"; try: list, view, new, set, start, open, browse, review, ship, done, serve, pulse, agents, init-store, suite')

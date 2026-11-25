@@ -29,6 +29,11 @@ PROJECT = "SK"
 # in number order. A number past 9999 simply grows a digit.
 KEY_DIGITS = 4
 
+# The store's folders (docs/architecture.md §7.7): tickets live in the first two, read together.
+# `plan init-store` makes all of them.
+TICKET_FOLDERS = ("active", "archive")
+STORE_FOLDERS = ("milestones", *TICKET_FOLDERS, "reviews", "queries")
+
 # issues/README.md's status enum -> the Jira-shaped (status name, statusCategory key) pair a
 # caller reads off issue["fields"]["status"]. done/wontfix both read as Jira's "done" category --
 # neither is a status Start or Done need to tell apart from the other.
@@ -125,6 +130,22 @@ def _parse(text):
         if lm:
             entries.append({"date": lm.group(1), "text": lm.group(2)})
     return front, title, body, entries
+
+
+# Makes the store's folders that are missing and returns the ones it made. Only creates: the
+# store's root must already exist (it is the store's git checkout), and nothing in it is moved,
+# rewritten or deleted, so a second run makes nothing.
+def initStore(root):
+    root = Path(root)
+    if not root.is_dir():
+        raise RuntimeError(f"the issue store {root} doesn't exist; git init it first, then run plan init-store")
+    for name in STORE_FOLDERS:
+        if (root / name).exists() and not (root / name).is_dir():
+            raise RuntimeError(f"{root / name} is a file; the store needs a folder there")
+    made = [name for name in STORE_FOLDERS if not (root / name).is_dir()]
+    for name in made:
+        (root / name).mkdir()
+    return made
 
 
 def _keyFromFilename(name):

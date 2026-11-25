@@ -8,11 +8,12 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-from lib.fileissues import FileIssues, _parse, canonicalKey, isFileBacked
+from lib.fileissues import STORE_FOLDERS, FileIssues, _parse, canonicalKey, initStore, isFileBacked
 
 
 def writeIssue(dir, name, text):
-    path = Path(dir) / name
+    path = Path(dir) / "active" / name
+    path.parent.mkdir(exist_ok=True)
     path.write_text(text, encoding="utf8")
     return path
 
@@ -335,6 +336,74 @@ class MergedListTests(unittest.TestCase):
         self.assertNotIn("write_text", source)
         self.assertNotIn("_setField", source)
         self.assertNotIn("_appendLog", source)
+
+
+class StoreLayoutTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="skuld-layout-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+
+    def folders(self):
+        return sorted(p.name for p in Path(self.dir).iterdir())
+
+    def test_init_on_an_empty_folder_makes_every_store_folder(self):
+        made = initStore(self.dir)
+        self.assertEqual(made, list(STORE_FOLDERS))
+        self.assertEqual(self.folders(), ["active", "archive", "milestones", "queries", "reviews"])
+
+    def test_a_file_named_like_a_store_folder_is_refused_naming_it(self):
+        (Path(self.dir) / "active").write_text("")
+        with self.assertRaisesRegex(RuntimeError, "active is a file"):
+            initStore(self.dir)
+
+    def test_a_second_init_makes_nothing_and_changes_nothing(self):
+        initStore(self.dir)
+        ticket = writeIssue(self.dir, "SK-0001-a.md", OPEN_BUG)
+        before = (self.folders(), ticket.read_text(encoding="utf8"))
+        self.assertEqual(initStore(self.dir), [])
+        self.assertEqual((self.folders(), ticket.read_text(encoding="utf8")), before)
+
+    def test_a_half_made_store_is_finished_by_running_init_again(self):
+        (Path(self.dir) / "active").mkdir()
+        self.assertEqual(initStore(self.dir), ["milestones", "archive", "reviews", "queries"])
+
+    def test_a_missing_store_root_is_refused_naming_it_and_not_made(self):
+        root = Path(self.dir) / "no-such-store"
+        with self.assertRaisesRegex(RuntimeError, "no-such-store"):
+            initStore(root)
+        self.assertFalse(root.exists())
+
+    def test_a_key_in_both_folders_is_refused_whatever_the_file_names(self):
+        for activeName, archiveName in (("SK-0001.md", "SK-0001.md"), ("SK-0001.md", "SK-0001-old.md"), ("SK-0001-a.md", "SK-0001-b.md")):
+            with self.subTest(active=activeName, archive=archiveName):
+                store = Path(tempfile.mkdtemp(prefix="skuld-dup-"))
+                self.addCleanup(shutil.rmtree, store, ignore_errors=True)
+                initStore(store)
+                (store / "active" / activeName).write_text(OPEN_BUG, encoding="utf8")
+                (store / "archive" / archiveName).write_text(OPEN_BUG, encoding="utf8")
+                fi = FileIssues({"dir": str(store)})
+                with self.assertRaisesRegex(RuntimeError, "more than one ticket file matches SK-0001"):
+                    fi.issue("SK-0001")
+                with self.assertRaisesRegex(RuntimeError, "more than one ticket file matches SK-0001"):
+                    fi.addComment("SK-0001", fi.textComment("a note"))
+                self.assertEqual((store / "active" / activeName).read_text(encoding="utf8"), OPEN_BUG)
+
+    def test_active_and_archive_are_read_together(self):
+        writeIssue(self.dir, "SK-0001-a.md", OPEN_BUG)
+        archive = Path(self.dir) / "archive"
+        archive.mkdir()
+        (archive / "SK-0002-b.md").write_text(IN_PROGRESS_TASK, encoding="utf8")
+        fi = FileIssues({"dir": self.dir})
+        self.assertEqual([r["id"] for r in fi.list()], ["SK-0001", "SK-0002"])
+        self.assertEqual(fi.issue("SK-0002")["key"], "SK-0002")
+
+    def test_a_ticket_at_the_top_level_is_refused_naming_the_file_and_active(self):
+        stray = Path(self.dir) / "SK-0003-stray.md"
+        stray.write_text(OPEN_BUG, encoding="utf8")
+        fi = FileIssues({"dir": self.dir})
+        for read in (fi.list, lambda: fi.issue("SK-0003")):
+            with self.assertRaisesRegex(RuntimeError, f"{stray.name}.*top level.*active/"):
+                read()
 
 
 if __name__ == "__main__":

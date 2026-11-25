@@ -31,6 +31,7 @@ from .fileissues import (
     LOG_HEADING_RE,
     PROJECT,
     STATUS_MAP,
+    TICKET_FOLDERS,
     _keyFromFilename,
     canonicalKey,
     isFileBacked,
@@ -58,8 +59,6 @@ FIELDS = (
     "pr",
 )
 
-# A ticket's files sit in the store's active/ and archive/, or in the folder itself.
-FOLDERS = ("", "active", "archive")
 
 # issue-create gives a new ticket the next multiple of this above the highest ordinal (README: steps
 # of 100, so a ticket can take a value in a gap).
@@ -78,8 +77,12 @@ LOG_FLAG = "--log"
 
 
 # Files named like a ticket: a stray SK-notes.md has no key and is not one.
+# A ticket at the store's top level is refused: it belongs in active/ (docs/architecture.md §7.7).
 def ticketFiles(store):
-    found = [p for folder in FOLDERS for p in (Path(store) / folder).glob(f"{PROJECT}-*.md")]
+    strays = sorted(p for p in Path(store).glob(f"{PROJECT}-*.md") if _keyFromFilename(p.name))
+    if strays:
+        raise RuntimeError(f"{strays[0]} is at the store's top level; move it to {Path(store) / 'active'}/")
+    found = [p for folder in TICKET_FOLDERS for p in (Path(store) / folder).glob(f"{PROJECT}-*.md")]
     return [p for p in found if _keyFromFilename(p.name)]
 
 
@@ -437,7 +440,7 @@ def createTicket(store, title, fields=None, reindex=None):
     with storeLocked(store):
         key = nextKey(store)
         folder = Path(store) / "active"
-        folder = folder if folder.is_dir() else Path(store)
+        folder.mkdir(exist_ok=True)  # a fresh clone has no empty active/; the store's root is not a ticket folder
         path = folder / f"{key}-{slugOf(title)}.md"
         text = ticketText(key, title, nextOrdinal(store), fields)
         atomicCreate(path, text)
