@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+# Runs `plan start` and `plan open` against a real herdr server: its own HOME, so it touches neither
+# your herdr session, your config, your store nor your repos, and a fake `claude` that only records
+# how it was started. Needs herdr, nvim and lazygit.
+#   bin/test-herdr-e2e            run every step
+#   bin/test-herdr-e2e --watch    pause before each step, to follow it in an attached herdr
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+
+from lib.claude_session import claudeProjectDir
+from lib.store_sandbox import KEY, OTHER_KEY, makeStore
+from lib.test_start import sandbox
+
+TOOLS = ("herdr", "nvim", "lazygit", "git")
+
+FAKE_CLAUDE = """#!{python}
+import json, os, sys, time
+sys.path.insert(0, {repo!r})
+from lib.claude_session import claudeProjectDir
+
+started = {{"argv": sys.argv[1:], "cwd": os.getcwd(), "env": dict(os.environ)}}
+with open({log!r}, "a") as log:
+    log.write(json.dumps(started) + "\\n")
+project = claudeProjectDir(os.getcwd(), os.environ)
+os.makedirs(project, exist_ok=True)
+open(os.path.join(project, "session.jsonl"), "w").close()
+print("fake claude", sys.argv[1:], flush=True)
+time.sleep(3600)
+"""
+
+
+class Sandbox:
+    def __init__(self):
+        repo = sandbox()
+        self.root = Path(os.path.realpath(repo["root"]))
+        self.checkout = self.root / "demo"
+        self.store = makeStore(self.root, status="open", done="- [ ] It works.\n")
+        # Short, so herdr's socket paths under it stay within the 104 bytes macOS allows.
+        self.home = Path(os.path.realpath(tempfile.mkdtemp(prefix="he-")))
+        self.claudeLog = self.root / "claude.log"
+        self.env = self.writeEnvironment()
+        self.server = None
+
+    # Only what the sandbox needs: no HERDR_* or HOME of yours. The CLAUDE_* and PLAN_KEY values
+    # stand in for a server started from inside a Claude session in another issue's terminal.
+    def writeEnvironment(self):
+        fakes = self.root / "fakes"
+        fakes.mkdir()
+        claude = fakes / "claude"
+        claude.write_text(FAKE_CLAUDE.format(python=sys.executable, repo=str(REPO), log=str(self.claudeLog)))
+        claude.chmod(0o755)
+        folders = [str(fakes), str(REPO / "bin"), os.path.dirname(sys.executable)]
+        folders += [os.path.dirname(shutil.which(tool)) for tool in TOOLS]
+        path = os.pathsep.join(dict.fromkeys([*folders, "/usr/bin", "/bin"]))
+        # Where each nvim puts its server socket, which nvimAnswer() asks.
+        (self.home / "run").mkdir()
+        (self.home / ".bash_profile").write_text(f"export PATH={shlex.quote(path)}\n")
+        config = self.home / ".config" / "skuld"
+        config.mkdir(parents=True)
+        (config / "config.json").write_text(
+            json.dumps({"issueStore": str(self.store), "checkouts": {"SK": [str(self.checkout)]}, "frontEnd": "herdr"})
+        )
+        return {
+            "HOME": str(self.home),
+            "PATH": path,
+            "SHELL": "/bin/bash",
+            "TERM": os.environ.get("TERM", "xterm-256color"),
+            "LANG": "en_US.UTF-8",
+            "XDG_RUNTIME_DIR": str(self.home / "run"),
+            "CLAUDE_CONFIG_DIR": str(self.root / "claude-config"),
+            "CLAUDE_CODE_CHILD_SESSION": "1",
+            "CLAUDE_PID": "1",
+            "PLAN_KEY": "SK-9999",
+        }
+
+    def run(self, command, *args):
+        # No stdin: with your terminal there, `nvim --remote-expr` draws a UI on stdout and puts its
+        # answer on stderr.
+        return subprocess.run(
+            [command, *args], env=self.env, cwd=self.root, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60
+        )
+
+    def herdr(self, *args):
+        result = self.run("herdr", *args)
+        check(result.returncode == 0, f"herdr {' '.join(args)}: {result.stderr}")
+        return json.loads(result.stdout)["result"] if result.stdout.startswith("{") else result.stdout
+
+    def plan(self, *args):
+        return self.run(str(REPO / "bin" / "plan"), *args)
+
+    def startServer(self):
+        self.server = subprocess.Popen(
+            ["herdr", "server"], env=self.env, cwd=self.root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        eventually("the herdr server runs", self.serverIsRunning)
+
+    def serverIsRunning(self):
+        return json.loads(self.run("herdr", "status", "server", "--json").stdout)["running"]
+
+    def stopServer(self):
+        if self.server and self.server.poll() is None:
+            self.run("herdr", "server", "stop")
+            self.server.wait(timeout=30)
+
+    def remove(self):
+        self.stopServer()
+        shutil.rmtree(self.root, ignore_errors=True)
+        shutil.rmtree(self.home, ignore_errors=True)
+
+    def workspaces(self, label):
+        return [w for w in self.herdr("workspace", "list")["workspaces"] if w["label"] == label]
+
+    def tabs(self, workspace):
+        return self.herdr("tab", "list", "--workspace", workspace)["tabs"]
+
+    # { tab label: pane id }
+    def panes(self, workspace):
+        panes = self.herdr("pane", "list", "--workspace", workspace)["panes"]
+        return {tab["label"]: next(p["pane_id"] for p in panes if p["tab_id"] == tab["tab_id"]) for tab in self.tabs(workspace)}
+
+    def foreground(self, pane, name):
+        processes = self.herdr("pane", "process-info", "--pane", pane)["process_info"]["foreground_processes"]
+        return next((p for p in processes if p["name"] == name), None)
+
+    # What the running nvim evaluates expression to, or None while it isn't answering.
+    def nvimAnswer(self, expression):
+        for socket in (self.home / "run").glob("nvim.*"):
+            result = self.run("nvim", "--server", str(socket), "--remote-expr", expression)
+            if result.returncode == 0 and result.stdout.strip():
+                return json.loads(result.stdout)
+        return None
+
+    def claudeStarts(self):
+        if not self.claudeLog.exists():
+            return []
+        return [json.loads(line) for line in self.claudeLog.read_text().splitlines()]
+
+    def attachCommand(self):
+        env = " ".join(f"{name}={shlex.quote(self.env[name])}" for name in ("HOME", "PATH", "SHELL", "TERM", "LANG"))
+        return f"env -i {env} herdr"
+
+
+def check(passed, what):
+    if not passed:
+        raise AssertionError(what)
+
+
+def passed(what):
+    print(f"  ok  {what}", flush=True)
+
+
+def expect(condition, what):
+    check(condition, what)
+    passed(what)
+
+
+# The first truthy answer of probe within seconds.
+def eventually(what, probe, seconds=30):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        found = probe()
+        if found:
+            return found
+        time.sleep(0.2)
+    raise AssertionError(f"timed out waiting until {what}")
+
+
+def startShowsTheIssue(box, worktree):
+    result = box.plan("start", KEY)
+    expect(result.returncode == 0, f"plan start {KEY} succeeds: {result.stderr.strip()}")
+    [workspace] = box.workspaces(KEY)
+    expect(workspace["focused"], "the issue's workspace is focused")
+    labels = [tab["label"] for tab in box.tabs(workspace["workspace_id"])]
+    expect(labels == ["claude", "edit", "git"], f"it has the three tabs: {labels}")
+    started = eventually("claude starts", box.claudeStarts)[0]
+    expect(len(started["argv"]) == 1 and started["argv"][0].startswith(f"Work on {KEY}."), "claude gets the issue prompt")
+    expect(started["cwd"] == str(worktree), "claude runs in the worktree")
+    claudeVariables = sorted(name for name in started["env"] if name.startswith("CLAUDE"))
+    expect(claudeVariables == ["CLAUDE_CONFIG_DIR"], f"claude inherits only CLAUDE_CONFIG_DIR: {claudeVariables}")
+    expect(started["env"]["PLAN_KEY"] == KEY, "the claude tab has PLAN_KEY")
+    return workspace["workspace_id"]
+
+
+def editorShowsTheTicketOverTheWorktree(box, workspace, worktree):
+    pane = box.panes(workspace)["edit"]
+    eventually("nvim runs", lambda: box.foreground(pane, "nvim"))
+    screen = eventually("the ticket is on screen", lambda: ticketScreen(box, pane))
+    expect("a.txt" in screen, "the file list shows the worktree's files")
+    expect(OTHER_KEY not in screen, "the file list doesn't show the store")
+    answer = eventually("nvim answers", lambda: box.nvimAnswer("json_encode([getcwd(), $PLAN_KEY])"))
+    expect(answer == [str(worktree), KEY], f":pwd is the worktree and the edit tab has PLAN_KEY: {answer}")
+
+
+def ticketScreen(box, pane):
+    screen = box.herdr("pane", "read", pane, "--source", "visible")
+    return screen if "A ticket" in screen else None
+
+
+def gitTabRunsLazygit(box, workspace, worktree):
+    pane = box.panes(workspace)["git"]
+    process = eventually("lazygit runs", lambda: box.foreground(pane, "lazygit"))
+    expect(process["cwd"] == str(worktree), "lazygit runs in the worktree")
+    environment = box.run("ps", "eww", "-o", "command=", "-p", str(process["pid"])).stdout.split()
+    expect(f"PLAN_KEY={KEY}" in environment, "the git tab has PLAN_KEY")
+
+
+def secondOpenOnlyFocuses(box, workspace):
+    box.herdr("workspace", "create", "--label", "elsewhere", "--focus")
+    result = box.plan("open", KEY)
+    expect(result.returncode == 0, f"plan open {KEY} succeeds: {result.stderr.strip()}")
+    [found] = box.workspaces(KEY)
+    expect(found["workspace_id"] == workspace and found["focused"], "the same workspace is focused")
+    expect(len(box.tabs(workspace)) == 3, "no tab is added")
+    time.sleep(2)  # a second claude would have started by now
+    expect(len(box.claudeStarts()) == 1, "no second claude starts")
+
+
+def openAfterCloseResumes(box, workspace):
+    box.herdr("workspace", "close", workspace)
+    result = box.plan("open", KEY)
+    expect(result.returncode == 0, f"plan open {KEY} succeeds: {result.stderr.strip()}")
+    expect(len(box.workspaces(KEY)) == 1, "the workspace is made again")
+    started = eventually("claude starts again", lambda: box.claudeStarts()[1:])[0]
+    expect(started["argv"] == ["--continue"], "claude resumes its session")
+
+
+def noServerChangesNothing(box):
+    box.stopServer()
+    ticket = next((box.store / "active").glob(f"{OTHER_KEY}-*.md"))
+    before = ticket.read_text()
+    result = box.plan("start", OTHER_KEY)
+    expect(result.returncode != 0, f"plan start {OTHER_KEY} fails with no server")
+    expect("Start it with `herdr`" in result.stderr, "the refusal says to run herdr")
+    expect(ticket.read_text() == before, "the ticket keeps its status")
+    branches = box.run("git", "-C", str(box.checkout), "branch", "--all", "--list", f"*{OTHER_KEY}*").stdout
+    expect(branches == "", "no branch is made")
+    expect(not (box.checkout.parent / "demo.worktrees" / OTHER_KEY).exists(), "no worktree is made")
+    issues = (box.home / ".cache" / "plan" / "issues").read_text().split()
+    expect(issues == [KEY], "the issues file is unchanged")
+
+
+def runSteps(box, watching):
+    worktree = box.checkout.parent / "demo.worktrees" / KEY
+
+    def step(title, action, *args):
+        print(title, flush=True)
+        if watching:
+            input("  enter to run it ")
+        return action(box, *args)
+
+    box.startServer()
+    if watching:
+        print(f"Attach from a terminal outside herdr:\n  {box.attachCommand()}\n", flush=True)
+    workspace = step("plan start on a new issue", startShowsTheIssue, worktree)
+    step("the edit tab", editorShowsTheTicketOverTheWorktree, workspace, worktree)
+    step("the git tab", gitTabRunsLazygit, workspace, worktree)
+    step("a second plan open", secondOpenOnlyFocuses, workspace)
+    step("plan open after the workspace is closed", openAfterCloseResumes, workspace)
+    step("plan start with no herdr server", noServerChangesNothing)
+
+
+def main(argv):
+    if argv not in ([], ["--watch"]):
+        print("usage: bin/test-herdr-e2e [--watch]", file=sys.stderr)
+        return 2
+    missing = [tool for tool in TOOLS if not shutil.which(tool)]
+    if missing:
+        print(f"install first: {', '.join(missing)}", file=sys.stderr)
+        return 2
+    box = Sandbox()
+    try:
+        runSteps(box, bool(argv))
+    except AssertionError as failure:
+        print(f"  FAIL  {failure}", file=sys.stderr)
+        return 1
+    finally:
+        box.remove()
+    print("herdr e2e: passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

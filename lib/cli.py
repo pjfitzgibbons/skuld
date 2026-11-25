@@ -10,9 +10,11 @@ import subprocess
 import sys
 
 from . import agents as agents_mod
+from . import claude_session as claude_session_mod
 from . import config as config_mod
 from . import done as done_mod
 from . import fileissues as fileissues_mod
+from . import frontend as frontend_mod
 from . import pulses as pulses_mod
 from . import reviews as reviews_mod
 from . import serve as serve_mod
@@ -237,14 +239,14 @@ def cmdView(cfg, key):
 
 # `plan start`/`plan open <KEY>`: start.start(), then write the issue's workspace file (the plan.*
 # settings; it isn't opened), add the issue to the issues file and its worktree to the plan
-# workspace, open or raise the plan window with `code <plan workspace>` (term.openPlanWindow; VS
-# Code places it, ADR 0004), and ask plan-window to bring the issue forward. Open is the same call
-# as Start (start.py's ACTION/startIn already handle "already has a worktree" by reusing it); the
-# terminal tool doesn't need two code paths. A wrong extension link stops it first
-# (term.checkExtensionLink), before anything changes.
+# workspace, and have the machine config's front end show the issue (lib/frontend.py). Open is the
+# same call as Start (start.py's ACTION/startIn already handle "already has a worktree" by reusing
+# it); the terminal tool doesn't need two code paths. A front end that can't be used stops it first,
+# before anything changes.
 def cmdStart(cfg, key, command="start"):
     startLib.checkId(key, "Start")
-    term_mod.checkExtensionLink(command, key)
+    frontEnd = frontend_mod.frontEndFor(cfg)
+    frontEnd.check(command, key)
     store = config_mod.issueStoreFrom(cfg)  # no store stops Start before anything changes
     jira = jiraFrom(cfg, key)
     result = startLib.start(jira, cfg.get("checkouts"), key, confirmBlockers, typeMap=cfg.get("typeMap"))
@@ -258,11 +260,11 @@ def cmdStart(cfg, key, command="start"):
     writeIssueWorkspaceFile(cfg, key, result["dir"], ticket, ticketUrl)
     addToIssuesFile(cfg, key)
     planWorkspace = addToPlanWorkspace(cfg, result["dir"], store)
-    term_mod.openPlanWindow(planWorkspace)
-    term_mod.revealIssue(key)
+    prompt = claudePrompt(key, ticket)
+    frontEnd.show(frontend_mod.IssueToShow(key, result["dir"], prompt, ticket, planWorkspace))
     print(f"{key} ready.")
-    # Only printed: the /open link has plan-window open the ticket file in a tab, or the Jira page
-    # (plan.ticketUrl) in the integrated browser, so showUrl() here would open the page twice.
+    # Only printed: plan-window opens the ticket file in a tab or the Jira page (plan.ticketUrl) in
+    # the integrated browser, so showUrl() here would open the page twice; herdr has no browser.
     print(ticket or ticketUrl)
 
 
@@ -691,6 +693,8 @@ def main(argv=None):
         argv = sys.argv[1:]
     if argv[:1] == ["suite"]:  # reads no config: the suite is the environment's own
         return suite_mod.runSuite(os.getcwd(), argv[1:])
+    if argv == ["claude-session"]:  # reads no config: the herdr claude tab's environment holds all
+        return claude_session_mod.runClaude()
     cfg = config_mod.load()
     cmd = argv[0] if argv else None
     rest = [fileissues_mod.canonicalKey(arg) for arg in argv[1:]]

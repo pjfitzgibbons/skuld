@@ -5,7 +5,8 @@ The [architecture](docs/architecture.md) says what the system is and the rules i
 links to it for the reasons and doesn't repeat them.
 
 Skuld plans and ships work from the terminal. `plan` lists what's next, and starts, opens, ships and
-finishes an issue. Every issue's Claude runs in one VS Code window, the plan window. `pr` commits, pushes,
+finishes an issue. Start and Open bring an issue up in VS Code, where every issue's Claude runs in one
+window, the plan window, or in herdr, with one workspace per issue (§4). `pr` commits, pushes,
 opens or updates the pull request and answers its review. Issues live in the ticket store, a git
 repo of Markdown files, or in Jira Cloud (`cryoport.atlassian.net`).
 
@@ -31,7 +32,7 @@ repo of Markdown files, or in Jira Cloud (`cryoport.atlassian.net`).
    Next up (plan order)       worktree <repo>.worktrees/<KEY>          the issue (store or Jira)
    ────────────────────       ───────────────────────────────          ─────────────────────────
    (1) START ───────────────▶ branch <type>/<KEY>-slug, off base ────▶ in progress, "Started" logged
-                              plan window, Claude in its terminal       (a store ticket opens in a tab)
+                              front end, Claude in its terminal         (a store ticket opens beside it)
                               Claude works · writes <store>/reviews/<KEY>/
    (2) SHIP ────────────────▶ pr <KEY>: commit, push, open/update PR ─▶ Done boxes ticked
                               review rounds: replies/                    (Jira: dev panel, native)
@@ -58,7 +59,8 @@ macOS only. In order:
 1. **Tools.** `git`, `gh` (signed in with `gh auth login`), Python 3.10 or later on `PATH` as
    `python3` (`/usr/bin/python3` is 3.9 and can't run the scripts), [uv](https://docs.astral.sh/uv/)
    (`brew install uv`) for the local server's venv, VS Code with its `code` command on `PATH`, and
-   fzf.
+   fzf. A Mac that sets `frontEnd` to `herdr` (step 5) also needs [herdr](https://herdr.dev), `nvim`
+   and `lazygit`.
 
 2. **The Jira token in `~/.netrc`**, on a Mac that works Jira projects (step 5), never in a
    tracked file or an env var:
@@ -112,6 +114,7 @@ macOS only. In order:
 
    | Key | Default | What it sets |
    | --- | --- | --- |
+   | `frontEnd` | `vscode` | Where Start and Open bring an issue up: `vscode` or `herdr` ([§4, In herdr](#in-herdr)) |
    | `jql` | `project in (<the jira entry's projects>) AND assignee = currentUser() AND statusCategory != Done ORDER BY Rank` | The Jira half of Next up |
    | `typeMap` | Story and Task `feat`, Bug `fix` | Issue type to branch prefix, merged over the default |
    | `pr` | `~/.local/bin/pr` | The `pr` that Ship runs, by path |
@@ -159,8 +162,8 @@ macOS only. In order:
     ```
 
     `-f` and `-n` replace a link that already exists, so running it again repairs a link that
-    points at another checkout. `plan start` and `plan open` check the link before they change
-    anything: when no `skuld.plan-window-*` entry resolves into the checkout `plan` runs from, they
+    points at another checkout. With the `vscode` front end, `plan start` and `plan open` check the
+    link before they change anything: when no `skuld.plan-window-*` entry resolves into the checkout `plan` runs from, they
     stop and print where the link points, the numbered fix with every path shell-quoted (remove a
     leftover link of another version, or move a real directory at any `skuld.plan-window-*` name to
     `~/.Trash`; `mkdir -p` an extensions folder that does not exist; `ln -sfn` with the running
@@ -265,6 +268,7 @@ decides the repo (§4).
 | `plan archive` | Move closed tickets past `archiveAfterDays` to `archive/` |
 | `plan init-store` | Make the store's missing folders (`milestones/`, `active/`, `archive/`, `reviews/`, `queries/`) at `issueStore`, printing each; refuses a missing store folder, changes no file, and a second run makes nothing |
 | `plan suite [--dry-run]` | Run this environment's test suite: the commands in the nearest `.plan-suite` (the current folder, then each parent; the first file found is the only one read), one shell command per line, `#` lines and blank lines ignored, each run from that file's folder after printing `== <command>`; stops at the first failure with its exit code, prints `suite: passed` when all pass; refuses (exit 2, nothing run) when no file is found or the file has no commands; `--dry-run` prints `# <file>` and the commands as they would run, and runs nothing |
+| `plan claude-session` | Run by the herdr `claude` tab, not by hand: starts the issue's Claude in that folder (§4) |
 | `pr [done] [KEY]` | Send a round (§5) |
 | `plan review KEY` | Write the next review round's request and start Claude's review on it in the plan window's `Review KEY` terminal; `pr` runs it when a review is due (§5), and it is how to start one by hand |
 | `issue-create "<title>" [field=value…]` | Write a new ticket: the next free key and ordinal, `ticket_id` first, the outline and a `## Log` with `Filed.`; prints the path |
@@ -278,7 +282,9 @@ decides the repo (§4).
 
 `plan start` is **Start** on an issue that hasn't started (a store `status: open`, a Jira
 `statusCategory` of `new`) and **Open** on one in progress. Both run the same code, and each step
-runs only when it has something to do:
+runs only when it has something to do. Before any of them, the front end is checked: the
+plan-window link (§2, step 10), or with `herdr` a running server. The numbered steps 8 to 10 are the
+`vscode` front end's; [In herdr](#in-herdr) says what replaces them.
 
 1. **Re-read the issue** and refuse any other status, since the picker's list may be stale.
 2. **Find the repo** with `mainCheckout()`: the key's project gives the candidate checkouts, an
@@ -329,6 +335,34 @@ runs only when it has something to do:
     best-effort: if it fails, Start or Open still succeeds and prints `couldn't open <KEY> in the
     plan window: <error>; click it in the Issues view` on stderr. A click on the issue's item
     does what the link would have done.
+
+### In herdr
+
+Set `"frontEnd": "herdr"` in `~/.config/skuld/config.json`, and run `herdr` in a terminal, which
+starts its server and attaches to it. With no server, `plan start` and `plan open` refuse before
+they change anything. Remove the key, or set it to `vscode`, to go back to the plan window; any
+other value is refused.
+
+Start and Open run steps 1 to 7, write the issue's `<KEY>.code-workspace` and print the ticket as
+above. Then, in place of the plan window:
+
+- A herdr workspace labelled `<KEY>` is focused as it is. Nothing in it is started again, and Open
+  prints how to close it and start over. Do that after a herdr server restart that brought the
+  workspace back as plain shells, or after closing one of its tabs.
+- With no such workspace, one is made in the issue's worktree with three tabs, each with `PLAN_KEY`
+  set, and focused:
+  - `claude`: `claude --continue` when the worktree has an earlier Claude session, or `claude` with
+    Start's prompt when it has none. Every inherited `CLAUDE*` variable except `CLAUDE_CONFIG_DIR`
+    is unset.
+  - `edit`: `nvim` on the worktree. A store ticket's file is open beside the file list; a Jira
+    issue's browse URL is only printed.
+  - `git`: `lazygit`.
+
+A herdr step that fails is named with what to run by hand. If the workspace was partly made, close
+it (`herdr workspace close <id>`, printed in the message) and run `plan open <KEY>` again.
+
+`plan browse`, `plan review`, `plan agents pick`, the Issues view and the issue colours work in the
+plan window only.
 
 Open on an issue whose worktree or plan-window folder is gone recreates what's missing
 ([failure-modes.md, *Open*](docs/failure-modes.md)).
@@ -920,7 +954,13 @@ fake Jira client, an injected object or a local stub HTTP server. No test touche
 test checks that the next run converges. The watcher's debounce and gate test against a fake clock
 and a temp repo. Each hook's test runs it both as a function and as a process, with JSON on stdin
 and the exit code out. The server's routes run through Flask's test client, with no server running;
-`plan serve`'s tests use a fake LaunchAgent, so no test runs `launchctl`.
+`plan serve`'s tests use a fake LaunchAgent, so no test runs `launchctl`. Both front ends are
+tested against fakes, with no herdr server and no VS Code.
+
+Two end-to-end suites run the front ends for real, and `plan suite` runs neither:
+`bin/test-plan-window-e2e` drives VS Code, and `bin/test-herdr-e2e` runs `plan start` and
+`plan open` against a herdr server of its own, with its own `HOME` and a fake `claude`. Add
+`--watch` to either to follow it step by step.
 
 ## 12. Limits
 
@@ -943,6 +983,7 @@ bin/
   issue-create             writes a new store ticket from templates/issue.md
   issue-update             changes a store ticket's front matter and ## Log, checked first
   store-index              writes the store's INDEX.md, or checks it with --check
+  test-herdr-e2e           Start and Open against a real herdr server, in a sandbox
   pr                       commit, push, open or update the PR, ask the reviewer, send the round
   ghbody                   gh pc and gh pb; test_pr.py tests it and pr
   pr-helpers/              pr's Python helpers: pr_threads.py, checklist.py, review.py,
@@ -956,6 +997,9 @@ lib/
   config.py                reads the machine config and store.yml
   jira.py                  the Jira adapter: every Jira REST v3 call, transitions with read-back
   start.py                 Start and Open: repo resolution, names, worktrees, the lock
+  frontend.py              the front-end port and its VS Code adapter; frontEnd picks one
+  herdr.py                 the herdr adapter: an issue's workspace and its three tabs
+  claude_session.py        plan claude-session: the herdr claude tab's start rules
   ship.py                  Ship's checks and round-file naming
   done.py                  Done: checks, then changes, then the close note
   issue_update.py          bin/issue-create, bin/issue-update and the checker Done's close shares
