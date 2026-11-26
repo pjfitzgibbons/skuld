@@ -150,6 +150,7 @@ class PrDone(unittest.TestCase):
             (root / "f.txt").write_text("x\n")
             run_git("add", "-A")
             run_git("commit", "-q", "-m", "init")
+            run_git("update-ref", "refs/remotes/origin/main", "HEAD")
             run_git("checkout", "-q", "-b", "fix/CIAM-9-x")
             (root / "f.txt").write_text("changed\n")
 
@@ -190,6 +191,7 @@ class PrDone(unittest.TestCase):
             (root / "f.txt").write_text("x\n")
             run_git("add", "-A")
             run_git("commit", "-q", "-m", "init")
+            run_git("update-ref", "refs/remotes/origin/main", "HEAD")
             run_git("checkout", "-q", "-b", "fix/CIAM-9-x")
             (root / "f.txt").write_text("changed\n")
 
@@ -309,7 +311,9 @@ class PrDone(unittest.TestCase):
             env = dict(os.environ)
             env["PATH"] = f"{bindir}:{env['PATH']}"
 
-            result = subprocess.run([str(BIN / "pr")], cwd=root, env=env,
+            # With no origin/main the provenance check can't name the change, so it is skipped
+            # here; the smart-commit scan must work without that ref.
+            result = subprocess.run([str(BIN / "pr"), "--no-provenance"], cwd=root, env=env,
                                      capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("looks like a Jira smart commit", result.stderr)
@@ -588,6 +592,8 @@ class PrReview(unittest.TestCase):
         "echo \"review requested of CIAM-9's Claude\"\n"
     )
 
+    FAKE_PROOF = "#!/bin/sh\necho \"$@\" >> \"$PROOF_CALLS\"\nexit \"${FAKE_PROOF_EXIT:-0}\"\n"
+
     # where: "own" puts the fake plan at <repo>/bin/plan beside a copy of pr, "path" on PATH, "none" nowhere;
     # "both" puts a different fake on PATH too.
     # reviewed: the review record already names HEAD. pb_fails_first: gh pb fails on the first run, and
@@ -598,7 +604,8 @@ class PrReview(unittest.TestCase):
     # commits. no_pr: the branch has no PR yet. ask_fails: `gh pr edit`, the Copilot request, fails.
     # The gh calls are left in self.gh_calls.
     def run_pr(self, reviewed, plan_exit="0", where="own", with_replies=False, pb_fails_first=False,
-               unfinished=False, reviewer="claude", moved=False, no_pr=False, ask_fails=False, config=None):
+               unfinished=False, reviewer="claude", moved=False, no_pr=False, ask_fails=False, config=None,
+               proof_exit="0", arguments=(), dirty=False, message=True):
         with tempfile.TemporaryDirectory() as d:
             outer = Path(d)
             root = new_pr_branch(outer)
@@ -615,6 +622,11 @@ class PrReview(unittest.TestCase):
             bindir.mkdir()
             fakes = [(bindir, "gh", self.FAKE_GH)]
             plan_home = outer / "skuld"
+            fakes.append((plan_home / "bin", "provenance-check", self.FAKE_PROOF))
+            if dirty:
+                (root / "f.txt").write_text("uncommitted\n")
+                if message:
+                    (root / ".tmp" / "CIAM-9" / "commit.txt").write_text("More of the fix (CIAM-9)\n")
             script_dir = plan_home / "bin"
             (script_dir / "pr-helpers").mkdir(parents=True)
             shutil.copy(BIN / "pr", script_dir / "pr")
@@ -651,16 +663,75 @@ class PrReview(unittest.TestCase):
                    "PLAN_CALLS": str(calls), "FAKE_PLAN_EXIT": plan_exit,
                    "PB_FAILS": str(outer / "pb-fails"), "HOME": str(outer / "home"),
                    "GH_CALLS": str(outer / "gh-calls"), "NO_PR": str(outer / "no-pr"),
-                   "ASK_FAILS": str(outer / "ask-fails")}
+                   "ASK_FAILS": str(outer / "ask-fails"),
+                   "PROOF_CALLS": str(outer / "proof-calls"), "FAKE_PROOF_EXIT": proof_exit}
             if pb_fails_first:
                 (outer / "pb-fails").write_text("")
                 self.first = subprocess.run([str(script_dir / "pr")], cwd=root, env=env, capture_output=True, text=True)
                 self.calls_after_first = calls.read_text() if calls.exists() else ""
                 (outer / "pb-fails").unlink()
-            result = subprocess.run([str(script_dir / "pr")], cwd=root, env=env, capture_output=True, text=True)
+            result = subprocess.run([str(script_dir / "pr"), *arguments], cwd=root, env=env, capture_output=True, text=True)
             gh_calls = outer / "gh-calls"
             self.gh_calls = gh_calls.read_text() if gh_calls.exists() else ""
+            proofs = outer / "proof-calls"
+            self.proof_calls = proofs.read_text() if proofs.exists() else ""
+            self.commits = len(git("log", "--oneline").stdout.splitlines())
+            self.pushed = bool(git("ls-remote", "origin").stdout)
             return result, calls.read_text() if calls.exists() else ""
+
+    def test_provenance_is_checked_against_the_default_branch_before_anything_is_committed(self):
+        result, _calls = self.run_pr(reviewed=True, dirty=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.proof_calls, "--if-code --base origin/main CIAM-9\n")
+        self.assertLess(result.stdout.index("pr: checking provenance"), result.stdout.index("More of the fix"))
+
+    def test_a_missing_commit_message_is_refused_before_the_check_runs(self):
+        result, _calls = self.run_pr(reviewed=True, dirty=True, message=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(".tmp/CIAM-9/commit.txt is missing", result.stderr)
+        self.assertEqual(self.proof_calls, "")
+
+    def test_a_refused_check_stops_pr_with_nothing_committed_or_pushed(self):
+        for exit_code in ("1", "2"):
+            with self.subTest(exit_code=exit_code):
+                result, calls = self.run_pr(reviewed=False, dirty=True, proof_exit=exit_code)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("pr --no-provenance CIAM-9", result.stderr)
+                self.assertEqual((self.commits, self.pushed, calls), (2, False, ""))
+
+    def test_no_provenance_skips_the_check_says_so_and_ships(self):
+        for arguments in (("--no-provenance",), ("--no-provenance", "CIAM-9"), ("CIAM-9", "--no-provenance")):
+            with self.subTest(arguments=arguments):
+                result, _calls = self.run_pr(reviewed=True, dirty=True, proof_exit="1", arguments=arguments)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("pr: --no-provenance: provenance is not checked", result.stdout)
+                self.assertEqual((self.proof_calls, self.commits, self.pushed), ("", 3, True))
+
+    # --no-provenance given x what pr has that the PR lacks x the check's exit: whether pr goes on,
+    # and whether it ran the check
+    PROVENANCE_CASES = [
+        (False, "nothing", "0", True, False), (False, "nothing", "1", True, False),
+        (False, "uncommitted", "0", True, True), (False, "uncommitted", "1", False, True),
+        (False, "unpushed", "0", True, True), (False, "unpushed", "1", False, True),
+        (False, "no PR", "0", True, True), (False, "no PR", "1", False, True),
+        (True, "nothing", "0", True, False), (True, "nothing", "1", True, False),
+        (True, "uncommitted", "0", True, False), (True, "uncommitted", "1", True, False),
+        (True, "unpushed", "0", True, False), (True, "unpushed", "1", True, False),
+        (True, "no PR", "0", True, False), (True, "no PR", "1", True, False),
+    ]
+    NEW_WORK = {"nothing": {}, "uncommitted": {"dirty": True}, "unpushed": {"moved": True}, "no PR": {"no_pr": True}}
+
+    def test_pr_goes_on_only_with_new_work_proven_unless_told_to_skip_the_check(self):
+        for skip, work, exit_code, goes_on, checks in self.PROVENANCE_CASES:
+            with self.subTest(skip=skip, work=work, exit_code=exit_code):
+                arguments = ("--no-provenance",) if skip else ()
+                result, _calls = self.run_pr(reviewed=True, proof_exit=exit_code, arguments=arguments,
+                                             **self.NEW_WORK[work])
+                self.assertEqual((result.returncode == 0, bool(self.proof_calls)), (goes_on, checks), result.stderr)
+
+    def test_a_run_with_nothing_new_says_the_check_was_not_needed(self):
+        result, _calls = self.run_pr(reviewed=True, proof_exit="1")
+        self.assertIn("pr: nothing new to commit or push, so provenance isn't checked", result.stdout)
 
     def test_a_push_that_adds_commits_starts_the_review_after_printing_the_url(self):
         result, calls = self.run_pr(reviewed=False)
@@ -785,6 +856,44 @@ class PrReview(unittest.TestCase):
 
 
 # A repo on branch CIAM-9-x, one commit ahead of a local origin/main, with a drafted PR body.
+class PrWithTheRealCheck(unittest.TestCase):
+    """pr and provenance-check together, nothing faked but gh and the push going to a bare repo."""
+
+    def run_pr(self, manifest_row):
+        with tempfile.TemporaryDirectory() as d:
+            outer = Path(d)
+            root = new_pr_branch(outer)
+            git = lambda *a: subprocess.run(["git", *a], cwd=root, check=True, capture_output=True, text=True).stdout
+            subprocess.run(["git", "init", "-q", "--bare", str(outer / "origin.git")], check=True)
+            git("remote", "add", "origin", str(outer / "origin.git"))
+            (root / ".git" / "info" / "exclude").write_text(".tmp/\n")
+            git("update-ref", "refs/remotes/origin/main", "HEAD")  # the change is double.py and its test
+            (root / "double.py").write_text("def double(x):\n    return x * 2\n")
+            (root / "test_double.py").write_text(
+                "import unittest\n\nimport double\n\n\nclass Double(unittest.TestCase):\n"
+                "    def test_double(self):\n        self.assertEqual(double.double(2), 4)\n")
+            (root / ".tmp" / "CIAM-9" / "commit.txt").write_text("Add double (CIAM-9)\n")
+            if manifest_row:
+                (root / ".tmp" / "CIAM-9" / "provenance.md").write_text(manifest_row + "\n")
+            result = subprocess.run([str(BIN / "pr")], cwd=root, env=fake_gh_env(outer, HOME=str(outer)),
+                                    capture_output=True, text=True)
+            return result, len(git("log", "--oneline").splitlines()), git("ls-remote", "origin")
+
+    def test_an_unproven_change_is_neither_committed_nor_pushed(self):
+        result, commits, remote = self.run_pr(None)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("double.py::double changed, and no row names it", result.stderr)
+        self.assertEqual((commits, remote), (2, ""))
+
+    def test_a_proven_change_is_committed_and_pushed(self):
+        result, commits, remote = self.run_pr(
+            "| double.py::double | plain | test: test_double.py::Double.test_double |")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ok row 1 (double.py::double, plain)", result.stdout)
+        self.assertEqual(commits, 3)
+        self.assertIn("refs/heads/CIAM-9-x", remote)
+
+
 def new_pr_branch(outer):
     root = outer / "repo"
     root.mkdir()

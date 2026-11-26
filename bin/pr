@@ -1,7 +1,11 @@
 #!/bin/sh
-# pr [done] [KEY]: commit, push and open or update the PR for the current branch, in one step that is
-# safe to repeat. Each step runs only when it has something to do:
+# pr [done] [--no-provenance] [KEY]: commit, push and open or update the PR for the current branch,
+# in one step that is safe to repeat. Each step runs only when it has something to do:
 #
+#   proof   when there is something new (changes to commit, commits the PR lacks, or no PR yet) and
+#           the change since origin's default branch includes a Python or JavaScript file: runs
+#           provenance-check on .tmp/KEY/provenance.md, and unless it passes stops with nothing
+#           committed or pushed. --no-provenance skips it and says so
 #   commit  when the tree has changes: stages everything (.tmp/ is ignored) and commits with the
 #           message in .tmp/KEY/commit.txt, then deletes that file, so the next change needs a new one
 #   push    git push -u origin HEAD; a no-op when the remote has the branch's commits
@@ -107,12 +111,14 @@ refuse_smart_commits_range() {
 }
 
 finish=0
-while [ $# -gt 0 ]; do
-  case $1 in
+prove=1
+key=""
+for argument in "$@"; do
+  case $argument in
     done) finish=1 ;;
-    *) break ;;
+    --no-provenance) prove=0 ;;
+    *) [ -n "$key" ] || key=$argument ;;
   esac
-  shift
 done
 
 root=$(git rev-parse --show-toplevel)
@@ -123,9 +129,9 @@ base=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
 [ "$branch" != "$base" ] || { echo "pr: on $base; switch to the issue's branch" >&2; exit 2; }
 # L2: the prefix segment (feat/, fix/, chore/, ...) is optional, matching issueBranch() (lib/
 # start.py) and lib/issuekeys.py's ISSUE_KEY_PATTERN, so a bare KEY-slug branch (no prefix) still resolves its key.
-n=${1:-$(printf '%s' "$branch" | sed -nE 's,^([^/]+/)?([A-Z]+-[0-9]+)-.*,\2,p')}
+n=${key:-$(printf '%s' "$branch" | sed -nE 's,^([^/]+/)?([A-Z]+-[0-9]+)-.*,\2,p')}
 [ -n "$n" ] || { echo "pr: no Jira key in branch $branch; give it: pr KEY" >&2; exit 2; }
-# N10: n (whether from $1 or sed'd off the branch) is used to build .tmp/$n paths below, well
+# N10: n (whether given or sed'd off the branch) is used to build .tmp/$n paths below, well
 # before ghbody/checklist.py would ever validate it -- an unanchored or path-shaped value
 # (../x, a/../../b, an absolute path) would read or write outside .tmp/ via those paths. Anchor-
 # validated against the same key shape as lib/issuekeys.py's ISSUE_KEY_PATTERN (L2) before it's used anywhere.
@@ -153,10 +159,39 @@ esac
 # Before the commit, so an unknown value stops pr with nothing committed.
 reviewer=$(python3 "$helpers/reviewer.py") || exit 2
 
+# The cheap refusals of a commit come before the check, which runs tests for minutes.
+message=".tmp/$n/commit.txt"
 if [ -n "$(git status --porcelain)" ]; then
-  message=".tmp/$n/commit.txt"
   [ -f "$message" ] || { echo "pr: the tree has changes and $message is missing" >&2; git status --short >&2; exit 2; }
   refuse_smart_commits_file "$message" "the commit message $message"
+fi
+
+# The PR's head on GitHub before the push, so the change is proven, and Copilot asked again, only
+# when the push adds commits. GitHub's, not the local origin/<branch>, which another clone's push
+# leaves behind. A read that fails leaves it empty, so both happen rather than being skipped.
+head_before=""
+[ -z "$state" ] || head_before=$(gh pr view "$branch" --json headRefOid --jq .headRefOid || true)
+
+# Whether pr has something the PR lacks: no PR yet, changes to commit, or commits to push.
+has_new_work() {
+  [ -z "$state" ] || [ -n "$(git status --porcelain)" ] || [ "$head_before" != "$(git rev-parse HEAD)" ]
+}
+
+# Before the commit too: a change that isn't proven reaches neither the branch nor GitHub.
+if [ "$prove" = 0 ]; then
+  echo "pr: --no-provenance: provenance is not checked"
+elif ! has_new_work; then
+  echo "pr: nothing new to commit or push, so provenance isn't checked"
+else
+  echo "pr: checking provenance"
+  "$bin/provenance-check" --if-code --base "origin/$base" "$n" || {
+    echo "pr: provenance-check didn't pass, so nothing is committed or pushed; fix what it names," >&2
+    echo "    or run pr --no-provenance $n to ship without the check" >&2
+    exit 2
+  }
+fi
+
+if [ -n "$(git status --porcelain)" ]; then
   git add -A
   git commit -q -F "$message"
   rm "$message"
@@ -173,12 +208,6 @@ fi
 # push instead of merely delaying the check -- the push does not need the ref to exist, so there
 # was never a reason to skip.
 refuse_smart_commits_range
-
-# The PR's head on GitHub before the push, so Copilot is asked again only when the push adds
-# commits. GitHub's, not the local origin/<branch>, which another clone's push leaves behind. A
-# read that fails leaves it empty, so Copilot is asked rather than the push stopped.
-head_before=""
-[ -z "$state" ] || head_before=$(gh pr view "$branch" --json headRefOid --jq .headRefOid || true)
 
 # No -q: a slow push shows its progress. A credential prompt fails at once rather than waiting.
 echo "pr: pushing $branch"

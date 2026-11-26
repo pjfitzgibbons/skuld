@@ -138,6 +138,7 @@ macOS only. In order:
    ln -s "$(pwd)/bin/issue-update" ~/.local/bin/issue-update
    ln -s "$(pwd)/bin/store-index" ~/.local/bin/store-index
    ln -s "$(pwd)/bin/pr" ~/.local/bin/pr
+   ln -s "$(pwd)/bin/provenance-check" ~/.local/bin/provenance-check
    ln -s "$(pwd)/bin/ghbody" ~/.local/bin/ghbody
    ln -s ~/.claude/skills/jira-issues/scripts/new_issue.py ~/.local/bin/new_issue
    ```
@@ -266,6 +267,7 @@ decides the repo (§4).
 | `plan init-store` | Make the store's missing folders (`milestones/`, `active/`, `archive/`, `reviews/`, `queries/`) at `issueStore`, printing each; refuses a missing store folder, changes no file, and a second run makes nothing |
 | `plan suite [--dry-run]` | Run this environment's test suite: the commands in the nearest `.plan-suite` (the current folder, then each parent; the first file found is the only one read), one shell command per line, `#` lines and blank lines ignored, each run from that file's folder after printing `== <command>`; stops at the first failure with its exit code, prints `suite: passed` when all pass; refuses (exit 2, nothing run) when no file is found or the file has no commands; `--dry-run` prints `# <file>` and the commands as they would run, and runs nothing |
 | `pr [done] [KEY]` | Send a round (§5) |
+| `provenance-check [KEY] [--base REF] [--manifest PATH] [--if-code]` | Verify the worktree's provenance manifest against its change (§5); `pr` runs it before its commit; changes nothing in the worktree |
 | `plan review KEY` | Write the next review round's request and start Claude's review on it in the plan window's `Review KEY` terminal; `pr` runs it when a review is due (§5), and it is how to start one by hand |
 | `issue-create "<title>" [field=value…]` | Write a new ticket: the next free key and ordinal, `ticket_id` first, the outline and a `## Log` with `Filed.`; prints the path |
 | `issue-update <KEY> [field=value…] [--log "text"]` | Change a ticket's front-matter fields and append a dated `## Log` line, all or nothing; an unknown field refuses, naming it; `closed` follows `status` (`done` or `wontfix` without `closed=` gets today, an open status clears it), `points` is a Fibonacci number, and an open ticket is refused a milestone whose file says it is closed; the log line is wrapped to 100 columns; prints the path. With `issue-create`, the only writers of a ticket file |
@@ -375,6 +377,51 @@ Rules the files follow:
 - **A reply file opens with an HTML comment** holding the thread's path, line, comment and diff
   hunk, so the reply is read against what it answers. `--post` strips it.
 
+### The provenance manifest
+
+Before a review, the author writes `.tmp/<KEY>/provenance.md` in the worktree and runs
+`provenance-check` there ([architecture §7.1](docs/architecture.md#start) gives the classes, their
+proofs and what is refused). The manifest's format, with an example, is in the
+[jira-issues skill](skills/jira-issues/SKILL.md#proving-the-change).
+
+`provenance-check [KEY] [--base REF] [--manifest PATH] [--if-code]` takes `KEY` from the branch and `REF` from
+`origin/HEAD`, or `origin/main` when that isn't set. It prints a header, then each row's `ok` line,
+with its place in the count and its time, as the row finishes, and each refusal as it is found; the
+last line is the total. It exits 0 when every row passes; 1 with any refusal, each naming its row,
+`file:line` and reason; and 2 when it can't check at all (no such ref, an octopus merge).
+
+`pr` runs it before its commit, as `--if-code --base origin/<default branch>`, when it has changes to
+commit, commits the PR lacks, or no PR yet: a change with no
+Python or JavaScript file (`.js`, `.jsx`, `.mjs`, `.cjs`, or a `node` or `python` shebang) prints
+that it wasn't checked and goes on, and any other is checked whole, whatever the repo. A refusal stops `pr`, and `pr --no-provenance` ships without the check.
+
+How it works (`lib/provenance.py`):
+
+1. It commits the worktree as it stands to no branch, through a throwaway copy of the index, so
+   uncommitted, untracked and force-added files are checked and the worktree and its index don't
+   change. When the rows have run, a worktree that no longer matches that commit is refused. None of
+   the repo's git hooks run. A merge in progress keeps both parents. Every git command and test runs without git's
+   repository variables (`GIT_DIR`, `GIT_WORK_TREE` and the rest), which would point it elsewhere.
+2. The change is that snapshot against its merge base with `REF`. For each merge since the base, a
+   function is the resolver's when it differs from both parents and from `git merge-tree` taking
+   either side of every conflict, so a clean merge and a verbatim pick need no `merge-resolved` row.
+3. In a temporary worktree of the snapshot it runs each row's tests, then reverts the row's code and
+   runs its `test:` items again, restoring the tree after every run. A test proves a row when it
+   fails or no longer loads (its file, or its class's setup); one that passes, is skipped, crashes
+   or runs past 300 seconds doesn't. node doesn't say why a test file died, so that reads as not
+   loading.
+
+`lib/provenance_units.py` splits a file into what rows name and reverts it; a Python file splits by
+function, method, class declaration and top-level name, and any other file is one unit.
+`lib/provenance_runner.py` runs one test. A Python test runs under the interpreter that runs the
+check, so a repo whose tests need `uv`'s packages runs the check as
+`uv run python <skuld>/bin/provenance-check`, and ships from a terminal with `uv run pr`, since Ship
+runs plain `pr`. The temporary worktree holds only what git tracks or
+would add: no `node_modules`, no `.venv`.
+
+The review reads the manifest too: both review prompts name its path, and the reviewer judges
+whether each row's class is honest.
+
 ### Ship
 
 Ship runs `ship.check()`, which refuses by name: a branch that isn't the issue's, a missing
@@ -389,7 +436,7 @@ in an integrated terminal of the plan window, so its output shows as it runs.
 `pr` writes no tracker field to link the PR; the key in the branch name and PR title does that.
 Ship again is the next round, and with nothing left to send, `pr` sends nothing.
 
-### `pr [done] [KEY]`
+### `pr [done] [--no-provenance] [KEY]`
 
 `KEY` defaults to the key in the branch name (`fix/CIAM-88-go-requests` is `CIAM-88`). Each step
 runs only when it has something to do, so `pr` is safe to repeat:
@@ -398,6 +445,7 @@ runs only when it has something to do, so `pr` is safe to repeat:
 | --- | --- | --- |
 | guard | always | refuses the default branch, and a PR closed unmerged |
 | merged? | the PR is merged | refuses if HEAD isn't the merged head or the tree has changes; sends any leftover replies and ticks; says to run `plan done`; exits |
+| provenance | there are changes to commit, commits the PR lacks or no PR, the change since `origin`'s default branch includes a Python or JavaScript file, and no `--no-provenance` | `provenance-check` (above); a refusal stops `pr` with nothing committed or pushed |
 | commit | the tree has changes | needs `commit.txt`; `git add -A`, `git commit -F`, deletes the file |
 | push | always | `GIT_TERMINAL_PROMPT=0 git push -u origin HEAD` |
 | PR | always | `gh pc` with no PR, else `gh pb` |
@@ -944,6 +992,7 @@ bin/
   issue-update             changes a store ticket's front matter and ## Log, checked first
   store-index              writes the store's INDEX.md, or checks it with --check
   pr                       commit, push, open or update the PR, ask the reviewer, send the round
+  provenance-check         checks the author's provenance manifest against the change
   ghbody                   gh pc and gh pb; test_pr.py tests it and pr
   pr-helpers/              pr's Python helpers: pr_threads.py, checklist.py, review.py,
                            reviewer.py, ghread.py, and test_review.py
@@ -957,6 +1006,9 @@ lib/
   jira.py                  the Jira adapter: every Jira REST v3 call, transitions with read-back
   start.py                 Start and Open: repo resolution, names, worktrees, the lock
   ship.py                  Ship's checks and round-file naming
+  provenance.py            bin/provenance-check: the manifest, what needs a row, each row's revert
+  provenance_units.py      the functions of a change, and putting them back as a reference has them
+  provenance_runner.py     runs one Python unittest or node --test test and says what happened
   done.py                  Done: checks, then changes, then the close note
   issue_update.py          bin/issue-create, bin/issue-update and the checker Done's close shares
   store_index.py           bin/store-index: INDEX.md from the store's tickets and milestones

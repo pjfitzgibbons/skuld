@@ -60,6 +60,19 @@ summary only.
 
 {{OK_FILES}}
 
+## The provenance manifest
+
+The author's provenance manifest is `{{PROVENANCE}}`: one row per changed function, with its class
+(`merge-resolved`, `moved`, `ported`, `rule`, `parser` or `plain`) and its proof. `provenance-check`
+verifies that every row exists and that its tests fail with the code reverted. It can't tell whether
+a row is honest, so you judge that: read the file, and give it to each leg with the scope section.
+For each row in your scope, check the class against where the code came from (`git diff -M -C
+--find-copies-harder`, `git show --remerge-diff <merge>`), not against what the row calls it: a port
+or a merge resolution classed `plain`, a rule missing a dimension or a value, a port missing a
+concept or claiming none exists elsewhere, an exemption missing an input path, a parser missing a
+case its spec defines, or a table whose rows don't cover the combinations they stand for. A dishonest
+or incomplete row is a finding on the code it names. When the file doesn't exist, say so in the log.
+
 ## The PR's lenses
 
 {{LENSES}}
