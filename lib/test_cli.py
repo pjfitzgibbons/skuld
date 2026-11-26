@@ -20,6 +20,7 @@ import unittest
 from unittest import mock
 
 from lib import cli
+from lib import herdr as herdr_mod
 from lib import reviews as reviews_mod
 from lib import ship as ship_mod
 from lib import start as startLib
@@ -86,7 +87,7 @@ class CmdOpenTests(unittest.TestCase):
             cli, "jiraFrom", return_value=FakeJira()
         ), mock.patch.object(startLib, "start", return_value={"dir": self.worktree(key), "notes": []}), mock.patch.object(
             term_mod, "run", side_effect=run
-        ), mock.patch("sys.stdout", out):
+        ), mock.patch.object(herdr_mod, "run", side_effect=AssertionError("herdr was run")), mock.patch("sys.stdout", out):
             main([command, key])
         return ran, out.getvalue()
 
@@ -314,6 +315,34 @@ class CmdOpenTests(unittest.TestCase):
         self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
         self.assertEqual(self.issueSettings("SK-0001")["plan.worktree"], self.worktree("SK-0001"))
         self.assertEqual(os.path.getsize(legacy), 0)
+
+    def test_with_no_herdr_server_start_changes_nothing(self):
+        self.cfg["frontEnd"] = "herdr"
+        with mock.patch.object(herdr_mod, "run", side_effect=RuntimeError("no herdr server is running")), mock.patch.object(
+            startLib, "start"
+        ) as start, mock.patch.object(cli.config_mod, "load", return_value=self.cfg):
+            with self.assertRaisesRegex(RuntimeError, "Start it with `herdr`"):
+                main(["start", "SK-0001"])
+        start.assert_not_called()
+        self.assertEqual(os.listdir(self.tmp), [])
+
+    def test_an_unknown_front_end_stops_start_before_anything_changes(self):
+        self.cfg["frontEnd"] = "other"
+        self.assertIn('"vscode" or "herdr"', self.stoppedBy("start"))
+        self.assertEqual(os.listdir(self.tmp), [])
+
+    def test_herdr_open_writes_the_same_files_shows_the_issue_in_herdr_and_runs_no_code(self):
+        self.cfg["frontEnd"] = "herdr"
+        with mock.patch.object(herdr_mod.Herdr, "check") as check, mock.patch.object(herdr_mod.Herdr, "show") as show:
+            ran, out = self.runOpen("SK-0001", "/issues/SK-0001-slug.md")
+        self.assertEqual(ran, [])
+        check.assert_called_once_with("open", "SK-0001")
+        shown = show.call_args.args[0]
+        self.assertEqual(shown.ticket, "/issues/SK-0001-slug.md")
+        self.assertEqual(shown.prompt, self.issueSettings("SK-0001")["plan.prompt"])
+        self.assertEqual(term_mod.issueKeys(self.cfg["issuesFile"]), ["SK-0001"])
+        self.assertEqual(self.planFolders(), ["/issues", self.worktree("SK-0001")])
+        self.assertEqual(out, "SK-0001 ready.\n/issues/SK-0001-slug.md\n")
 
     def test_open_pads_a_sk_key_typed_without_its_zeros(self):
         class FakeJira:

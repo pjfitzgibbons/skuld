@@ -35,8 +35,10 @@
 
 Skuld plans and ships work from the terminal. It holds the library, the `plan` and `pr` commands,
 the helper scripts and the definitions they share. `plan` lists what's next, and starts, opens,
-ships and finishes an issue. Every issue's Claude runs in one VS Code window, the plan window. `pr`
-commits, pushes, opens or updates the pull request and answers its review.
+ships and finishes an issue. Start and Open bring an issue up in the front end the machine config
+names: VS Code, where every issue's Claude runs in one window, the plan window, or herdr, with one
+workspace per issue (§6.1). `pr` commits, pushes, opens or updates the pull request and answers its
+review.
 
 Issues live in one of two trackers: the ticket store, a git repo of Markdown files that skuld
 defines and works, or Jira Cloud (`cryoport.atlassian.net`) for work projects. Pull requests are
@@ -60,6 +62,8 @@ GitHub's, and they are the one GitHub integration; GitHub Issues is not used.
 | Issues view | The view `plan.issues` that the `plan-window` extension adds to the plan window's Explorer: one item per issue in the issues file, tinted from the pulses file. Clicking an item opens the issue (§6.3, §7.1) |
 | Plan window | The one VS Code window for all issues, on the plan workspace file, `<workspaceDir>/plan.code-workspace`, which lists as folders the ticket store's folder, always first, and the worktrees of the issues in the issues file. Each issue's Claude runs in an integrated terminal named "Claude <KEY>", and pages open in its integrated browser (§7.1) |
 | Issue workspace file | `<workspaceDir>/<KEY>.code-workspace`, the issue's record of its key, worktree, prompt and ticket (a store ticket's file in `plan.ticket`, or a Jira issue's browse URL in `plan.ticketUrl`), which `plan-window` reads to open the issue. It holds settings only: no folders, no window title and no terminal environment. No window opens on it (§7.1) |
+| Front end | Where Start and Open bring an issue up, `vscode` or `herdr`, named by the machine config's `frontEnd` (§6.1) |
+| Herdr workspace | With the `herdr` front end, the herdr workspace labelled `<KEY>`: a `claude`, an `edit` and a `git` tab in the issue's worktree (§7.1) |
 | Start | Moving an issue to "in progress" from `plan start`, which makes its branch and worktree and logs "Started" on the issue (§7.1) |
 | Round | One pass of review: the commit message, PR body and review replies in `<store>/reviews/<KEY>/` that `pr` sends (§7.2) |
 | Finish | The squash merge of the issue's PR, then Done, which notes the merge on the issue and closes a store ticket; the human closes a Jira issue (§7.3) |
@@ -171,9 +175,15 @@ a module interface with one class per adapter:
 | `ReviewStore` | record a round, its findings and outcomes, and read them back | files under `<store>/reviews/<KEY>/` |
 | `PullRequests` | open or update a PR, read its state and threads, post replies | `gh` |
 | `GitRemote` | fetch, push, rebase onto the base, add and remove worktrees | `git` |
+| `FrontEnd` | check that it can be used, and show an issue for Start and Open | `VSCode`, `Herdr` |
 
 `storeFor(cfg, key)` picks an issue's adapter from its prefix: `FileStore` for a prefix `store.yml`
 lists, `Jira` for any other.
+
+`frontEndFor(cfg)` picks the front end from the machine config's `frontEnd`: `vscode` (the default,
+also when the key is absent) or `herdr`. Any other value refuses Start and Open, naming the key and
+the two values. Start and Open are the port's callers. `plan browse`, `plan review`,
+`plan agents pick`, the Issues view and the issue colours work in the plan window whichever is set.
 
 The clients:
 
@@ -202,10 +212,11 @@ Each outside system is reached only through its port's adapter. Policy code name
 - The `GitRemote` and `PullRequests` adapters run `git` and `gh`: fetching, adding and removing
   worktrees, reading PRs, and pulling and deleting merged branches.
 
-The boundary is drawn around outside systems, not around processes. The front end runs `code`,
-and `fzf` as part of its normal work; none of them touches a tracker or git state, so they need
-no port. A new call to Jira, a tracker write or a git remote operation always goes
-through its adapter.
+The boundary is drawn around outside systems, not around processes. Start and Open reach the front
+end through its port: `VSCode` runs `code`, and `Herdr` runs `herdr`. The plan window's other
+commands run `code` directly, and `fzf` is part of `plan`'s normal work; neither touches a tracker
+or git state. A new call to Jira, a tracker write or a git remote operation always goes through its
+adapter.
 
 `gh` is already authenticated, so nothing holds a GitHub token.
 
@@ -218,7 +229,7 @@ through its adapter.
 | Trackers | The ticket store (Markdown with YAML front matter, in a git repo); Jira Cloud, `cryoport.atlassian.net` |
 | Store commits | `issue-watch` under launchd: debounced, gated by the checker, commits and pushes |
 | Auth | `~/.netrc` for Jira, read per call; `gh`'s and git's own credentials for GitHub and the store's remote |
-| Front end | VS Code, one plan window for all issues, opened by the `code` CLI on the plan workspace file, which opens or raises it wherever it is, all via `subprocess`; fzf for the picker; ticket files in an editor tab |
+| Front end | Chosen by the machine config's `frontEnd`, all via `subprocess`. `vscode`: one plan window for all issues, opened by the `code` CLI on the plan workspace file, which opens or raises it wherever it is; ticket files in an editor tab. `herdr`: one herdr workspace per issue, made with the `herdr` CLI, with `nvim` and `lazygit` in its tabs. fzf for the picker |
 | Issues view | The `plan-window` extension's view `plan.issues`, contributed under `contributes.views.explorer`, so it shows in the plan window's Explorer: one item per key in the issues file, in file order, labelled with the key. It watches the issues file and the pulses file, and tints an item orange or green from the pulses file. Clicking an item opens the issue (§7.1) |
 | Claude status | `lib/agents.py`, run every few seconds by a LaunchAgent as `plan agents tick --watch`, and at once when a waiting marker changes: reads `claude agents --json`, the waiting markers in `~/.cache/plan/waiting` that the Claude Code hook `bin/claude-waiting` keeps, the issues file and git, each listed issue's review rounds and HEAD, and writes an issue's colour to the pulses file only when it changes (§7.1) |
 | Browser | The plan window's integrated browser, reached by `showUrl()` (§7.6.1) and by opening a Jira issue (§7.1); never system `open`. Browser automation and browser tests run in Chrome, never in the plan window |
@@ -234,7 +245,7 @@ through its adapter.
    Next up (plan order)       worktree <repo>.worktrees/<KEY>          the issue (store or Jira)
    ────────────────────       ───────────────────────────────          ─────────────────────────
    (1) START ───────────────▶ branch <type>/<KEY>-slug, off base ────▶ in progress, "Started" logged
-                              plan window, Claude in its terminal       (a store ticket opens in a tab)
+                              front end, Claude in its terminal         (a store ticket opens beside it)
                               Claude works · writes <store>/reviews/<KEY>/
    (2) SHIP ────────────────▶ pr <KEY>: commit, push, open/update PR ─▶ Done boxes ticked
                               review rounds: replies/                    (Jira: dev panel, native)
@@ -295,7 +306,7 @@ moves the issue to "in progress".
 
 Either way, Start reads the issue back and refuses if its status isn't the target (§8). It then logs
 "Started" on the issue (an ADF comment in Jira, a `## Log` line in a ticket) and brings the issue
-into the plan window (§2). Start writes the issue workspace file `<KEY>.code-workspace` to
+up in the front end (§6.1). Start writes the issue workspace file `<KEY>.code-workspace` to
 `workspaceDir` (config, default `~/.cache/plan/code-workspaces`), outside every repo. It holds the
 issue's `plan.key`, `plan.worktree` and `plan.prompt`, and either `plan.ticket`, a store ticket's
 file, or `plan.ticketUrl`, a Jira issue's browse URL, set only when there is no `plan.ticket`.
@@ -304,9 +315,31 @@ issue to the issues file and its worktree to the plan workspace file, `plan.code
 same folder, which lists as folders the ticket store's folder and the worktrees of the issues in
 the issues file, and is written through a temp file and a rename. The store's folder is always the
 first folder: Start and Open add it when it is missing and move it to the front when it is listed
-further down, so the folder Done removes is never the one VS Code names the workspace by. Start
-then runs `code` on the plan workspace file, which opens the plan window or raises it. If `code`
-fails, Start stops and prints the command to run by hand.
+further down, so the folder Done removes is never the one VS Code names the workspace by. Both
+front ends get these files. Last, the front end shows the issue: `VSCode` runs `code` on the plan
+workspace file, which opens the plan window or raises it. If `code` fails, Start stops and prints
+the command to run by hand.
+
+**With `frontEnd: herdr`, an issue is a herdr workspace.** `Herdr` (`lib/herdr.py`) looks for the
+workspace labelled `<KEY>`. When there is one, it focuses it, starts nothing, and prints how to
+close it and start over. That includes a workspace with a tab closed, and one a restarted herdr
+server brings back with plain shells. Otherwise it
+creates the workspace in the issue's worktree with three tabs, each with `PLAN_KEY` set, and then
+focuses it:
+
+- `claude` runs `plan claude-session`, which starts `claude --continue` when the worktree has an
+  earlier Claude session, and Claude with the issue prompt when it has none. It drops every
+  inherited `CLAUDE*` variable except `CLAUDE_CONFIG_DIR`. The plan window's Claude terminal
+  follows the same rules.
+- `edit` runs `nvim` with its working directory and file list on the worktree, and a store ticket's
+  file open beside the list. A Jira issue's browse URL is printed.
+- `git` runs `lazygit`.
+
+The prompt, the ticket's path and the path of `plan` reach a tab as environment values, and the line
+typed into each tab's shell is fixed text. `plan claude-session` runs inside the tab because a herdr
+pane inherits the herdr server's environment, which a client can add to and cannot unset. The rest
+of this section on the plan window, `plan-window` and the `/open` link applies to the `vscode` front
+end.
 
 **The plan window is the only window that acts.** Every VS Code window loads `plan-window`, but it
 acts only in the window whose workspace file is `<plan.workspaceDir>/plan.code-workspace`. That
@@ -405,7 +438,7 @@ around each of these changes, so two writers never interleave. Each write goes t
 uniquely named temp file. Every writer of these files is `lib`, the extension's colour clear
 included, so every write takes the lock.
 
-**VS Code places the plan window; skuld does not.** Start and Open run `code <plan workspace>`,
+**VS Code places the plan window; skuld does not.** `VSCode` runs `code <plan workspace>`,
 which opens the plan workspace in a new window, or raises the window that already shows it,
 wherever that window is. A window is known by its workspace file's path, so a second plan window is
 never opened. `plan` reads no Desktop, switches none, records no window id, moves no window and
@@ -426,27 +459,31 @@ needs no helper or permission grant.
   when the worktree's conversation files exist.
 
 
-Start and Open first check the plan-window extension's link: when no
-`~/.vscode/extensions/skuld.plan-window-*` entry resolves into the checkout `plan` runs from, they
-stop before the lock, the transition, the worktree, the issues-file line and the plan window, and
-print where the link points and the fix ([failure-modes.md](failure-modes.md)). The link is only
-read, never rewritten.
+Start and Open first check that the front end can be used, and when it can't, they stop before the
+lock, the transition, the worktree, the issues-file line and the front end
+([failure-modes.md](failure-modes.md)). `VSCode` checks the plan-window extension's link: when no
+`~/.vscode/extensions/skuld.plan-window-*` entry resolves into the checkout `plan` runs from, it
+prints where the link points and the fix. The link is only read, never rewritten. `Herdr` checks
+that a herdr server answers, and its refusal says to run `herdr`. A later herdr step that fails is
+named with what to run by hand: Open again when no workspace was made, closing the workspace and
+then Open when it was only partly made, and the focus command when only the focus failed.
 
 If the issue's branch already exists here or on `origin`, Start reuses it on its own base. On an
-issue in progress the command is Open, which reopens the worktree and brings the issue into the
-plan window, recreating any part that is missing ([failure-modes.md,
+issue in progress the command is Open, which reopens the worktree and brings the issue up in the
+front end. The plan window recreates any part that is missing, and herdr recreates a missing
+workspace ([failure-modes.md,
 *Open*](failure-modes.md)). A "Claude <KEY>" terminal that is already open is focused, never started twice, and the ticket's tab or the Jira page's tab is brought forward without opening a second one.
 Start refuses a closed issue. A lock file per issue keeps two invocations from starting it at once
 ([failure-modes.md, *Start*](failure-modes.md)).
 
-**The issue beside Claude.** Opening the issue puts its ticket beside Claude: a store ticket in an
+**The issue beside Claude.** In the plan window, opening the issue puts its ticket beside Claude: a store ticket in an
 editor tab of the plan window, on the ticket file in the store, never on a copy in a worktree; a
 Jira issue's browse URL in the plan window's integrated browser. The ticket opens in the first
 editor group and the Claude terminal in the second. Start prints the URL or file
 path. Claude's
 prompt names the tracker: a Jira key, or the ticket file's path.
 
-Last, Start and Open open the issue's `/open` link, so the command finishes with the human at the
+Last, `VSCode` opens the issue's `/open` link, so the command finishes with the human at the
 issue's Claude. `term.revealIssue` sends it with `code --open-url <link>`, after `code` has brought
 the plan window forward; system `open` is not used. It is best-effort: if the send fails, Start or
 Open still prints `<KEY> ready.` and adds one line on stderr, `couldn't open <KEY> in the plan
@@ -720,6 +757,9 @@ they share:
 | The Jira description is edited after `issue.md` is written | The ticks would overwrite the edit | `checklist.py` refuses any difference beyond box state, and keeps the file |
 | A round's files are still unsent at Done | Done would finish with review work unsent | Done refuses before it changes anything, and names them |
 | The key in a commit message or PR title | Jira's GitHub integration links it in the issue's development panel | None; this is the intended mechanism (§7.2) |
+| No herdr server is running, with `frontEnd: herdr` | There is nowhere to show the issue | Start and Open refuse before they change anything, and say to run `herdr` (§7.1) |
+| A herdr server restarts | An issue's workspace can come back as plain shells | Open focuses it and prints how to close it and start over (§7.1) |
+| A herdr step fails after that check | The issue is started, and its workspace is missing or half made | The step is named with what to run by hand: Open again, closing a partly made workspace first, or the focus command (§7.1) |
 | The plan window was closed by hand | Open could find no window to raise | `code <plan workspace>` opens the plan window again, and opening the issue starts its terminal (§7.1) |
 
 <a id="views"></a>
