@@ -11,9 +11,13 @@ import os
 import re
 from dataclasses import dataclass, field
 
+from .provenance_order import isReordered, sharesLines
+
 # The unit name of a whole file. In a Python file it is also the module's own statements: those that
 # are no definition, named assignment or import.
 WHOLE_FILE = ""
+# The kind of a module's or a class's own statements when they did nothing but move.
+MOVED = "move"
 # The kinds that need a row of their own; a row's other units revert with its one.
 OWN_ROW = ("function", "file")
 Changed = collections.namedtuple("Changed", "line kind")
@@ -233,13 +237,89 @@ def linesOf(node):
 def changedUnits(path, old, new):
     """{name: Changed} of new's units that old lacks or has differently, with the first changed line
     of each. old is None for a new file."""
-    before = units(path, old) if old is not None else {}
     touched = changedLines(old or "", new)
-    return {
-        name: Changed(min(unit.lines & touched, default=min(unit.lines, default=1)), unit.kind)
+    if sharesALine(path, old, new):
+        return {WHOLE_FILE: Changed(min(touched, default=1), "file")} if runsDifferently(old, new) else {}
+    before = units(path, old) if old is not None else {}
+    found = {
+        name: Changed(min(unit.lines & touched, default=min(unit.lines, default=1)), kindOfChange(before.get(name), unit))
         for name, unit in units(path, new).items()
         if shapeOf(before, name) != comparable(unit)
     }
+    if movesStatements(path, old, new):
+        kind = MOVED if sameStatements(before.get(WHOLE_FILE), units(path, new).get(WHOLE_FILE)) else "rest"
+        found[WHOLE_FILE] = Changed(min(touched, default=1), kind)
+    return found
+
+
+def kindOfChange(old, new):
+    """new's kind, or MOVED for a class whose statements are the ones old has, in another order."""
+    reordered = old is not None and old.kind == new.kind == "class" and sameStatements(old, new)
+    return MOVED if reordered else new.kind
+
+
+def sameStatements(old, new):
+    """Whether a module's own statements are the same ones, in whatever order. None is a module with
+    none of them."""
+    shapes = [collections.Counter(shape for shape, _span in unit.parts) if unit else {} for unit in (old, new)]
+    return shapes[0] == shapes[1]
+
+
+def changedInAll(comparisons, described):
+    """{unit: Changed} that every comparison finds changed, as described has it. Where one finds the
+    file a single unit and another splits it, a change each of them finds is the whole file's."""
+    whole = [found[WHOLE_FILE] for found in comparisons if WHOLE_FILE in found and found[WHOLE_FILE].kind == "file"]
+    if whole:
+        return {WHOLE_FILE: whole[0]} if all(comparisons) else {}
+    held = sorted(set.intersection(*map(set, comparisons)))
+    return {unit: unmovedFirst([found[unit] for found in comparisons], described[unit]) for unit in held}
+
+
+def unmovedFirst(changes, described):
+    """described, unless it calls the unit only moved and some comparison finds it edited."""
+    if described.kind != MOVED:
+        return described
+    return next((change for change in changes if change.kind != MOVED), described)
+
+
+def sharesALine(path, old, new):
+    """Whether two Python statements are on one line, in either version: such a file is one unit."""
+    return any(sharesLines(module) for module in parsedVersions(path, old, new))
+
+
+def movesStatements(path, old, new):
+    """Whether a Python module's statements run in another order: a change of its own statements."""
+    versions = parsedVersions(path, old, new)
+    return len(versions) == 2 and isReordered(*versions)
+
+
+def parsedVersions(path, old, new):
+    """The module trees of the versions there are, when they are Python and each parses. old is None
+    for a new file."""
+    if new is None or not isPython(path, new):
+        return []
+    versions = [parsedModule(text) for text in (old, new) if text is not None]
+    return [] if any(module is None for module in versions) else versions
+
+
+def parsedModule(text):
+    try:
+        return ast.parse(text)
+    except (SyntaxError, ValueError):
+        return None
+
+
+def runsDifferently(old, new):
+    """Whether two Python texts differ in more than comments, docstrings and layout."""
+    return old is None or withoutDocstrings(old) != withoutDocstrings(new)
+
+
+def withoutDocstrings(text):
+    module = ast.parse(text)
+    for node in ast.walk(module):
+        if isinstance(node, ast.Module) or isDefinition(node):
+            node.body = withoutDocstring(node.body)
+    return ast.dump(module)
 
 
 # A missing file unit has the shape of an empty file, so a new empty file is no change.
@@ -264,15 +344,17 @@ def changedLines(old, new):
     return changed
 
 
-def reverted(path, current, reference, targets):
+def reverted(path, current, reference, targets, asOneUnit=False):
     """current with each target unit as reference has it, and no other unit touched. reference is
     None where the file didn't exist. A function the reference lacks becomes one that raises, a name
     or class becomes None, module statements go, and a file that isn't split is emptied: the tests
     that name the code still load."""
-    if not isPython(path, current) or (targets == [WHOLE_FILE] and isOneUnit(path, current)):
+    if asOneUnit or not isPython(path, current):
         if targets != [WHOLE_FILE]:
-            raise Unrevertable(f"{path} isn't Python, so a row names the whole file")
+            raise Unrevertable(f"{path} is one unit, so a row names the whole file")
         return reference or ""
+    if WHOLE_FILE in targets and movesStatements(path, reference, current):
+        return reference
     here = parsedUnits(path, current, "in the worktree")
     there = parsedUnits(path, reference, "in the reference") if reference is not None else {}
     lines = current.split("\n")
@@ -308,12 +390,6 @@ def sharers(found, name):
     spans = {span for _shape, span in found[name].parts}
     return {other for other, unit in found.items()
             if unit.kind == "name" and spans.intersection(span for _shape, span in unit.parts)}
-
-
-def isOneUnit(path, text):
-    """Whether the file can't be split, as a Python file that doesn't parse can't."""
-    whole = units(path, text).get(WHOLE_FILE)
-    return whole is not None and whole.kind == "file"
 
 
 def editsFor(name, unit, old, lines, reference):

@@ -69,9 +69,9 @@ a row is honest, so you judge that: read the file, and give it to each leg with 
 For each row in your scope, check the class against where the code came from (`git diff -M -C
 --find-copies-harder`, `git show --remerge-diff <merge>`), not against what the row calls it: a port
 or a merge resolution classed `plain`, a rule missing a dimension or a value, a port missing a
-concept or claiming none exists elsewhere, an exemption missing an input path, a parser missing a
-case its spec defines, or a table whose rows don't cover the combinations they stand for. A dishonest
-or incomplete row is a finding on the code it names. When the file doesn't exist, say so in the log.
+concept or claiming none exists elsewhere, an exemption missing an input path, an `exempt:` on a
+move that a test could tell apart, a parser missing a case its spec defines, or a table whose rows
+don't cover the combinations they stand for. A dishonest or incomplete row is a finding on the code it names. When the file doesn't exist, say so in the log.
 
 ## The PR's lenses
 

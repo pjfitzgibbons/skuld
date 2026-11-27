@@ -268,7 +268,7 @@ decides the repo (§4).
 | `plan init-store` | Make the store's missing folders (`milestones/`, `active/`, `archive/`, `reviews/`, `queries/`) at `issueStore`, printing each; refuses a missing store folder, changes no file, and a second run makes nothing |
 | `plan suite [--dry-run]` | Run this environment's test suite: the commands in the nearest `.plan-suite` (the current folder, then each parent; the first file found is the only one read), one shell command per line, `#` lines and blank lines ignored, each run from that file's folder after printing `== <command>`; stops at the first failure with its exit code, prints `suite: passed` when all pass; refuses (exit 2, nothing run) when no file is found or the file has no commands; `--dry-run` prints `# <file>` and the commands as they would run, and runs nothing |
 | `pr [done] [KEY]` | Send a round (§5) |
-| `provenance-check [KEY] [--base REF] [--manifest PATH] [--if-listed] [--if-code]` | Verify the worktree's provenance manifest against its change (§5); `pr` runs it before its commit; changes nothing in the worktree |
+| `provenance-check [KEY] [--base REF] [--manifest PATH] [--if-listed] [--if-code] [--jobs N]` | Verify the worktree's provenance manifest against its change (§5); `pr` runs it before its commit; changes nothing in the worktree |
 | `plan review KEY` | Write the next review round's request and start Claude's review on it in the plan window's `Review KEY` terminal; `pr` runs it when a review is due (§5), and it is how to start one by hand |
 | `issue-create "<title>" [field=value…]` | Write a new ticket: the next free key and ordinal, `ticket_id` first, the outline and a `## Log` with `Filed.`; prints the path |
 | `issue-update <KEY> [field=value…] [--log "text"]` | Change a ticket's front-matter fields and append a dated `## Log` line, all or nothing; an unknown field refuses, naming it; `closed` follows `status` (`done` or `wontfix` without `closed=` gets today, an open status clears it), `points` is a Fibonacci number, and an open ticket is refused a milestone whose file says it is closed; the log line is wrapped to 100 columns; prints the path. With `issue-create`, the only writers of a ticket file |
@@ -385,18 +385,18 @@ Before a review, the author writes `.tmp/<KEY>/provenance.md` in the worktree an
 proofs and what is refused). The manifest's format, with an example, is in the
 [jira-issues skill](skills/jira-issues/SKILL.md#proving-the-change).
 
-`provenance-check [KEY] [--base REF] [--manifest PATH] [--if-listed] [--if-code]` takes `KEY` from the branch and `REF` from
-`origin/HEAD`, or `origin/main` when that isn't set. It prints a header, then each row's `ok` line,
-with its place in the count and its time, as the row finishes, and each refusal as it is found; the
-last line is the total. It exits 0 when every row passes; 1 with any refusal, each naming its row,
-`file:line` and reason; and 2 when it can't check at all (no such ref, an octopus merge).
+`provenance-check [KEY] [--base REF] [--manifest PATH] [--if-listed] [--if-code] [--jobs N]` takes `KEY` from the branch
+and `REF` from `origin/HEAD`, or `origin/main` when that isn't set. It prints a header, then each row's `ok` line, with
+its place in the count and its time, as the row finishes, and each refusal as it is found; the last line is the total.
+It exits 0 when every row passes; 1 with any refusal, each naming its row, `file:line` and reason; and 2 when it can't
+check at all (no such ref, an octopus merge).
 
-`pr` runs it before its commit, as `--if-listed --if-code --base origin/<default branch>`. A repo
-is checked only when the machine config's `provenanceCheckouts` lists its main checkout (a worktree
-counts as its main checkout); any other prints that it wasn't checked and goes on. In a listed repo
-the check runs when `pr` has changes to commit, commits the PR lacks, or no PR yet: a change with no
-Python or JavaScript file (`.js`, `.jsx`, `.mjs`, `.cjs`, or a `node` or `python` shebang) prints
-that it wasn't checked and goes on, and any other is checked whole, whatever the repo. A refusal stops `pr`, and `pr --no-provenance` ships without the check.
+`pr` runs it before its commit, as `--if-listed --if-code --base origin/<default branch>`. A repo is checked only when
+the machine config's `provenanceCheckouts` lists its main checkout (a worktree counts as its main checkout); any other
+prints that it wasn't checked and goes on. In a listed repo the check runs when `pr` has changes to commit, commits the
+PR lacks, or no PR yet: a change with no Python or JavaScript file (`.js`, `.jsx`, `.mjs`, `.cjs`, or a `node` or
+`python` shebang) prints that it wasn't checked and goes on, and any other is checked whole, whatever the repo. A
+refusal stops `pr`, and `pr --no-provenance` ships without the check.
 
 How it works (`lib/provenance.py`):
 
@@ -408,19 +408,31 @@ How it works (`lib/provenance.py`):
 2. The change is that snapshot against its merge base with `REF`. For each merge since the base, a
    function is the resolver's when it differs from both parents and from `git merge-tree` taking
    either side of every conflict, so a clean merge and a verbatim pick need no `merge-resolved` row.
-3. In a temporary worktree of the snapshot it runs each row's tests, then reverts the row's code and
-   runs its `test:` items again, restoring the tree after every run. A test proves a row when it
-   fails or no longer loads (its file, or its class's setup); one that passes, is skipped, is an
+3. It runs each row's tests, then reverts the row's code and runs its `test:` items again, each run
+   in a checkout of the snapshot in a new temporary repository that borrows this one's objects and
+   has no remote, so nothing a test leaves, a staged file or a branch included, reaches another run
+   or the repository. Rows are proven several at once, one per core less two; tests that share a
+   port or a file outside their checkout need `--jobs 1`. A test proves a row when it fails or no
+   longer loads (its file, or its class's setup); one that passes, is skipped, is an
    `expectedFailure`, crashes, exits nonzero after passing or runs past 300 seconds doesn't. node
-   doesn't say why a test file died, so that reads as not loading.
+   doesn't say why a test file died, so that reads as not loading. Each test is a process group,
+   killed when its run ends or runs out of time, with whatever it started that is still in the
+   group (a process started in a session of its own survives); Ctrl-C, a closed terminal or `kill`
+   stops the check and the tests under way.
 
 `lib/provenance_units.py` splits a file into what rows name and reverts it; a Python file splits by
-function, method, class declaration and top-level name, and any other file is one unit.
+function, method, class declaration and top-level name, and any other file is one unit, as is a
+Python file with two statements on one line. `lib/provenance_order.py` finds top-level statements,
+imports included, that moved past each other (strings, and undecorated functions without defaults
+whose name nothing else binds, aside): that changes the module's own statements, whose revert is the
+whole earlier file. A row whose statements did nothing but move, a module's or a class's reordered
+ones, may give `exempt: <why>` and no `test:`; it runs nothing, and its `ok` line shows the reason.
 `lib/provenance_runner.py` runs one test. A Python test runs under the interpreter that runs the
-check, so a repo whose tests need `uv`'s packages runs the check as
-`uv run python <skuld>/bin/provenance-check`, and ships from a terminal with `uv run pr`, since Ship
-runs plain `pr`. The temporary worktree holds only what git tracks or
-would add: no `node_modules`, no `.venv`.
+check, so a repo whose tests need `uv`'s packages runs the check as `uv run python
+<skuld>/bin/provenance-check`, and ships from a terminal with `uv run pr`, since Ship runs plain
+`pr`. A checkout holds only what git tracks or would add: no `node_modules`, no `.venv`. It has none
+of the repo's own `.git` settings or stores either, so a repo whose files need filters from its
+`.git/config`, git-lfs and git-crypt among them, can't be checked, and nor can a partial clone.
 
 The review reads the manifest too: both review prompts name its path, and the reviewer judges
 whether each row's class is honest.
@@ -1011,6 +1023,7 @@ lib/
   ship.py                  Ship's checks and round-file naming
   provenance.py            bin/provenance-check: the manifest, what needs a row, each row's revert
   provenance_units.py      the functions of a change, and putting them back as a reference has them
+  provenance_order.py      whether a Python module's statements moved or share a line
   provenance_runner.py     runs one Python unittest or node --test test and says what happened
   done.py                  Done: checks, then changes, then the close note
   issue_update.py          bin/issue-create, bin/issue-update and the checker Done's close shares

@@ -1,40 +1,43 @@
 # provenance-check: the author's manifest, .tmp/<KEY>/provenance.md, checked against the change
 # (docs/architecture.md §7.1; the format is in skills/jira-issues/SKILL.md).
 #
-#     provenance-check [KEY] [--base REF] [--manifest PATH] [--if-listed] [--if-code]
+#     provenance-check [KEY] [--base REF] [--manifest PATH] [--if-listed] [--if-code] [--jobs N]
 #
 # KEY defaults to the branch's, REF to origin's default branch. `pr` passes both --if flags:
 # --if-listed checks only a repo the machine config's provenanceCheckouts lists, by its main
-# checkout, and --if-code only a change that includes a Python or JavaScript file. It says what it is checking, prints each
+# checkout, and --if-code only a change that includes a Python or JavaScript file. Rows are proven
+# several at once, one per core less two; --jobs 1 proves them one at a time, for tests that share
+# a port or a file outside their checkout. It says what it is checking, prints each
 # row's result as the row finishes and each refusal as it is found, then the count and the time. It
 # exits 0 with one line per row, 1 with every refusal, each naming its row, file:line and reason,
 # and 2 when it can't check at all.
-# It changes nothing in the worktree: the change is read from a snapshot commit, and each revert
-# runs in a temporary worktree.
+# It changes nothing in the worktree or its repository: the change is read from a snapshot commit,
+# and each test runs in a temporary checkout and repository of its own.
 import argparse
 import ast
 import contextlib
-import functools
 import json
 import math
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import config as config_mod
 from . import reviews
-from . import start as startLib
 from .cli import branchKey
 from .fileissues import linesOutsideFences
-from .provenance_runner import NODE_SUFFIXES, ownEnvironment, runTest
-from .provenance_units import (JSON_TABLE, OWN_ROW, Unrevertable, assignedNames, changedUnits, isPython, needsNoRow,
+from .provenance_runner import NODE_SUFFIXES, TestProcesses, ownEnvironment, runTest
+from .provenance_units import (JSON_TABLE, MOVED, OWN_ROW, Unrevertable, assignedNames, changedInAll, changedUnits, isPython, needsNoRow,
                                reverted, tableArray, units)
 
 # The proof each class needs besides a `test:` that fails on revert.
@@ -54,7 +57,7 @@ ITEMS = (*TEST_ITEMS, "source", "reuse", "new", "dims", "table", "exempt", "spec
 CONCEPT_ITEMS = ("reuse", "agree", "new")
 ITEM = re.compile(r"^([a-z]+)(?:\s+([^:]+?))?\s*:\s*(.+)$")
 # Paths come out as written, and none of the repo's hooks run: a post-checkout hook has no business in
-# the temporary worktree, and one that fails there would stop the check.
+# a temporary checkout, and one that fails there would stop the check.
 GIT_SETTINGS = ("-c", "core.quotePath=false", "-c", "core.hooksPath=/dev/null")
 # The suffixes and the shebang of JavaScript, which `pr` checks a change for.
 JAVASCRIPT_SUFFIXES = (*NODE_SUFFIXES, ".jsx")
@@ -62,6 +65,10 @@ LISTED = "provenanceCheckouts"
 OBJECT_NAME = re.compile(r"[0-9a-f]{40,64}")
 DIMENSION = r"[^()\s][^()]*\([^()]*\)"  # name(value, value)
 DIMENSIONS = re.compile(rf"\s*{DIMENSION}(?:\s*[x×*]\s*{DIMENSION})*\s*")
+
+
+# Two cores are left to whatever else the Mac is doing.
+DEFAULT_JOBS = max(1, (os.cpu_count() or 1) - 2)
 
 
 class ProvenanceError(Exception):
@@ -115,6 +122,10 @@ class Row:
         """The changes this row proves, each named exactly: a merge row's are those a resolver wrote."""
         return [change for change in changes
                 if change.target in self.targets and bool(change.merge) == (self.kind == MERGE)]
+
+    def exemptsAMove(self):
+        """An `exempt:` with no test says why no test can tell the move it names apart."""
+        return bool(self.values("exempt")) and not self.values("test")
 
     def title(self, covered):
         names = ", ".join(named(target) for target in self.targets)
@@ -175,15 +186,60 @@ def snapshot(root):
     return git(root, "commit-tree", tree, *parents, "-m", "provenance-check snapshot").strip()
 
 
+def commonDir(root):
+    return git(root, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+
+
+def mainCheckoutOf(root):
+    """The main checkout of root's repository, which its worktrees share."""
+    return os.path.realpath(os.path.dirname(commonDir(root)))
+
+
 @contextlib.contextmanager
-def temporaryWorktree(root, commit):
-    with tempfile.TemporaryDirectory(prefix="provenance-") as folder:
+def freshCheckout(root, commit):
+    """A checkout of the commit in a new repository that borrows root's objects and knows nothing
+    else of it: no remote to push to, and whatever a test leaves there, files, index, branches or
+    settings, goes with it."""
+    # A process a test left behind can still write here; that must not stop the check.
+    with tempfile.TemporaryDirectory(prefix="provenance-", ignore_cleanup_errors=True) as folder:
         tree = os.path.join(folder, "tree")
-        git(root, "worktree", "add", "--quiet", "--detach", tree, commit)
-        try:
-            yield tree
-        finally:
-            git(root, "worktree", "remove", "--force", tree)
+        objectFormat = git(root, "rev-parse", "--show-object-format").strip()
+        git(root, "init", "--quiet", f"--object-format={objectFormat}", tree)
+        borrowObjects(Path(commonDir(root)), Path(tree, ".git"))
+        git(tree, "checkout", "--quiet", "--detach", commit)
+        yield tree
+
+
+def borrowObjects(source, target):
+    """Points target at source's objects; a shallow source's cut-off history is named with them."""
+    (target / "objects" / "info" / "alternates").write_text(f"{source / 'objects'}\n")
+    if (source / "shallow").is_file():
+        shutil.copyfile(source / "shallow", target / "shallow")
+
+
+@dataclass
+class Checked:
+    """The snapshot being checked: its repository, its commit, and a checkout no test runs in."""
+
+    root: str
+    commit: str
+    tree: str
+    processes: TestProcesses = field(default_factory=TestProcesses)
+
+    def run(self, test, texts=None):
+        """One test's Verdict in a checkout of its own, with texts written over its files."""
+        if self.processes.stopped:
+            raise ProvenanceError("the check was stopped")
+        with freshCheckout(self.root, self.commit) as tree:
+            for path, text in (texts or {}).items():
+                overwrite(Path(tree, path), text)
+            return runTest(tree, test, self.processes)
+
+
+def overwrite(file, text):
+    if file.is_symlink():  # never write through a link, which can point outside the checkout
+        file.unlink()
+    file.write_bytes(text.encode("utf-8", "surrogateescape"))
 
 
 # ---- what needs a row ----
@@ -218,10 +274,10 @@ def resolverChanges(root, merge, head):
         written, now = textAt(root, merge, path), textAt(root, head, path)
         if written is None or now is None or needsNoRow(path, now):
             continue
-        theirOwn = set.intersection(*(set(changedUnits(path, textAt(root, ref, path), written)) for ref in references))
+        beyondGit = [changedUnits(path, textAt(root, ref, path), written) for ref in references]
         first, second = (changedUnits(path, textAt(root, parent, path), now) for parent in parents)
-        held = sorted(theirOwn & first.keys() & second.keys())
-        found += [Change(path, unit, *first[unit], merge, parents) for unit in held]
+        held = changedInAll([*beyondGit, first, second], first)
+        found += [Change(path, unit, *change, merge, parents) for unit, change in held.items()]
     return found
 
 
@@ -325,6 +381,12 @@ def unprovable(row, covered):
     return [f"names {named(target)}, {why}" for target in row.targets if target not in proven]
 
 
+def beyondMoving(covered):
+    """What an `exempt:` with no `test:` can't spare: only statements that did nothing but move."""
+    return [f"has `exempt:` and no `test:`, which only statements that did nothing but move can have, and "
+            f"{change.name} changed" for change in covered if change.kind != MOVED]
+
+
 def missingReuses(row, tree):
     return [f"reuses {value}, which doesn't exist" for value in row.values("reuse") if not exists(tree, value)]
 
@@ -412,39 +474,17 @@ def unproven(test, verdict, reverted):
     return f"test {test} reached no verdict with {reverted}: {verdict.detail or verdict.state}"
 
 
-def restore(tree):
-    git(tree, "checkout", "--quiet", "--force", "HEAD", "--", ".")
-    # Twice forced: a test may leave a git repository of its own, which one --force keeps.
-    git(tree, "clean", "--quiet", "--force", "--force", "-d", "-x")
-
-
-def runClean(tree, test):
-    """One test's Verdict; what it left behind is removed, so no later run can see it."""
-    try:
-        return runTest(tree, test)
-    finally:
-        restore(tree)
-
-
-def revertedTexts(tree, targets, reference):
-    """{path: reverted text}, all worked out before any file is written."""
+def revertedTexts(checked, targets, reference, oneUnit=()):
+    """{path: reverted text}, all worked out before any test runs."""
     unitsByPath = {}
     for path, unit in targets:
         unitsByPath.setdefault(path, []).append(unit)
-    current = {path: textAt(tree, "HEAD", path) for path in unitsByPath}
-    texts = {path: reverted(path, current[path], textAt(tree, reference, path), names) for path, names in unitsByPath.items()}
+    current = {path: textAt(checked.root, checked.commit, path) for path in unitsByPath}
+    texts = {path: reverted(path, current[path], textAt(checked.root, reference, path), names, path in oneUnit)
+             for path, names in unitsByPath.items()}
     if texts == current:
         raise Unrevertable("reverting changes nothing")
     return texts
-
-
-def runReverted(tree, texts, test):
-    for path, text in texts.items():
-        file = Path(tree, path)
-        if file.is_symlink():  # never write through a link, which can point outside the tree
-            file.unlink()
-        file.write_bytes(text.encode("utf-8", "surrogateescape"))
-    return runClean(tree, test)
 
 
 def reversions(row, covered):
@@ -456,33 +496,36 @@ def reversions(row, covered):
     return [together, *alone]
 
 
-def revertProblems(row, covered, tree, base, proofs):
+def revertProblems(row, covered, checked, base, proofs):
     parents = dict.fromkeys(parent for change in covered for parent in change.parents)
+    oneUnit = {change.path for change in covered if change.kind == "file"}
     found = []
     for reference in parents if row.kind == MERGE else [base]:
         for targets, what in reversions(row, covered):
             try:
-                texts = revertedTexts(tree, targets, reference)
+                texts = revertedTexts(checked, targets, reference, oneUnit)
             except Unrevertable as error:
                 found.append(f"the revert to {reference[:7]} can't be applied: {error}")
                 continue
-            reasons = [unproven(test, runReverted(tree, texts, test), f"{what} to {reference[:7]}") for test in proofs]
+            reasons = [unproven(test, checked.run(test, texts), f"{what} to {reference[:7]}") for test in proofs]
             found += [reason for reason in reasons if reason]
     return found
 
 
-def rowProblems(row, covered, tree, base, baseline):
+def rowProblems(row, covered, checked, base, baseline):
     """Why the row is refused. baseline gives a test's Verdict with the change in place."""
     if row.kind not in REQUIRED:
         return [f'unknown class "{row.kind}": one of {", ".join(REQUIRED)}']
-    found = missingParts(row) + missingReuses(row, tree) + shortTables(row, tree)
+    if row.exemptsAMove():
+        return unprovable(row, covered) + beyondMoving(covered)
+    found = missingParts(row) + missingReuses(row, checked.tree) + shortTables(row, checked.tree)
     broken = [test for test in row.tests() if baseline(test).state != "pass"]
     found += [brokenTest(test, baseline(test)) for test in broken]
     unrevertable = unprovable(row, covered) + sharedRow(covered)
     if unrevertable:
         return found + unrevertable
     proofs = [test for test in row.values("test") if test not in broken]
-    return found + (revertProblems(row, covered, tree, base, proofs) if proofs else [])
+    return found + (revertProblems(row, covered, checked, base, proofs) if proofs else [])
 
 
 # ---- the check ----
@@ -510,7 +553,7 @@ class Report:
             self.tell(problem, True)
 
 
-def check(root, baseRef, manifest, tell=untold):
+def check(root, baseRef, manifest, tell=untold, jobs=DEFAULT_JOBS):
     report = Report(tell)
     head = snapshot(root)
     base = mergeBase(root, baseRef, head)
@@ -522,22 +565,64 @@ def check(root, baseRef, manifest, tell=untold):
     report.refuses(problems + uncovered(rows, changes))
     if rows:
         tell(f"provenance-check: {len(rows)} rows, {len(changes)} changed units against {base[:7]}", False)
-        with temporaryWorktree(root, head) as tree:
-            proveRows(report, rows, changes, tree, base)
+        with freshCheckout(root, head) as tree:
+            proveRows(report, rows, changes, Checked(root, head, tree), base, jobs)
         report.refuses(changedSince(root, head))
     return report
 
 
-def proveRows(report, rows, changes, tree, base):
-    baseline = functools.cache(lambda test: runClean(tree, test))
-    for row in rows:
+def proveRows(report, rows, changes, checked, base, jobs):
+    """Each row's proof, jobs of them at once, since no test run can see another's checkout. Each
+    result is told as its row finishes."""
+    baseline = onceEach(checked.run)
+
+    def prove(row):
         started = time.monotonic()
         covered = row.covered(changes)
-        reasons = rowProblems(row, covered, tree, base, baseline)
-        report.refuses([f"{row.title(covered)}: {reason}" for reason in reasons])
-        if not reasons:
-            progress = f"[{row.number} of {len(rows)}, {time.monotonic() - started:.1f}s]"
-            report.passes(f"ok {row.title([])}: fails on revert: {', '.join(row.values('test'))}", progress)
+        return row, covered, rowProblems(row, covered, checked, base, baseline), time.monotonic() - started
+
+    with ThreadPoolExecutor(jobs) as pool:
+        try:
+            proofs = [pool.submit(prove, row) for row in rows]
+            for done, proof in enumerate(as_completed(proofs), 1):
+                tellRow(report, *proof.result(), f"{done} of {len(rows)}")
+        except BaseException:  # Ctrl-C, or a row that couldn't be checked: nothing further starts
+            checked.processes.stop()
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+
+
+def tellRow(report, row, covered, reasons, seconds, place):
+    report.refuses([f"{row.title(covered)}: {reason}" for reason in reasons])
+    if not reasons:
+        report.passes(f"ok {row.title([])}: {grounds(row)}", f"[{place}, {seconds:.1f}s]")
+
+
+def grounds(row):
+    """What a row passes on, for the review to read."""
+    if row.exemptsAMove():
+        return f"moved, exempt: {', '.join(row.values('exempt'))}"
+    return f"fails on revert: {', '.join(row.values('test'))}"
+
+
+def onceEach(function):
+    """function, run once for each argument however many threads ask for it at once."""
+    results, lock = {}, threading.Lock()
+
+    def asked(argument):
+        with lock:
+            result = results.get(argument)
+            first = result is None
+            if first:
+                result = results[argument] = Future()
+        if first:
+            try:
+                result.set_result(function(argument))
+            except BaseException as error:  # the other askers get it too, and none waits for ever
+                result.set_exception(error)
+        return result.result()
+
+    return asked
 
 
 def changedSince(root, checked):
@@ -558,7 +643,7 @@ def isListed(root, cfg):
     listed = cfg[LISTED]
     if not (isinstance(listed, list) and all(isinstance(path, str) for path in listed)):
         raise ProvenanceError(f"{LISTED} in the machine config is a list of main checkout paths")
-    main = startLib.mainCheckoutOf(root)
+    main = mainCheckoutOf(root)
     return any(isSameFolder(os.path.expanduser(path), main) for path in listed)
 
 
@@ -601,11 +686,13 @@ def main(argv=None):
     parser.add_argument("--manifest", type=Path, help="the manifest; .tmp/<KEY>/provenance.md by default")
     parser.add_argument("--if-code", action="store_true", help="check only a change with a Python or JavaScript file")
     parser.add_argument("--if-listed", action="store_true", help=f"check only a repo the config's {LISTED} lists")
+    parser.add_argument("--jobs", type=jobCount, default=DEFAULT_JOBS, help="rows proven at once; %(default)s here")
     args = parser.parse_args(argv)
+    stopOnHangUp()
     root = git(os.getcwd(), "rev-parse", "--show-toplevel").strip()
     if args.if_listed and not isListed(root, config_mod.load()):
         print(f"provenance-check: not checked; the machine config's {LISTED} doesn't list "
-              f"{startLib.mainCheckoutOf(root)}")
+              f"{mainCheckoutOf(root)}")
         return 0
     base = args.base or defaultBase(root)
     if args.if_code and not includesCode(root, base):
@@ -616,7 +703,7 @@ def main(argv=None):
         parser.error("the branch names no issue; give KEY or --manifest")
     manifest = args.manifest.resolve() if args.manifest else manifestPath(root, key)
     started = time.monotonic()
-    report = check(root, base, manifest, printLine)
+    report = check(root, base, manifest, printLine, args.jobs)
     took = f"in {time.monotonic() - started:.0f}s"
     if report.problems:
         printLine(f"provenance-check: refused, {len(report.problems)} problem(s) {took}", True)
@@ -624,6 +711,19 @@ def main(argv=None):
     passed = f"{len(report.passed)} rows pass {took}" if report.passed else "nothing needs a row"
     printLine(f"provenance-check: {passed}", False)
     return 0
+
+
+def stopOnHangUp():
+    """A closed terminal or a `kill` stops the check as Ctrl-C does, so that it kills its tests, which
+    run in groups of their own that no such signal reaches."""
+    for signum in (signal.SIGHUP, signal.SIGTERM):
+        signal.signal(signum, signal.default_int_handler)
+
+
+def jobCount(text):
+    if not (text.isdecimal() and int(text) > 0):
+        raise argparse.ArgumentTypeError(f"a whole number, 1 or more, not {text!r}")
+    return int(text)
 
 
 def printLine(line, refused):

@@ -9,7 +9,8 @@ from unittest import mock
 from lib import config, provenance
 from lib.provenance import Change, Row
 from lib.provenance_runner import TIMEOUT, Verdict, resultVerdict, runTest, tapVerdict
-from lib.provenance_units import (Unrevertable, changedUnits, isCode, isPython, needsNoRow, reverted, units)
+from lib.provenance_units import (Changed, Unrevertable, changedInAll, changedUnits, isCode, isPython, movesStatements, needsNoRow,
+                                  reverted, sharesALine, units)
 from lib.test_provenance import Repo
 
 DIFF = Change("a.py", "f", 1, "function")
@@ -429,6 +430,104 @@ class MultilineText(unittest.TestCase):
         self.assertFalse(self.changes("a.js", "const k = `x`;\n// {}\n"))
 
 
+class Reordering(Table):
+    # a change: whether the statements both versions have run in another order
+    CASES = [
+        ("V = 1\nR = V\nV = 2\n", "V = 1\nV = 2\nR = V\n", True),
+        ("A = f()\nB = g()\n", "B = g()\nA = f()\n", True),
+        ("A = 1\nB = (2, 'b')\n", "B = (2, 'b')\nA = 1\n", True),
+        ("print(1)\nA = f()\n", "A = f()\nprint(1)\n", True),
+        ("setup(1)\nX = make()\n", "X = make()\nsetup(2)\n", True),
+        ("N = 1\ndef f(x=N):\n    pass\nN = 2\n", "N = 1\nN = 2\ndef f(x=N):\n    pass\n", True),
+        ('N = 1\ndef f(x=N):\n    "a"\nN = 2\n', 'N = 1\nN = 2\ndef f(x=N):\n    "b"\n', True),
+        ("V = 1\nR = V\nV = 2\n", "V = 1\nV = 2\nR = V + 0\n", True),
+        ("N = 1\nclass C:\n    n = N\n", "class C:\n    n = N\nN = 1\n", True),
+        ("@a\ndef f():\n    pass\n@b\ndef g():\n    pass\n", "@b\ndef g():\n    pass\n@a\ndef f():\n    pass\n", True),
+        ("G = 1\nif G:\n    def f():\n        pass\n", "if G:\n    def f():\n        pass\nG = 1\n", True),
+        ("def f():\n    return 1\ntry:\n    from c import f\nexcept ImportError:\n    pass\n",
+         "try:\n    from c import f\nexcept ImportError:\n    pass\ndef f():\n    return 1\n", True),
+        ("from os import sep as S\nS = 'x'\n", "S = 'x'\nfrom os import sep as S\n", True),
+        ("import os\nimport re\n", "import re\nimport os\n", True),
+        ("import m\nm.use('a')\nimport m.plot\n", "import m\nimport m.plot\nm.use('a')\n", True),
+        ("from b import *\nA = B\nA += ['x']\n", "from b import *\nA += ['x']\nA = B\n", True),
+        ("C = load()\nC['d'] = 1\n", "C['d'] = 1\nC = load()\n", True),
+        ("D = {}\nD['a'] = 1\nX = dict(D)\n", "D = {}\nX = dict(D)\nD['a'] = 1\n", True),
+        ("A = f()\nprint(A)\n", "print(0)\nA = f()\n", True),
+        ("def f():\n    pass\ndef g():\n    pass\n", "def g():\n    pass\ndef f():\n    pass\n", False),
+        ('A = f()\n"""a"""\nB = g()\n"""b"""\n', 'A = f()\n"""b"""\nB = g()\n"""a"""\n', False),
+        ("A = f()\nB = g()\n", "A = f()\nC = h()\nB = g()\n", False),
+        ("A = f()\nprint(A)\nB = g()\n", "A = h()\nB = g()\n", False),
+        ("A = f()\nprint(A)\n", "print(0)\nA = f()\nprint(A)\n", False),
+        ("A = f()\nprint(A)\n", "A = f()\nprint(A + 0)\n", False),
+        ("from posixpath import *\ndef join(a, b):\n    return a\n", "def join(a, b):\n    return a\nfrom posixpath import *\n", True),
+        ("from a import x\nsetup()\n", "setup()\nfrom a import x, y\n", True),
+        ("from a import b\nfrom a import c\nsetup()\n", "from a import b, c\nsetup()\n", False),
+        ("setup(1)\nX = make()\nteardown(1)\n",
+         "extra()\nsetup(1)\nX = make()\nteardown(2)\ndef f():\n    pass\n", False),
+    ]
+
+    def test_every_move_counts_but_a_plain_functions_or_a_strings(self):
+        self.check_table(self.CASES, lambda old, new: movesStatements("a.py", old, new))
+
+    def kinds(self, old, new):
+        return {unit: kind for unit, (_line, kind) in changedUnits("a.py", old, new).items()}
+
+    def test_statements_that_did_nothing_but_move_are_told_from_edited_ones(self):
+        self.assertEqual(self.kinds("print(1)\nA = f()\n", "A = f()\nprint(1)\n"), {"": "move"})
+        self.assertEqual(self.kinds("print(1)\nprint(2)\n", "print(2)\nprint(1)\n"), {"": "move"})
+        self.assertEqual(self.kinds("print(1)\nA = f()\n", "A = f()\nprint(2)\n"), {"": "rest"})
+
+    def test_a_class_whose_statements_only_changed_order_is_only_moved(self):
+        old = "class C:\n    A = 1\n    B = 2\n"
+        self.assertEqual(self.kinds(old, "class C:\n    B = 2\n    A = 1\n"), {"C": "move"})
+        self.assertEqual(self.kinds(old, "class C:\n    B = 3\n    A = 1\n"), {"C": "class"})
+        self.assertEqual(self.kinds(old, "class C(D):\n    B = 2\n    A = 1\n"), {"C": "class"})
+
+    def test_a_docstring_edit_in_a_file_that_shares_a_line_is_no_change(self):
+        old = 'A = 1; B = 2\ndef f():\n    """Old."""\nclass C:\n    """Old."""\n    x = 1\n'
+        self.assertEqual(changedUnits("a.py", old, old.replace("Old.", "New.")), {})
+
+    def test_a_unit_one_comparison_finds_edited_is_not_only_moved(self):
+        moved, edited = Changed(1, "move"), Changed(2, "rest")
+        self.assertEqual(changedInAll([{"": moved}, {"": edited}], {"": moved}), {"": edited})
+        self.assertEqual(changedInAll([{"": moved}, {"": moved}], {"": moved}), {"": moved})
+        self.assertEqual(changedInAll([{"": moved}, {"": edited}], {"": edited}), {"": edited})
+
+    # a change: whether two statements are on one line
+    SHARED = [
+        ("A = 1\n", "A = 2; print('new')\n", True),
+        ("A = 1; print('old')\n", "A = 2\n", True),
+        ("class C:\n    a = 1\n    b = 1\n", "class C:\n    a = 2; b = 1\n", True),
+        ("def f():\n    a = 1\n", "def f():\n    a = 2; return a\n", False),
+        ("A = 1\nB = 1\n", "A = 2\nB = 2\n", False),
+    ]
+
+    def test_statements_on_one_line_are_found_in_either_version(self):
+        self.check_table(self.SHARED, lambda old, new: sharesALine("a.py", old, new))
+
+    def test_a_file_that_shares_a_line_changes_and_reverts_whole(self):
+        for old, new in (("A = 1; print('old')\n", "A = 2\n"), ("N = 1; R = N\nN = 2\n", "N = 1; N = 2\nR = N\n")):
+            with self.subTest(new=new):
+                self.assertEqual({unit: kind for unit, (_line, kind) in changedUnits("a.py", old, new).items()}, {"": "file"})
+                self.assertEqual(reverted("a.py", new, old, [""], asOneUnit=True), old)
+                with self.assertRaisesRegex(Unrevertable, "names the whole file"):
+                    reverted("a.py", new, old, ["R"], asOneUnit=True)
+
+    def test_a_move_changes_the_module_statements_and_each_function_still_needs_its_row(self):
+        old = "V = 1\nR = V\nV = 2\ndef f():\n    return 1\n"
+        new = "V = 1\nV = 2\nR = V\ndef f():\n    return 2\n"
+        self.assertEqual(sorted(changedUnits("a.py", old, new)), ["", "f"])
+        self.assertEqual(reverted("a.py", new, old, [""]), old)
+        self.assertEqual(reverted("a.py", new, old, ["f"]), new.replace("return 2", "return 1"))
+
+    def test_a_new_file_with_a_shared_line_is_one_unit(self):
+        self.assertEqual(list(changedUnits("a.py", None, "A = 1; B = 2\n")), [""])
+        self.assertEqual(reverted("a.py", "A = 1; B = 2\n", None, [""], asOneUnit=True), "")
+
+    def test_a_change_of_comments_alone_in_such_a_file_is_none(self):
+        self.assertEqual(changedUnits("a.py", "A = 1; B = 2\n", "# why\nA = 1; B = 2\n"), {})
+
+
 class GitPathList(unittest.TestCase):
     """git diff --name-only -z: https://git-scm.com/docs/git-diff#Documentation/git-diff.txt--z"""
 
@@ -507,7 +606,7 @@ class Reverting(Table):
     def test_a_file_that_is_not_split_reverts_whole(self):
         self.assertEqual(reverted("a.sh", "new\n", "old\n", [""]), "old\n")
         self.assertEqual(reverted("a.sh", "new\n", None, [""]), "")
-        with self.assertRaisesRegex(Unrevertable, "isn't Python"):
+        with self.assertRaisesRegex(Unrevertable, "is one unit"):
             reverted("a.sh", "new\n", "old\n", ["f"])
 
     # how A and B are bound x the names the row gives: whether the revert is refused

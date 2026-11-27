@@ -477,9 +477,15 @@ load.
 A function is a Python function or method, and a file in any other language is one function. A
 Python file's class declarations, top-level names and module statements change apart from its
 functions. A row names each thing it proves exactly (a file or class name doesn't cover what is
-inside it), and a revert touches nothing a row doesn't name. A row names one function. Anything
-else it names reverts with that function, and its tests must also fail with the function reverted
-alone. One row names all the names a single statement binds.
+inside it), and a revert touches nothing a row doesn't name. A row names one function. Anything else
+it names reverts with that function, and its tests must also fail with the function reverted alone.
+One row names all the names a single statement binds. A Python file is one unit, as a file in any
+other language is, when two of its statements are on one line. Moving a top-level statement, an
+import included, changes the module's own statements, whose revert is the whole earlier file; only a
+docstring or other string, and an undecorated function without defaults whose name nothing else
+binds, move freely. Reordering a class's own statements changes the class. A row whose statements
+did nothing but move, a module's or a class's, may give `exempt:` and the reason no test can tell
+the move apart, in place of a test.
 
 **`provenance-check` verifies the manifest.** It compares a snapshot of the worktree, uncommitted
 and untracked files included, with the merge base of `origin/main`, and reads every merge on the
@@ -498,14 +504,14 @@ reason, when:
 - the worktree changed while the check ran.
 
 A run prints each row's result as the row finishes and each refusal as it is found, so a run that
-passes prints one line per row. Tests, Markdown, comments, docstrings, Python imports,
-deleted code, and files no test can prove (lock files, ignore files, images, `.txt` files and
-`.vscode/`) need no row. In JavaScript a comment counts as none only when it fills whole lines, and
-in a file of another language that can hold multi-line text, every line and its trailing space count
-as code. The check runs only the tests the rows name, Python `unittest` and
-`node --test`, in a temporary worktree it restores after every test, and changes nothing in the
-issue's worktree. The review reads the manifest and judges what the check can't: whether each class
-is honest, and whether its dimensions, concepts, paths and cases are all there.
+passes prints one line per row. Tests, Markdown, comments, docstrings, added or changed Python
+imports, deleted code, and files no test can prove (lock files, ignore files, images, `.txt` files
+and `.vscode/`) need no row. In JavaScript a comment counts as none only when it fills whole lines,
+and in a file of another language that can hold multi-line text, every line and its trailing space
+count as code. The check runs only the tests the rows name, Python `unittest` and `node --test`,
+each run in a temporary checkout and repository of its own, and changes nothing in the issue's
+worktree or its repository. The review reads the manifest and judges what the check can't: whether
+each class is honest, and whether its dimensions, concepts, paths and cases are all there.
 
 <a id="ship"></a>
 

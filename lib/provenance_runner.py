@@ -4,12 +4,15 @@
 # time. A test is `path::Class.method` (Python unittest) or `path::name` (node --test). Run as a
 # script, this file is the Python side of it.
 import collections
+import contextlib
 import functools
 import importlib
 import os
 import re
+import signal
 import subprocess
 import sys
+import threading
 import unittest
 
 Verdict = collections.namedtuple("Verdict", "state detail")
@@ -19,15 +22,52 @@ TIMEOUT = 300
 NODE_SUFFIXES = (".js", ".mjs", ".cjs")
 
 
-def runTest(root, test):
-    """The Verdict of one test, run from root."""
+class TestProcesses:
+    """The tests under way. Each is a process group of its own, so that everything it starts goes
+    when its run ends or the check stops: nothing left over can hold a port or a file."""
+
+    def __init__(self):
+        self.stopped = False
+        self.leaders = set()
+        self.lock = threading.Lock()
+
+    @contextlib.contextmanager
+    def group(self, leader):
+        with self.lock:
+            self.leaders.add(leader)
+            if self.stopped:
+                killGroup(leader)
+        try:
+            yield
+        finally:
+            with self.lock:
+                self.leaders.discard(leader)
+                killGroup(leader)
+
+    def stop(self):
+        """Kills the tests under way, and any started from now on."""
+        with self.lock:
+            self.stopped = True
+            for leader in self.leaders:
+                killGroup(leader)
+
+
+def killGroup(leader):
+    # macOS answers PermissionError, not ProcessLookupError, for a group whose processes have all exited.
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(leader, signal.SIGKILL)
+
+
+def runTest(root, test, processes=None):
+    """The Verdict of one test, run from root, in a group that processes can stop."""
     path, _, name = test.partition("::")
     if not name or not os.path.isfile(os.path.join(root, path)):
         return Verdict("missing")
     if not path.endswith((".py", *NODE_SUFFIXES)):
         return Verdict("error", "only Python unittest and node --test tests can run")
     try:
-        return pythonVerdict(root, path, name) if path.endswith(".py") else nodeVerdict(root, path, name)
+        verdict = pythonVerdict if path.endswith(".py") else nodeVerdict
+        return verdict(root, path, name, processes or TestProcesses())
     except OSError as error:
         return Verdict("error", f"the test can't start: {error}")
 
@@ -41,25 +81,28 @@ def repositoryVariables():
 
 def ownEnvironment(**added):
     """The environment without those variables: git obeys them over the folder it runs in, so an
-    inherited one would turn a command meant for the temporary worktree on the real one."""
+    inherited one would turn a command meant for a temporary checkout on the real repository."""
     return {**{name: value for name, value in os.environ.items() if name not in repositoryVariables()}, **added}
 
 
-def run(root, command):
+def run(root, command, processes):
     """The finished process, or None when it ran out of time. No bytecode is written: a cached .pyc
     could stand in for a file that was just reverted."""
     environment = ownEnvironment(PYTHONDONTWRITEBYTECODE="1")
     # A node --test that runs this check must not pass its own test context on.
     environment.pop("NODE_TEST_CONTEXT", None)
-    try:
-        return subprocess.run(command, cwd=root, env=environment, capture_output=True, text=True,
-                              errors="replace", timeout=TIMEOUT)
-    except subprocess.TimeoutExpired:
-        return None
+    with subprocess.Popen(command, cwd=root, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True, errors="replace", start_new_session=True) as process:
+        with processes.group(process.pid):  # killed on the way out, before Popen waits for the process
+            try:
+                output, errors = process.communicate(timeout=TIMEOUT)
+            except subprocess.TimeoutExpired:
+                return None
+    return subprocess.CompletedProcess(command, process.returncode, output, errors)
 
 
-def pythonVerdict(root, path, name):
-    finished = run(root, [sys.executable, os.path.abspath(__file__), path, name])
+def pythonVerdict(root, path, name, processes):
+    finished = run(root, [sys.executable, os.path.abspath(__file__), path, name], processes)
     if finished is None:
         return Verdict("error", f"ran past {TIMEOUT} seconds")
     said = [line for line in finished.stdout.split("\n") if line.startswith(MARK)]
@@ -70,8 +113,9 @@ def pythonVerdict(root, path, name):
     return Verdict(state, detail)
 
 
-def nodeVerdict(root, path, name):
-    finished = run(root, ["node", "--test", "--test-reporter=tap", f"--test-name-pattern=^{re.escape(name)}$", path])
+def nodeVerdict(root, path, name, processes):
+    command = ["node", "--test", "--test-reporter=tap", f"--test-name-pattern=^{re.escape(name)}$", path]
+    finished = run(root, command, processes)
     if finished is None:
         return Verdict("error", f"ran past {TIMEOUT} seconds")
     return tapVerdict(finished.stdout, name, finished.returncode)

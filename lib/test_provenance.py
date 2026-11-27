@@ -1,18 +1,23 @@
 # provenance-check against temp repos: a merge, a port, a rule and a parser change. Each runs the
 # real check, its snapshot, temporary worktree and test processes included.
+import argparse
 import contextlib
 import io
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import textwrap
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
-from lib import provenance
-from lib.provenance_runner import ownEnvironment, runTest, tapVerdict
+from lib import provenance, provenance_runner
+from lib.provenance_runner import TestProcesses, ownEnvironment, runTest, tapVerdict
 
 KEY = "SK-0001"
 BASE_FILES = {
@@ -80,12 +85,12 @@ class Repo:
         self.git("add", "-A")
         self.git("commit", "--quiet", "-m", message)
 
-    def check(self, *rows):
+    def check(self, *rows, jobs=provenance.DEFAULT_JOBS):
         manifest = self.root / ".tmp" / KEY / "provenance.md"
         if rows:
             manifest.parent.mkdir(parents=True, exist_ok=True)
             manifest.write_text("\n".join(["| Function | Class | Proof |", "|---|---|---|", *rows]) + "\n")
-        return provenance.check(str(self.root), "origin/main", manifest)
+        return provenance.check(str(self.root), "origin/main", manifest, jobs=jobs)
 
 
 class CheckCase(unittest.TestCase):
@@ -430,6 +435,143 @@ class Proof(CheckCase):
         report = repo.check("| lib/prices.py::price | plain | test: lib/test_nested.py::Nested.test_makes_a_repository |")
         self.assertRefused(report, "row 1", "test_makes_a_repository still passes")
 
+    def test_what_a_test_stages_or_branches_reaches_neither_the_next_run_nor_the_repository(self):
+        repo = self.priceChange()
+        repo.write({"lib/test_stages.py": """
+            import subprocess
+            import unittest
+
+
+            class Stages(unittest.TestCase):
+                def test_stages_a_file_and_makes_a_branch(self):
+                    with open("scratch.cfg", "x") as file:
+                        file.write("x")
+                    subprocess.run(["git", "add", "scratch.cfg"], check=True)
+                    subprocess.run(["git", "branch", "scratch-branch"], check=True)
+        """})
+        report = repo.check("| lib/prices.py::price | plain | test: lib/test_stages.py::Stages.test_stages_a_file_and_makes_a_branch |")
+        self.assertRefused(report, "row 1", "test_stages_a_file_and_makes_a_branch still passes")
+        self.assertNotIn("scratch-branch", repo.git("branch", "--list"))
+
+    def test_if_listed_reads_this_repository_whatever_git_variables_are_set(self):
+        repo, other = self.priceChange(), Repo(self)
+        listed = {"provenanceCheckouts": [str(repo.root)]}
+        with mock.patch.dict(os.environ, {"GIT_DIR": str(other.root / ".git"), "GIT_WORK_TREE": str(other.root)}):
+            self.assertTrue(provenance.isListed(str(repo.root), listed))
+
+    def test_a_reordered_module_needs_a_row_its_test_can_prove(self):
+        repo = Repo(self, {**BASE_FILES, "lib/order.py": "VALUE = 1\nRESULT = VALUE\nVALUE = 2\n"})
+        repo.write({"lib/order.py": "VALUE = 1\nVALUE = 2\nRESULT = VALUE\n", "lib/test_order.py": """
+            import unittest
+
+            from lib import order
+
+
+            class Order(unittest.TestCase):
+                def test_result(self):
+                    self.assertEqual(order.RESULT, 2)
+        """})
+        self.assertRefused(repo.check(), "lib/order.py changed, and no row names it")
+        self.assertPasses(repo.check("| lib/order.py | plain | test: lib/test_order.py::Order.test_result |"), 1)
+
+    def meetingRows(self):
+        """Two rows whose tests each wait for the other to have started."""
+        repo = self.priceChange()
+        repo.write({"lib/prices.py": PRICE.replace("str(amount)", 'str(amount) + "!"')})
+        folder = str(repo.root.parent)
+        repo.write({"lib/test_meet.py": f"""
+            import os
+            import time
+            import unittest
+
+            from lib import prices
+
+
+            class Meet(unittest.TestCase):
+                def meet(self, mine, other):
+                    open(os.path.join({folder!r}, mine), "w").close()
+                    deadline = time.monotonic() + 3
+                    while not os.path.exists(os.path.join({folder!r}, other)):
+                        self.assertLess(time.monotonic(), deadline, "the other row never started")
+                        time.sleep(0.02)
+
+                def test_price(self):
+                    self.meet("price", "label")
+                    self.assertEqual(prices.price(2), 4)
+
+                def test_label(self):
+                    self.meet("label", "price")
+                    self.assertEqual(prices.label(2), "2!")
+        """})
+        rows = [f"| lib/prices.py::{name} | plain | test: lib/test_meet.py::Meet.test_{name} |" for name in ("price", "label")]
+        return repo, rows
+
+    def test_rows_are_proven_at_once(self):
+        repo, rows = self.meetingRows()
+        self.assertPasses(repo.check(*rows, jobs=2), 2)
+
+    def test_one_job_proves_them_one_at_a_time(self):
+        repo, rows = self.meetingRows()
+        self.assertRefused(repo.check(*rows, jobs=1), "the other row never started")
+
+    def test_a_test_asked_for_by_many_rows_at_once_runs_once_for_the_baseline(self):
+        asked = []
+
+        def slow(test):
+            asked.append(test)
+            time.sleep(0.05)
+            return test.upper()
+
+        once = provenance.onceEach(slow)
+        with ThreadPoolExecutor(8) as pool:
+            self.assertEqual(list(pool.map(once, ["a", "b"] * 8)), ["A", "B"] * 8)
+        self.assertEqual(sorted(asked), ["a", "b"])
+
+    def test_what_a_shared_run_raises_reaches_every_asker(self):
+        def broken(_test):
+            raise ValueError("no")
+
+        once = provenance.onceEach(broken)
+        for _ in range(2):
+            with self.assertRaisesRegex(ValueError, "no"):
+                once("a")
+
+    def test_a_move_no_test_can_tell_apart_is_exempted_with_its_reason(self):
+        repo = Repo(self, {**BASE_FILES, "lib/order.py": "A = 1\nB = 2\n"})
+        repo.write({"lib/order.py": "B = 2\nA = 1\n"})
+        self.assertRefused(repo.check(), "lib/order.py changed, and no row names it")
+        report = repo.check("| lib/order.py | plain | exempt: two constants that read nothing |")
+        self.assertPasses(report, 1)
+        self.assertIn("moved, exempt: two constants that read nothing", report.passed[0])
+
+    def test_an_exemption_spares_nothing_that_was_edited(self):
+        report = self.priceChange().check("| lib/prices.py::price | plain | exempt: only moved |")
+        self.assertRefused(report, "only statements that did nothing but move", "lib/prices.py::price changed")
+
+    def test_an_exemption_names_only_what_the_change_touches(self):
+        repo = Repo(self, {**BASE_FILES, "lib/order.py": "A = 1\nB = 2\n"})
+        repo.write({"lib/order.py": "B = 2\nA = 1\n"})
+        report = repo.check("| lib/order.py, lib/order.py::A | plain | exempt: constants |")
+        self.assertRefused(report, "names lib/order.py::A, which this change doesn't touch")
+
+    def test_a_run_that_stops_the_check_starts_no_further_row(self):
+        started = []
+
+        def judged(row, *_rest):
+            started.append(row.number)
+            if row.number == 1:
+                raise KeyboardInterrupt
+            time.sleep(0.2)
+            return []
+
+        rows = [provenance.Row(number, [], "plain", []) for number in range(1, 7)]
+        checked = provenance.Checked("root", "commit", "tree")
+        with mock.patch.object(provenance, "rowProblems", judged), self.assertRaises(KeyboardInterrupt):
+            provenance.proveRows(provenance.Report(), rows, [], checked, "base", 1)
+        self.assertLessEqual(len(started), 2, started)
+        with self.assertRaisesRegex(provenance.ProvenanceError, "the check was stopped"):
+            checked.run("lib/test_prices.py::Price.test_doubles")
+
     def test_a_run_that_dies_or_skips_or_expects_failure_gives_no_verdict(self):
         repo = Repo(self)
         repo.write({
@@ -740,6 +882,9 @@ class Merge(CheckCase):
 
         def two():
             return "{two}"
+
+
+        {tail}
     """
     TESTS = """
         import unittest
@@ -755,17 +900,17 @@ class Merge(CheckCase):
                 self.assertNotEqual(merged.two(), "branch")
     """
 
-    def merged(self, one, two):
-        repo = Repo(self, {**BASE_FILES, "lib/merged.py": self.MODULE.format(one="base", two="base")})
-        repo.write({"lib/merged.py": self.MODULE.format(one="branch", two="branch")})
+    def merged(self, one, two, mainTail=""):
+        repo = Repo(self, {**BASE_FILES, "lib/merged.py": self.MODULE.format(one="base", two="base", tail="")})
+        repo.write({"lib/merged.py": self.MODULE.format(one="branch", two="branch", tail="")})
         repo.commit("branch")
         repo.git("checkout", "--quiet", "main")
-        repo.write({"lib/merged.py": self.MODULE.format(one="main", two="main")})
+        repo.write({"lib/merged.py": self.MODULE.format(one="main", two="main", tail=mainTail)})
         repo.commit("main")
         repo.git("update-ref", "refs/remotes/origin/main", "HEAD")
         repo.git("checkout", "--quiet", f"feat/{KEY}-x")
         subprocess.run(["git", "merge", "--quiet", "main"], cwd=repo.root, capture_output=True)
-        repo.write({"lib/merged.py": self.MODULE.format(one=one, two=two), "lib/test_merged.py": self.TESTS})
+        repo.write({"lib/merged.py": self.MODULE.format(one=one, two=two, tail=""), "lib/test_merged.py": self.TESTS})
         return repo
 
     ONE_ROW = "| lib/merged.py::one | plain | test: lib/test_merged.py::Merged.test_two |"
@@ -783,6 +928,13 @@ class Merge(CheckCase):
         report = repo.check("| lib/merged.py::two | plain | test: lib/test_merged.py::Merged.test_two |")
         self.assertRefused(report, "lib/merged.py:10: merge ", "wrote lib/merged.py::two beyond git's merge",
                            "no merge-resolved row")
+
+    def test_a_resolver_change_is_seen_when_only_one_parent_makes_the_file_one_unit(self):
+        repo = self.merged(one="main", two="both", mainTail="A = 1; B = 1")
+        repo.commit("merge")
+        self.assertRefused(repo.check(), "wrote lib/merged.py beyond git's merge")
+        report = repo.check("| lib/merged.py | merge-resolved | test: lib/test_merged.py::Merged.test_two |")
+        self.assertFalse([problem for problem in report.problems if "merge" in problem], report.problems)
 
     def test_an_uncommitted_resolution_is_checked_too(self):
         report = self.merged(one="main", two="both").check()
@@ -805,8 +957,106 @@ class Merge(CheckCase):
         self.assertRefused(report, "names lib/merged.py::two, which no merge's resolver wrote")
 
 
+class Processes(unittest.TestCase):
+    """Real tests that start a process or hang, each telling its pid through a file."""
+
+    TESTS = """
+        import os
+        import subprocess
+        import time
+        import unittest
+
+
+        def tell(pid):
+            with open("pid.part", "w") as file:
+                file.write(str(pid))
+            os.rename("pid.part", "pid")
+
+
+        class Left(unittest.TestCase):
+            def test_leaves_a_process_behind(self):
+                tell(subprocess.Popen(["sleep", "60"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).pid)
+
+            def test_hangs(self):
+                tell(os.getpid())
+                time.sleep(60)
+    """
+
+    def setUp(self):
+        self.repo = Repo(self, {**BASE_FILES, "lib/test_left.py": self.TESTS})
+
+    def toldPid(self):
+        file = self.repo.root / "pid"
+        self.waitFor(file.exists, "the test never told its pid")
+        pid = int(file.read_text())
+        self.addCleanup(self.killLeftover, pid)  # so a failing test doesn't wait out the sleep
+        return pid
+
+    def killLeftover(self, pid):
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+
+    def waitFor(self, done, failure):
+        deadline = time.monotonic() + 20
+        while not done():
+            self.assertLess(time.monotonic(), deadline, failure)
+            time.sleep(0.02)
+
+    def assertDies(self, pid):
+        def dead():
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            return False
+
+        self.waitFor(dead, f"process {pid} is still alive")
+
+    def test_what_a_passing_test_leaves_running_is_killed(self):
+        verdict = runTest(str(self.repo.root), "lib/test_left.py::Left.test_leaves_a_process_behind")
+        self.assertEqual(verdict.state, "pass")
+        self.assertDies(self.toldPid())
+
+    def test_a_test_that_runs_out_of_time_is_killed(self):
+        with mock.patch.object(provenance_runner, "TIMEOUT", 3):
+            verdict = runTest(str(self.repo.root), "lib/test_left.py::Left.test_hangs")
+        self.assertEqual(verdict, ("error", "ran past 3 seconds"))
+        self.assertDies(self.toldPid())
+
+    def test_stopping_kills_a_test_under_way_and_any_started_afterwards(self):
+        processes, verdicts = TestProcesses(), []
+        hanging = "lib/test_left.py::Left.test_hangs"
+        run = threading.Thread(target=lambda: verdicts.append(runTest(str(self.repo.root), hanging, processes)))
+        run.start()
+        pid = self.toldPid()
+        processes.stop()
+        run.join(20)
+        self.assertEqual([verdict.state for verdict in verdicts], ["error"])
+        self.assertDies(pid)
+        self.assertEqual(runTest(str(self.repo.root), hanging, processes).state, "error")
+
+
 @unittest.skipUnless(shutil.which("node"), "node isn't installed")
 class Node(CheckCase):
+    def test_a_node_test_that_runs_out_of_time_takes_its_child_process_with_it(self):
+        repo = Repo(self, {**BASE_FILES, "web/hang.test.js": """
+            const test = require("node:test");
+            const fs = require("node:fs");
+            test("hangs", async () => {
+                fs.writeFileSync("pid", String(process.pid));
+                await new Promise((resolve) => setTimeout(resolve, 60000));
+            });
+        """})
+        with mock.patch.object(provenance_runner, "TIMEOUT", 3):
+            verdict = runTest(str(repo.root), "web/hang.test.js::hangs")
+        self.assertEqual(verdict, ("error", "ran past 3 seconds"))
+        child = int((repo.root / "pid").read_text())
+        deadline = time.monotonic() + 20
+        with self.assertRaises(ProcessLookupError):
+            while time.monotonic() < deadline:
+                os.kill(child, 0)
+                time.sleep(0.02)
+
     def test_a_javascript_row_runs_its_node_test(self):
         repo = Repo(self, {**BASE_FILES, "web/double.js": "exports.double = (x) => x;\n"})
         repo.write({
@@ -917,7 +1167,7 @@ class CommandLine(CheckCase):
                             "| lib/prices.py::price | plain | test: lib/test_told.py::Told."
                             "test_doubles_after_the_earlier_lines_are_told |\n"
                             "| lib/prices.py::label | obvious | test: x |\n")
-        report = provenance.check(str(repo.root), "origin/main", manifest, tell)
+        report = provenance.check(str(repo.root), "origin/main", manifest, tell, jobs=1)
         self.assertEqual(len(report.passed), 2, report.problems)
         lines = told.read_text().splitlines()
         self.assertTrue(lines[-1].startswith("True row 3"), lines)
@@ -960,6 +1210,36 @@ class CommandLine(CheckCase):
                 code, _out, err = self.run_main(repo, "--if-code")
                 self.assertEqual(code, 1)
                 self.assertIn("main.tf changed", err)
+
+    def test_jobs_sets_how_many_rows_are_proven_at_once(self):
+        repo = self.priceChange()
+        repo.check(PRICE_ROW)
+        with mock.patch.object(provenance, "ThreadPoolExecutor", wraps=ThreadPoolExecutor) as pool:
+            self.assertEqual(self.run_main(repo, "--jobs", "3")[0], 0)
+        pool.assert_called_once_with(3)
+
+    def test_by_default_at_least_one_job_runs_and_no_more_than_the_cores(self):
+        self.assertGreaterEqual(provenance.DEFAULT_JOBS, 1)
+        self.assertLessEqual(provenance.DEFAULT_JOBS, os.cpu_count())
+
+    def test_a_hang_up_or_a_kill_stops_the_check_as_ctrl_c_does(self):
+        signals = (signal.SIGHUP, signal.SIGTERM)
+        for signum in signals:
+            self.addCleanup(signal.signal, signum, signal.signal(signum, signal.SIG_DFL))
+        provenance.stopOnHangUp()
+        self.assertEqual([signal.getsignal(signum) for signum in signals], [signal.default_int_handler] * 2)
+
+    def test_jobs_below_one_is_refused_by_name(self):
+        for text in ("0", "-1", "many"):
+            with self.subTest(text=text), self.assertRaisesRegex(argparse.ArgumentTypeError, "1 or more"):
+                provenance.jobCount(text)
+        self.assertEqual(provenance.jobCount("3"), 3)
+
+    def test_a_folder_a_test_is_still_writing_to_does_not_stop_the_check(self):
+        with mock.patch.object(tempfile, "TemporaryDirectory", wraps=tempfile.TemporaryDirectory) as folder:
+            self.priceChange().check(PRICE_ROW)
+        self.assertTrue(folder.call_args_list)
+        self.assertTrue(all(call.kwargs.get("ignore_cleanup_errors") for call in folder.call_args_list if call.kwargs.get("prefix") == "provenance-"))
 
     def test_no_change_says_so(self):
         self.assertEqual(self.run_main(Repo(self))[:2], (0, "provenance-check: nothing needs a row\n"))
