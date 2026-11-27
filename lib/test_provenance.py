@@ -415,6 +415,57 @@ class Proof(CheckCase):
         self.assertRefused(repo.check(), "lib/latin.py:1: lib/latin.py changed")
         self.assertPasses(repo.check("| lib/latin.py | plain | test: lib/test_latin.py::Latin.test_name |"), 1)
 
+    def test_a_git_repository_a_test_leaves_behind_is_removed_too(self):
+        repo = self.priceChange()
+        repo.write({"lib/test_nested.py": """
+            import subprocess
+            import unittest
+
+
+            class Nested(unittest.TestCase):
+                def test_makes_a_repository(self):
+                    subprocess.run(["mkdir", "scratch-repo"], check=True)
+                    subprocess.run(["git", "init", "--quiet", "scratch-repo"], check=True)
+        """})
+        report = repo.check("| lib/prices.py::price | plain | test: lib/test_nested.py::Nested.test_makes_a_repository |")
+        self.assertRefused(report, "row 1", "test_makes_a_repository still passes")
+
+    def test_a_run_that_dies_or_skips_or_expects_failure_gives_no_verdict(self):
+        repo = Repo(self)
+        repo.write({
+            "lib/test_dies.py": """
+                import atexit
+                import os
+                import unittest
+
+
+                class Dies(unittest.TestCase):
+                    def test_passes_then_dies(self):
+                        atexit.register(os._exit, 9)
+            """,
+            "lib/test_skips.py": """
+                import unittest
+
+                raise unittest.SkipTest("not here")
+            """,
+            "lib/test_expects.py": """
+                import unittest
+
+
+                class Expects(unittest.TestCase):
+                    @unittest.expectedFailure
+                    def test_fails(self):
+                        self.fail()
+            """,
+        })
+        for test, why in (("lib/test_dies.py::Dies.test_passes_then_dies", "crashed (exit 9)"),
+                          ("lib/test_skips.py::T", "skipped: not here"),
+                          ("lib/test_expects.py::Expects.test_fails", "expectedFailure")):
+            with self.subTest(test=test):
+                verdict = runTest(str(repo.root), test)
+                self.assertEqual(verdict.state, "error")
+                self.assertIn(why, verdict.detail)
+
     def test_an_unknown_class_and_an_unreadable_item_are_refused(self):
         report = self.priceChange().check("| lib/prices.py::price | obvious | tset: x |")
         self.assertRefused(report, "row 1", "lib/prices.py:2", 'unknown class "obvious"')
@@ -784,6 +835,25 @@ class Node(CheckCase):
         self.assertEqual(tapVerdict("ok 1 - a # SKIP\n", "a", 0).state, "error")
         self.assertEqual(tapVerdict("not ok 1 - web/a.test.js\n", "a", 1).state, "unloaded")
 
+    def test_a_javascript_rule_row_passes_with_its_json_table(self):
+        repo = Repo(self)
+        repo.write({
+            "web/price.js": "exports.price = (gold) => (gold ? 2 : 1);\n",
+            "web/price.test.js": """
+                const test = require("node:test");
+                const assert = require("node:assert");
+                const { price } = require("./price");
+                test("table", () => {
+                  for (const [gold, expected] of require("./cases.test.json")) assert.strictEqual(price(gold), expected);
+                });
+            """,
+            "web/cases.test.json": "[[true, 2], [false, 1]]\n",
+        })
+        row = ("| web/price.js | rule | test: web/price.test.js::table; dims: gold({}); "
+               "table: web/cases.test.json |")
+        self.assertPasses(repo.check(row.format("yes, no")), 1)
+        self.assertRefused(repo.check(row.format("yes, no, unset")), "has 2 rows", "product is 3")
+
     def test_a_new_es_module_with_a_new_test_file_is_proven(self):
         repo = Repo(self)
         repo.write({
@@ -858,6 +928,21 @@ class CommandLine(CheckCase):
         self.assertEqual((code, out), (1, ""))
         self.assertIn("lib/prices.py:2", err)
         self.assertIn("refused, 2 problem(s)", err)
+
+    def test_if_listed_skips_a_repo_the_config_does_not_list_before_reading_the_change(self):
+        repo = self.priceChange()
+        repo.git("update-ref", "-d", "refs/remotes/origin/main")
+        with mock.patch("lib.config.CONFIG_FILE", str(repo.root.parent / "no-config.json")):
+            code, out, _err = self.run_main(repo, "--if-listed")
+        self.assertEqual(code, 0)
+        self.assertRegex(out, r"^provenance-check: not checked; the machine config's provenanceCheckouts doesn't list .*/repo\n$")
+
+    def test_if_listed_checks_a_listed_repo(self):
+        repo = self.priceChange()
+        config = repo.root.parent / "config.json"
+        config.write_text('{"provenanceCheckouts": ["%s"]}' % repo.root)
+        with mock.patch("lib.config.CONFIG_FILE", str(config)):
+            self.assertEqual(self.run_main(repo, "--if-listed")[0], 1)
 
     def test_if_code_skips_a_change_with_no_python_or_javascript(self):
         repo = Repo(self)

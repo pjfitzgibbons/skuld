@@ -2,8 +2,9 @@
 # pr [done] [--no-provenance] [KEY]: commit, push and open or update the PR for the current branch,
 # in one step that is safe to repeat. Each step runs only when it has something to do:
 #
-#   proof   when there is something new (changes to commit, commits the PR lacks, or no PR yet) and
-#           the change since origin's default branch includes a Python or JavaScript file: runs
+#   proof   when the machine config's provenanceCheckouts lists the repo, there is something new
+#           (changes to commit, commits the PR lacks, or no PR yet) and the change since origin's
+#           default branch includes a Python or JavaScript file: runs
 #           provenance-check on .tmp/KEY/provenance.md, and unless it passes stops with nothing
 #           committed or pushed. --no-provenance skips it and says so
 #   commit  when the tree has changes: stages everything (.tmp/ is ignored) and commits with the
@@ -184,7 +185,7 @@ elif ! has_new_work; then
   echo "pr: nothing new to commit or push, so provenance isn't checked"
 else
   echo "pr: checking provenance"
-  "$bin/provenance-check" --if-code --base "origin/$base" "$n" || {
+  "$bin/provenance-check" --if-listed --if-code --base "origin/$base" "$n" || {
     echo "pr: provenance-check didn't pass, so nothing is committed or pushed; fix what it names," >&2
     echo "    or run pr --no-provenance $n to ship without the check" >&2
     exit 2

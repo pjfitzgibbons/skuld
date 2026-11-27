@@ -682,7 +682,7 @@ class PrReview(unittest.TestCase):
     def test_provenance_is_checked_against_the_default_branch_before_anything_is_committed(self):
         result, _calls = self.run_pr(reviewed=True, dirty=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.proof_calls, "--if-code --base origin/main CIAM-9\n")
+        self.assertEqual(self.proof_calls, "--if-listed --if-code --base origin/main CIAM-9\n")
         self.assertLess(result.stdout.index("pr: checking provenance"), result.stdout.index("More of the fix"))
 
     def test_a_missing_commit_message_is_refused_before_the_check_runs(self):
@@ -859,10 +859,13 @@ class PrReview(unittest.TestCase):
 class PrWithTheRealCheck(unittest.TestCase):
     """pr and provenance-check together, nothing faked but gh and the push going to a bare repo."""
 
-    def run_pr(self, manifest_row):
+    def run_pr(self, manifest_row, listed=True):
         with tempfile.TemporaryDirectory() as d:
             outer = Path(d)
             root = new_pr_branch(outer)
+            (outer / ".config" / "skuld").mkdir(parents=True)
+            checkouts = [str(root)] if listed else []
+            (outer / ".config" / "skuld" / "config.json").write_text(json.dumps({"provenanceCheckouts": checkouts}))
             git = lambda *a: subprocess.run(["git", *a], cwd=root, check=True, capture_output=True, text=True).stdout
             subprocess.run(["git", "init", "-q", "--bare", str(outer / "origin.git")], check=True)
             git("remote", "add", "origin", str(outer / "origin.git"))
@@ -884,6 +887,12 @@ class PrWithTheRealCheck(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("double.py::double changed, and no row names it", result.stderr)
         self.assertEqual((commits, remote), (2, ""))
+
+    def test_a_repo_the_config_does_not_list_ships_unchecked_and_says_so(self):
+        result, commits, remote = self.run_pr(None, listed=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("not checked; the machine config's provenanceCheckouts doesn't list", result.stdout)
+        self.assertEqual(commits, 3)
 
     def test_a_proven_change_is_committed_and_pushed(self):
         result, commits, remote = self.run_pr(

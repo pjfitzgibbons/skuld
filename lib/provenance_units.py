@@ -6,6 +6,7 @@ import ast
 import collections
 import copy
 import difflib
+import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -19,11 +20,19 @@ Changed = collections.namedtuple("Changed", "line kind")
 TEST_FOLDERS = {"test", "tests", "e2e", "__tests__"}
 # *_sandbox.py is skuld's test support (lib/store_sandbox.py).
 TEST_FILE = re.compile(r"^(test_.*|conftest\.py|.*(_test|_sandbox)\.py|.*\.(test|spec)\.[cm]?[jt]sx?)$")
+# A *.test.json array is a rule's table, which a test in a language other than Python loads.
+JSON_TABLE = ".test.json"
 # Files no test can prove: lock files, ignore files, images and text. .vscode/ holds editor settings.
 INERT_FOLDERS = {".vscode"}
 INERT_FILE = re.compile(r"^(.*\.lock|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|\.terraform\.lock\.hcl|go\.sum"
                         r"|\..*ignore|.*\.(txt|png|jpe?g|gif|svg|webp|ico))$", re.IGNORECASE)
 # shortcut: a file that isn't Python is one unit; add a splitter when a language needs a row per function.
+# A file with no suffix is a script: a Python one is split before this, so what's left is shell.
+SHELL_SUFFIXES = ("", ".sh")
+SLASH_COMMENTED = (".js", ".jsx", ".mjs", ".cjs", ".ts")
+# A block or JSDoc comment that starts a line and ends one. One that shares its line with code is
+# left in: telling it from the same characters inside a string takes a tokenizer.
+BLOCK_COMMENT = re.compile(r"^[ \t]*/\*(?:[^*]|\*(?!/))*\*/[ \t]*$", re.MULTILINE)
 COMMENTS = {"": "#", ".sh": "#", ".yml": "#", ".yaml": "#", ".toml": "#",
             **dict.fromkeys((".js", ".jsx", ".mjs", ".cjs", ".ts"), "//")}
 STUB_BODY = "raise NotImplementedError('reverted by provenance-check')"
@@ -51,11 +60,21 @@ class Unit:
         return "".join(shape for shape, _span in self.parts)
 
 
-def needsNoRow(path):
-    """Tests, Markdown prose and inert files need no manifest row."""
+def needsNoRow(path, text):
+    """Tests, rule tables, Markdown prose and inert files need no manifest row."""
     *folders, name = path.split("/")
     inExemptFolder = bool((TEST_FOLDERS | INERT_FOLDERS).intersection(folders))
-    return inExemptFolder or name.endswith(".md") or bool(TEST_FILE.match(name) or INERT_FILE.match(name))
+    isTable = name.endswith(JSON_TABLE) and tableArray(text) is not None
+    return inExemptFolder or isTable or name.endswith(".md") or bool(TEST_FILE.match(name) or INERT_FILE.match(name))
+
+
+def tableArray(text):
+    """The array a JSON table's text holds, or None when it holds none."""
+    try:
+        rows = json.loads(text)
+    except ValueError:
+        return None
+    return rows if isinstance(rows, list) else None
 
 
 def isPython(path, text):
@@ -75,12 +94,51 @@ def units(path, text):
 
 def fileUnit(path, text):
     suffix = os.path.splitext(path)[1]
-    holdsText = suffix in MULTILINE_TEXT and re.search(MULTILINE_TEXT[suffix], text, re.M)
+    quoted = suffix in SHELL_SUFFIXES and quotesSpanLines(text)
+    if quoted or (suffix in MULTILINE_TEXT and re.search(MULTILINE_TEXT[suffix], text, re.M)):
+        # Any of its characters may be part of what the file produces, trailing space included.
+        return Unit("file", [(text, (1, 1))], set(range(1, len(text.split("\n")) + 1)))
     comment = COMMENTS.get(suffix)
+    commented = blockCommentLines(text) if suffix in SLASH_COMMENTED else set()
     code = [(number, line.rstrip()) for number, line in enumerate(text.split("\n"), 1)
-            if holdsText or isCode(line, comment)]
-    shape = "\n".join(line for _number, line in code).rstrip("\n")
+            if number not in commented and isCode(line, comment)]
+    shape = "\n".join(line for _number, line in code)
     return Unit("file", [(shape, (1, 1))], {number for number, _line in code})
+
+
+def quotesSpanLines(text):
+    """Whether a shell file has a quoted string that runs past the end of its line."""
+    quote, inComment, escaped, previous = None, False, False, " "
+    for char in text:
+        if char == "\n":
+            if quote:
+                return True
+            inComment = False
+        elif inComment or escaped:
+            pass
+        elif char == "\\" and quote != "'":
+            escaped = True
+            continue
+        elif quote:
+            quote = None if char == quote else quote
+        elif char in "'\"":
+            quote = char
+        elif char == "#" and previous.isspace():
+            inComment = True
+        escaped, previous = False, char
+    return False
+
+
+def blockCommentLines(text):
+    """The lines that block comments fill; none in a file with a continued line, where a line that
+    starts like a comment can be the rest of a string."""
+    if re.search(r"\\$", text, re.MULTILINE):
+        return set()
+    found = set()
+    for comment in BLOCK_COMMENT.finditer(text):
+        first = text.count("\n", 0, comment.start()) + 1
+        found.update(range(first, first + comment[0].count("\n") + 1))
+    return found
 
 
 def isCode(line, comment):
@@ -218,12 +276,38 @@ def reverted(path, current, reference, targets):
     here = parsedUnits(path, current, "in the worktree")
     there = parsedUnits(path, reference, "in the reference") if reference is not None else {}
     lines = current.split("\n")
-    edits = {}
-    for name in targets:
+    edits = {}  # {span: [the texts that replace it, one for each unit that differs]}
+    # In the reference's order, so names that go back into one place keep the order they ran in.
+    for name in sorted(targets, key=lambda name: there[name].parts[0][1] if name in there else (0, 0)):
         if name not in here:
             raise Unrevertable(f"{path} has no {name or 'module statements'}")
-        edits.update(editsFor(name, here[name], there.get(name), lines, reference))
-    return parsing(path, "\n".join(applied(edits, lines)))
+        refuseSharedStatement(path, name, targets, (here, there))
+        for span, text in editsFor(name, here[name], there.get(name), lines, reference).items():
+            texts = edits.setdefault(span, [])
+            if text not in texts:
+                texts.append(text)
+    joined = {span: [line for text in texts for line in text] for span, texts in edits.items()}
+    return parsing(path, "\n".join(applied(joined, lines)))
+
+
+def refuseSharedStatement(path, name, targets, versions):
+    """Reverting one name of `A, B = ...` rewrites the others, so a test of another would prove it:
+    a row names all the names a statement binds, in either version, that the file still has."""
+    here = versions[0]
+    for found in versions:
+        unnamed = (sharers(found, name) & set(here)) - set(targets)
+        if unnamed:
+            raise Unrevertable(f"{path}: {name} shares a statement with {', '.join(sorted(unnamed))}; "
+                               "one row names them all")
+
+
+def sharers(found, name):
+    """The names bound by the statements that bind name."""
+    if name not in found or found[name].kind != "name":
+        return set()
+    spans = {span for _shape, span in found[name].parts}
+    return {other for other, unit in found.items()
+            if unit.kind == "name" and spans.intersection(span for _shape, span in unit.parts)}
 
 
 def isOneUnit(path, text):

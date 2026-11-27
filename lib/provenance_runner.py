@@ -63,7 +63,8 @@ def pythonVerdict(root, path, name):
     if finished is None:
         return Verdict("error", f"ran past {TIMEOUT} seconds")
     said = [line for line in finished.stdout.split("\n") if line.startswith(MARK)]
-    if not said:
+    # The script exits 0 once it has said its verdict, so any other exit is a crash after it too.
+    if not said or finished.returncode != 0:
         return Verdict("error", f"the test run crashed (exit {finished.returncode})")
     _mark, state, detail = (said[-1].split(" ", 2) + [""])[:3]
     return Verdict(state, detail)
@@ -84,7 +85,11 @@ def tapVerdict(output, name, exitCode):
         return Verdict("missing") if exitCode == 0 else Verdict("unloaded", "the test file didn't load")
     if any(skipped for _failed, skipped, _directive in found):
         return Verdict("error", "the test was skipped")
-    return Verdict("fail" if any(failed for failed, _skipped, _directive in found) else "pass")
+    if any(failed for failed, _skipped, _directive in found):
+        return Verdict("fail")
+    if exitCode != 0:
+        return Verdict("error", f"the test passed, and node then exited {exitCode}")
+    return Verdict("pass")
 
 
 # ---- the script: one unittest test, in its own process ----
@@ -105,6 +110,8 @@ def unittestVerdict(path, name):
     sys.path[0:1] = [folder, os.getcwd()]
     try:
         module = importlib.import_module(moduleName)
+    except unittest.SkipTest as skip:
+        return Verdict("error", f"the test was skipped: {skip}")
     except BaseException as error:  # a module can raise anything as it loads
         return Verdict("unloaded", f"{path} didn't load: {type(error).__name__}: {error}")
     if not exists(module, name):
@@ -117,6 +124,8 @@ def unittestVerdict(path, name):
 def resultVerdict(result):
     if result.skipped:
         return Verdict("error", "the test was skipped")
+    if result.expectedFailures or result.unexpectedSuccesses:
+        return Verdict("error", "the test is an expectedFailure, whose result is the reverse of what it asserts")
     failed = result.failures + result.errors
     why = failed[0][1].strip().split("\n")[-1] if failed else "unexpected success"
     if result.testsRun == 0:  # a setUpClass or setUpModule that raised, or nothing to run

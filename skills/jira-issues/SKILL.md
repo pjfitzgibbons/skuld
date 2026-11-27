@@ -54,7 +54,7 @@ Before every review, the first and each later round, write `.tmp/<KEY>/provenanc
 |---|---|---|
 | `merge-resolved` | `git show --remerge-diff <merge>`, for each merge on the branch: what you wrote beyond git's merge | none |
 | `moved`, `ported` | `git diff -M -C --find-copies-harder`, and the source you took it from | `source:`; for each concept the function handles, grep for an existing implementation, then `reuse <concept>:` it, or `agree <concept>:` a test that feeds both the same inputs, its edge cases included, or `new <concept>:` the search that found none |
-| `rule` | any decision over input fields | `dims:` and `table:`, a literal with a row for every combination; for an exemption, `exempt:` every input path that reaches it, each with `inside <path>:` and `outside <path>:` tests |
+| `rule` | any decision over input fields | `dims:` and `table:`, with a row for every combination: a Python literal (`path::NAME`), or, for a test in another language, the array in a `*.test.json` file it loads (`path`); for an exemption, `exempt:` every input path that reaches it, each with `inside <path>:` and `outside <path>:` tests |
 | `parser` | it reads a format someone else defines | `spec:` the section, and `case <name>:` a test per case the section defines |
 | `plain` | none of these | none |
 
@@ -71,9 +71,10 @@ Before every review, the first and each later round, write `.tmp/<KEY>/provenanc
 
 - **Function.** `path::name` or `path::Class.method` in a Python file; the path alone for any other file. Changed constants (`path::NAME`), class declarations (`path::Class`) and a Python file's module statements (`path`) need rows too. Each is named exactly: a file or class name covers nothing inside it, and a row naming unchanged code is refused. A row names one function; whatever else it names, after commas, reverts with it, and its tests must also fail with the function reverted alone. When reverting a name alone stops its module loading, put it in one row with the code that reads it. Run the check with no manifest to list what needs a row.
 - **Proof.** Items separated by `;`, no `|` inside one. A test is `path::Class.method` (Python `unittest`) or `path::test name` (`node --test`). Every row needs a `test:` that fails, or no longer loads, with the row's code reverted: to the base, and for `merge-resolved` to each parent. A row that is two classes, say a merge resolution of a rule, takes two rows.
-- **No row** for tests, Markdown, comments, docstrings, Python imports, deleted code, lock files, ignore files, images, `.txt` files or `.vscode/`. In another language, a file that can hold multi-line text (a heredoc, a YAML block, a template literal) counts its comment-like lines.
+- **No row** for tests, Markdown, comments, docstrings, Python imports, deleted code, lock files, ignore files, images, `.txt` files or `.vscode/`. In JavaScript only comments that fill whole lines go without one. A `*.test.json` file needs none when it holds an array. In another language, a file that can hold multi-line text counts its comment-like lines and trailing space.
+- Names one statement binds (`A, B = ...`) go in one row.
 - A refusal names the row, `file:line` and reason. Fix the test or the code; never reclass a row to get past one.
-- `pr` runs the check before it commits, when it has something new to push and the change has a Python or JavaScript file, and stops unless it passes. The check runs only Python `unittest` and `node --test`; where a repo's tests are neither, say so in the PR body. `pr --no-provenance` ships without the check: the human decides that, never Claude. Don't edit the worktree while the check runs, or it refuses. Where the tests need `uv`'s packages, the command is `uv run pr`.
+- `pr` runs the check before it commits, in a repo the machine config's `provenanceCheckouts` lists, when it has something new to push and the change has a Python or JavaScript file, and stops unless it passes. The check runs only Python `unittest` and `node --test`; where a repo's tests are neither, say so in the PR body. `pr --no-provenance` ships without the check: the human decides that, never Claude. Don't edit the worktree while the check runs, or it refuses. Where the tests need `uv`'s packages, the command is `uv run pr`.
 
 ## Shipping
 

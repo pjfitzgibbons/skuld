@@ -1,11 +1,12 @@
 # Each decision provenance-check makes, as a table with a row for every combination of its inputs,
 # and the outside formats it reads, case by case. lib/test_provenance.py runs the whole check.
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
-from lib import provenance
+from lib import config, provenance
 from lib.provenance import Change, Row
 from lib.provenance_runner import TIMEOUT, Verdict, resultVerdict, runTest, tapVerdict
 from lib.provenance_units import (Unrevertable, changedUnits, isCode, isPython, needsNoRow, reverted, units)
@@ -36,24 +37,29 @@ class NeedsNoRow(Table):
     ]
 
     def test_tests_prose_and_inert_files_need_no_row(self):
-        self.check_table(self.CASES, lambda folder, name: needsNoRow(folder + name))
+        self.check_table(self.CASES, lambda folder, name: needsNoRow(folder + name, ""))
 
     def test_each_inert_file_needs_no_row(self):
         for name in ("Gemfile.lock", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", ".terraform.lock.hcl",
                      "go.sum", ".gitignore", ".dockerignore", ".vscodeignore", "notes.txt", "a.PNG", "a.jpeg", "a.jpg",
                      "a.gif", "a.svg", "a.webp", "a.ico"):
-            self.assertTrue(needsNoRow(f"lib/{name}"), name)
+            self.assertTrue(needsNoRow(f"lib/{name}", ""), name)
+
+    def test_a_test_json_file_is_a_table_only_when_it_holds_an_array(self):
+        self.assertTrue(needsNoRow("web/cases.test.json", "[[1, 2]]"))
+        for text in ('{"env": "test"}', "", "["):
+            self.assertFalse(needsNoRow("config/app.test.json", text), text)
 
     def test_configuration_templates_and_scripts_still_need_a_row(self):
         for name in ("store.yml", "pyproject.toml", "package.json", "settings.json", "base.html", "pr", "run.sh",
                      "lock.py", "ignore.py", "gitignore", "vscode/plan.js"):
-            self.assertFalse(needsNoRow(f"bin/{name}"), name)
+            self.assertFalse(needsNoRow(f"bin/{name}", ""), name)
 
     def test_each_name_a_test_file_takes(self):
         for name in ("conftest.py", "keys_test.py", "store_sandbox.py", "plan.test.js", "plan.spec.mjs"):
-            self.assertTrue(needsNoRow(f"lib/{name}"), name)
-        for name in ("keys.test.json", "protest.py", "test-plan-window-e2e"):
-            self.assertFalse(needsNoRow(f"bin/{name}"), name)
+            self.assertTrue(needsNoRow(f"lib/{name}", ""), name)
+        for name in ("cases.json", "protest.py", "test-plan-window-e2e"):
+            self.assertFalse(needsNoRow(f"bin/{name}", "[]"), name)
 
 
 class IsPython(Table):
@@ -78,6 +84,40 @@ class CodeLines(Table):
 
     def test_blank_and_comment_lines_are_no_code(self):
         self.check_table(self.CASES, isCode)
+
+
+class Listed(Table):
+    # what the config lists x where the check runs
+    CASES = [
+        ("nothing", "main checkout", False), ("nothing", "worktree", False),
+        ("the checkout", "main checkout", True), ("the checkout", "worktree", True),
+        ("another", "main checkout", False), ("another", "worktree", False),
+    ]
+
+    def test_a_repo_is_turned_on_by_its_main_checkout_worktrees_included(self):
+        repo = Repo(self)
+        worktree = repo.root.parent / "wt"
+        repo.git("worktree", "add", "--quiet", "--detach", str(worktree))
+        listed = {"nothing": config.defaults(), "the checkout": {"provenanceCheckouts": [str(repo.root)]},
+                  "another": {"provenanceCheckouts": [str(repo.root.parent / "other")]}}
+        at = {"main checkout": repo.root, "worktree": worktree}
+        self.check_table(self.CASES, lambda names, where: provenance.isListed(str(at[where]), listed[names]))
+
+    def test_a_path_cased_another_way_names_the_same_folder(self):
+        repo = Repo(self)
+        cased = str(repo.root.parent / repo.root.name.upper())
+        expected = os.path.exists(cased)  # a filesystem that ignores case, as this Mac's does
+        self.assertEqual(provenance.isListed(str(repo.root), {"provenanceCheckouts": [cased]}), expected)
+
+    def test_a_tilde_names_the_home_folder(self):
+        repo = Repo(self)
+        with mock.patch.dict(os.environ, {"HOME": str(repo.root.parent)}):
+            self.assertTrue(provenance.isListed(str(repo.root), {"provenanceCheckouts": ["~/repo"]}))
+
+    def test_a_value_that_is_no_list_of_paths_is_refused(self):
+        for value in ("~/repo", [1], {"a": 1}):
+            with self.subTest(value=value), self.assertRaisesRegex(provenance.ProvenanceError, "list of main checkout paths"):
+                provenance.isListed(".", {"provenanceCheckouts": value})
 
 
 class IncludesCode(Table):
@@ -234,6 +274,16 @@ class Dimensions(Table):
 
             self.check_table(self.SHORT, problems)
 
+    def test_a_json_table_is_an_array_counted_by_its_distinct_rows(self):
+        files = {"a.test.json": '[[1, "a"], [1, "a"], {"b": 1, "c": 2}, {"c": 2, "b": 1}]',
+                 "object.test.json": '{"a": 1}', "broken.test.json": "[", "plain.json": "[1]"}
+        with TemporaryDirectory() as tree:
+            for name, text in files.items():
+                Path(tree, name).write_text(text)
+            found = {name: provenance.tableRows(tree, name) for name in [*files, "gone.test.json", "a.test.json::CASES"]}
+        self.assertEqual(found, {"a.test.json": 2, "object.test.json": None, "broken.test.json": None, "plain.json": None,
+                                 "gone.test.json": None, "a.test.json::CASES": None})
+
     def test_a_table_is_a_literal_counted_by_its_distinct_rows(self):
         source = ("LIST = [1, 1, 2]\nTUPLE = (1, 2)\nSET = {1}\nMAP = {1: 2, 3: 4}\nBUILT = list(range(9))\n"
                   "class A:\n    CASES = [1]\n")
@@ -262,16 +312,20 @@ class UnittestResults(Table):
     # skipped x outcome
     CASES = [
         (False, "passed", "pass"), (False, "failed", "fail"), (False, "setup failed", "unloaded"), (False, "nothing ran", "error"),
+        (False, "expected failure", "error"), (False, "unexpected success", "error"),
         (True, "passed", "error"), (True, "failed", "error"), (True, "setup failed", "error"), (True, "nothing ran", "error"),
+        (True, "expected failure", "error"), (True, "unexpected success", "error"),
     ]
 
     def test_a_result_says_pass_fail_unloaded_or_no_verdict(self):
         def state(skipped, outcome):
             raised = [("test", "Traceback\nValueError: no")]
             result = mock.Mock(skipped=[("test", "why")] if skipped else [], errors=[],
+                               expectedFailures=raised if outcome == "expected failure" else [],
+                               unexpectedSuccesses=["test"] if outcome == "unexpected success" else [],
                                failures=raised if "failed" in outcome else [],
                                testsRun=0 if outcome in ("setup failed", "nothing ran") else 1)
-            result.wasSuccessful.return_value = "failed" not in outcome
+            result.wasSuccessful.return_value = "failed" not in outcome and outcome != "unexpected success"
             return resultVerdict(result).state
 
         self.check_table(self.CASES, state)
@@ -298,6 +352,9 @@ class Tap(unittest.TestCase):
 
     def state(self, line, name="a", exitCode=1):
         return tapVerdict(f"TAP version 13\n{line}\n", name, exitCode).state
+
+    def test_a_pass_from_a_process_that_then_fails_is_no_verdict(self):
+        self.assertEqual(self.state("ok 1 - a", exitCode=1), "error")
 
     def test_ok_and_not_ok(self):
         self.assertEqual(self.state("ok 1 - a", exitCode=0), "pass")
@@ -341,6 +398,30 @@ class MultilineText(unittest.TestCase):
         # TOML 1.0.0, String
         for quotes in ('"""', "'''"):
             self.assertTrue(self.changes("a.toml", f"k = {quotes}\n# {{}}\n{quotes}\n"), quotes)
+
+    def test_trailing_space_and_the_last_newline_are_part_of_multi_line_text(self):
+        for after in ("cat <<EOF\nvalue \nEOF\n", "cat <<EOF\nvalue\nEOF\n\n"):
+            self.assertTrue(changedUnits("a.sh", "cat <<EOF\nvalue\nEOF\n", after), repr(after))
+
+    def test_a_shell_string_quoted_across_lines(self):
+        for quoted in ("x='a\n# {}\n'\n", 'x="a\n# {}\n"\n', 'x="a {} \n"\n'):
+            self.assertTrue(self.changes("a.sh", quoted), quoted)
+        self.assertTrue(changedUnits("bin/a", "x='a \nb'\n", "x='a\nb'\n"))
+
+    def test_quotes_that_close_on_their_line_leave_comments_as_comments(self):
+        for line in ('echo "isn\'t"', "echo 'say \"hi\"'", "echo it\\'s", "echo done # it's fine"):
+            self.assertFalse(self.changes("bin/a", line + "\n# {}\n"), line)
+
+    def test_a_comment_start_after_a_continued_line_counts_as_code(self):
+        self.assertTrue(self.changes("a.js", "const s = '\\\n/*';\ng({});\nf(1); /* end */\n"))
+
+    def test_javascript_comments_that_fill_whole_lines_are_no_change(self):
+        for comment in ("// {}", "  /* {} */", "/**\n * {}\n */", "/* {}\n   more */"):
+            self.assertFalse(self.changes("a.js", f"{comment}\nf();\n"), comment)
+
+    def test_a_comment_sharing_its_line_with_code_counts_as_code(self):
+        for line in ("f(); // {}", "f(); /* {} */", "/* a */ f('{}');", 'const u = "/* {} */";', "/*\n a */ f('{}'); /* b */"):
+            self.assertTrue(self.changes("a.js", line + "\n"), line)
 
     def test_a_javascript_template_literal(self):
         # ECMAScript, Template Literals
@@ -428,6 +509,47 @@ class Reverting(Table):
         self.assertEqual(reverted("a.sh", "new\n", None, [""]), "")
         with self.assertRaisesRegex(Unrevertable, "isn't Python"):
             reverted("a.sh", "new\n", "old\n", ["f"])
+
+    # how A and B are bound x the names the row gives: whether the revert is refused
+    SHARED = [
+        ("apart", "A", False), ("apart", "A B", False),
+        ("together now", "A", True), ("together now", "A B", False),
+        ("together before", "A", True), ("together before", "A B", False),
+    ]
+    BINDINGS = {"apart": ("A = 2\nB = 2\n", "A = 1\nB = 1\n"), "together now": ("A, B = 2, 2\n", "A = 1\nB = 1\n"),
+                "together before": ("A = 2\nB = 2\n", "A, B = 1, 1\n")}
+
+    def test_a_row_names_every_name_a_statement_binds(self):
+        def refused(binding, names):
+            try:
+                reverted("a.py", *self.BINDINGS[binding], names.split())
+            except Unrevertable:
+                return True
+            return False
+
+        self.check_table(self.SHARED, refused)
+
+    def test_names_going_back_into_one_place_keep_the_order_they_ran_in(self):
+        result = reverted("a.py", "A, B = 2, 2\n", "B = 0\nA = B\n", ["A", "B"])
+        self.assertEqual(result, "B = 0\nA = B\n")
+
+    def test_a_name_that_left_a_shared_statement_does_not_have_to_be_named(self):
+        self.assertEqual(reverted("a.py", "A = 2\n", "A, B = 1, 1\n", ["A"]), "A, B = 1, 1\n")
+
+    def test_names_one_statement_binds_revert_only_together(self):
+        for new, old in (("A, B = 2, 2\n", "A, B = 1, 1\n"), ("A = B = 2\n", "A = B = 1\n"),
+                         ("A = 2\nB = 2\n", "A, B = 1, 1\n"), ("A, B = 2, 2\n", None)):
+            with self.subTest(new=new, old=old):
+                with self.assertRaisesRegex(Unrevertable, "A shares a statement with B"):
+                    reverted("a.py", new, old, ["A"])
+                self.assertNotIn("2", reverted("a.py", new, old, ["A", "B"]))
+
+    def test_names_split_from_one_statement_each_go_back(self):
+        result = reverted("a.py", "A, B = 2, 2\n", "A = 1\nB = 3\n", ["A", "B"])
+        self.assertEqual(result, "A = 1\nB = 3\n")
+
+    def test_new_names_of_one_statement_all_become_none(self):
+        self.assertEqual(reverted("a.py", "A = B = 2\n", None, ["A", "B"]), "A = None\nB = None\n")
 
     def test_what_cannot_be_reverted_says_why(self):
         for current, reference, targets, why in (

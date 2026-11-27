@@ -115,6 +115,7 @@ macOS only. In order:
    | `jql` | `project in (<the jira entry's projects>) AND assignee = currentUser() AND statusCategory != Done ORDER BY Rank` | The Jira half of Next up |
    | `typeMap` | Story and Task `feat`, Bug `fix` | Issue type to branch prefix, merged over the default |
    | `pr` | `~/.local/bin/pr` | The `pr` that Ship runs, by path |
+   | `provenanceCheckouts` | none | The main checkouts whose changes `pr` proves with `provenance-check` (§5), as paths: `["~/programming/skuld-project/skuld"]` |
    | `disposable` | `done.py`'s list | Ignored files Done may delete with a worktree |
    | `issuesFile` | `~/.cache/plan/issues` | The issues Started or Opened and not yet Done, one `<KEY>` per line, that the Issues view and the Claude status engine read (§4, step 7) |
    | `pulsesFile` | `~/.cache/plan/pulses` | Each issue's colour in the Issues view, one `<KEY>=orange` or `<KEY>=green` line per coloured issue, written by `plan pulse` and the Claude status engine (§2, step 12) |
@@ -267,7 +268,7 @@ decides the repo (§4).
 | `plan init-store` | Make the store's missing folders (`milestones/`, `active/`, `archive/`, `reviews/`, `queries/`) at `issueStore`, printing each; refuses a missing store folder, changes no file, and a second run makes nothing |
 | `plan suite [--dry-run]` | Run this environment's test suite: the commands in the nearest `.plan-suite` (the current folder, then each parent; the first file found is the only one read), one shell command per line, `#` lines and blank lines ignored, each run from that file's folder after printing `== <command>`; stops at the first failure with its exit code, prints `suite: passed` when all pass; refuses (exit 2, nothing run) when no file is found or the file has no commands; `--dry-run` prints `# <file>` and the commands as they would run, and runs nothing |
 | `pr [done] [KEY]` | Send a round (§5) |
-| `provenance-check [KEY] [--base REF] [--manifest PATH] [--if-code]` | Verify the worktree's provenance manifest against its change (§5); `pr` runs it before its commit; changes nothing in the worktree |
+| `provenance-check [KEY] [--base REF] [--manifest PATH] [--if-listed] [--if-code]` | Verify the worktree's provenance manifest against its change (§5); `pr` runs it before its commit; changes nothing in the worktree |
 | `plan review KEY` | Write the next review round's request and start Claude's review on it in the plan window's `Review KEY` terminal; `pr` runs it when a review is due (§5), and it is how to start one by hand |
 | `issue-create "<title>" [field=value…]` | Write a new ticket: the next free key and ordinal, `ticket_id` first, the outline and a `## Log` with `Filed.`; prints the path |
 | `issue-update <KEY> [field=value…] [--log "text"]` | Change a ticket's front-matter fields and append a dated `## Log` line, all or nothing; an unknown field refuses, naming it; `closed` follows `status` (`done` or `wontfix` without `closed=` gets today, an open status clears it), `points` is a Fibonacci number, and an open ticket is refused a milestone whose file says it is closed; the log line is wrapped to 100 columns; prints the path. With `issue-create`, the only writers of a ticket file |
@@ -384,14 +385,16 @@ Before a review, the author writes `.tmp/<KEY>/provenance.md` in the worktree an
 proofs and what is refused). The manifest's format, with an example, is in the
 [jira-issues skill](skills/jira-issues/SKILL.md#proving-the-change).
 
-`provenance-check [KEY] [--base REF] [--manifest PATH] [--if-code]` takes `KEY` from the branch and `REF` from
+`provenance-check [KEY] [--base REF] [--manifest PATH] [--if-listed] [--if-code]` takes `KEY` from the branch and `REF` from
 `origin/HEAD`, or `origin/main` when that isn't set. It prints a header, then each row's `ok` line,
 with its place in the count and its time, as the row finishes, and each refusal as it is found; the
 last line is the total. It exits 0 when every row passes; 1 with any refusal, each naming its row,
 `file:line` and reason; and 2 when it can't check at all (no such ref, an octopus merge).
 
-`pr` runs it before its commit, as `--if-code --base origin/<default branch>`, when it has changes to
-commit, commits the PR lacks, or no PR yet: a change with no
+`pr` runs it before its commit, as `--if-listed --if-code --base origin/<default branch>`. A repo
+is checked only when the machine config's `provenanceCheckouts` lists its main checkout (a worktree
+counts as its main checkout); any other prints that it wasn't checked and goes on. In a listed repo
+the check runs when `pr` has changes to commit, commits the PR lacks, or no PR yet: a change with no
 Python or JavaScript file (`.js`, `.jsx`, `.mjs`, `.cjs`, or a `node` or `python` shebang) prints
 that it wasn't checked and goes on, and any other is checked whole, whatever the repo. A refusal stops `pr`, and `pr --no-provenance` ships without the check.
 
@@ -407,9 +410,9 @@ How it works (`lib/provenance.py`):
    either side of every conflict, so a clean merge and a verbatim pick need no `merge-resolved` row.
 3. In a temporary worktree of the snapshot it runs each row's tests, then reverts the row's code and
    runs its `test:` items again, restoring the tree after every run. A test proves a row when it
-   fails or no longer loads (its file, or its class's setup); one that passes, is skipped, crashes
-   or runs past 300 seconds doesn't. node doesn't say why a test file died, so that reads as not
-   loading.
+   fails or no longer loads (its file, or its class's setup); one that passes, is skipped, is an
+   `expectedFailure`, crashes, exits nonzero after passing or runs past 300 seconds doesn't. node
+   doesn't say why a test file died, so that reads as not loading.
 
 `lib/provenance_units.py` splits a file into what rows name and reverts it; a Python file splits by
 function, method, class declaration and top-level name, and any other file is one unit.
@@ -445,7 +448,7 @@ runs only when it has something to do, so `pr` is safe to repeat:
 | --- | --- | --- |
 | guard | always | refuses the default branch, and a PR closed unmerged |
 | merged? | the PR is merged | refuses if HEAD isn't the merged head or the tree has changes; sends any leftover replies and ticks; says to run `plan done`; exits |
-| provenance | there are changes to commit, commits the PR lacks or no PR, the change since `origin`'s default branch includes a Python or JavaScript file, and no `--no-provenance` | `provenance-check` (above); a refusal stops `pr` with nothing committed or pushed |
+| provenance | `provenanceCheckouts` lists the repo, there are changes to commit, commits the PR lacks or no PR, the change since `origin`'s default branch includes a Python or JavaScript file, and no `--no-provenance` | `provenance-check` (above); a refusal stops `pr` with nothing committed or pushed |
 | commit | the tree has changes | needs `commit.txt`; `git add -A`, `git commit -F`, deletes the file |
 | push | always | `GIT_TERMINAL_PROMPT=0 git push -u origin HEAD` |
 | PR | always | `gh pc` with no PR, else `gh pb` |

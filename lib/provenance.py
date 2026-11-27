@@ -1,10 +1,11 @@
 # provenance-check: the author's manifest, .tmp/<KEY>/provenance.md, checked against the change
 # (docs/architecture.md §7.1; the format is in skills/jira-issues/SKILL.md).
 #
-#     provenance-check [KEY] [--base REF] [--manifest PATH] [--if-code]
+#     provenance-check [KEY] [--base REF] [--manifest PATH] [--if-listed] [--if-code]
 #
-# KEY defaults to the branch's, REF to origin's default branch. --if-code, which `pr` passes, checks
-# only a change that includes a Python or JavaScript file. It says what it is checking, prints each
+# KEY defaults to the branch's, REF to origin's default branch. `pr` passes both --if flags:
+# --if-listed checks only a repo the machine config's provenanceCheckouts lists, by its main
+# checkout, and --if-code only a change that includes a Python or JavaScript file. It says what it is checking, prints each
 # row's result as the row finishes and each refusal as it is found, then the count and the time. It
 # exits 0 with one line per row, 1 with every refusal, each naming its row, file:line and reason,
 # and 2 when it can't check at all.
@@ -14,6 +15,7 @@ import argparse
 import ast
 import contextlib
 import functools
+import json
 import math
 import os
 import re
@@ -26,11 +28,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import config as config_mod
 from . import reviews
+from . import start as startLib
 from .cli import branchKey
 from .fileissues import linesOutsideFences
 from .provenance_runner import NODE_SUFFIXES, ownEnvironment, runTest
-from .provenance_units import OWN_ROW, Unrevertable, assignedNames, changedUnits, isPython, needsNoRow, reverted, units
+from .provenance_units import (JSON_TABLE, OWN_ROW, Unrevertable, assignedNames, changedUnits, isPython, needsNoRow,
+                               reverted, tableArray, units)
 
 # The proof each class needs besides a `test:` that fails on revert.
 REQUIRED = {
@@ -53,6 +58,7 @@ ITEM = re.compile(r"^([a-z]+)(?:\s+([^:]+?))?\s*:\s*(.+)$")
 GIT_SETTINGS = ("-c", "core.quotePath=false", "-c", "core.hooksPath=/dev/null")
 # The suffixes and the shebang of JavaScript, which `pr` checks a change for.
 JAVASCRIPT_SUFFIXES = (*NODE_SUFFIXES, ".jsx")
+LISTED = "provenanceCheckouts"
 OBJECT_NAME = re.compile(r"[0-9a-f]{40,64}")
 DIMENSION = r"[^()\s][^()]*\([^()]*\)"  # name(value, value)
 DIMENSIONS = re.compile(rf"\s*{DIMENSION}(?:\s*[x×*]\s*{DIMENSION})*\s*")
@@ -187,7 +193,7 @@ def diffChanges(root, base, head):
     found = []
     for path in changedPaths(root, base, head):
         new = textAt(root, head, path)
-        if new is not None and not needsNoRow(path):
+        if new is not None and not needsNoRow(path, new):
             changed = changedUnits(path, textAt(root, base, path), new)
             found += [Change(path, unit, line, kind) for unit, (line, kind) in changed.items()]
     return found
@@ -210,7 +216,7 @@ def resolverChanges(root, merge, head):
     found = []
     for path in sorted(paths):
         written, now = textAt(root, merge, path), textAt(root, head, path)
-        if written is None or now is None or needsNoRow(path):
+        if written is None or now is None or needsNoRow(path, now):
             continue
         theirOwn = set.intersection(*(set(changedUnits(path, textAt(root, ref, path), written)) for ref in references))
         first, second = (changedUnits(path, textAt(root, parent, path), now) for parent in parents)
@@ -339,7 +345,8 @@ def shortTables(row, tree):
     for table in row.values("table"):
         count = tableRows(tree, table)
         if count is None:
-            found.append(f"there is no table {table}: a list, tuple, set or dict written out under that name")
+            found.append(f"there is no table {table}: a Python list, tuple, set or dict written out under that "
+                         "name, or the array a *.test.json file holds")
         elif count < wanted:
             found.append(f"the table {table} has {count} rows, and its dimensions' product is {wanted}")
     return found
@@ -354,8 +361,11 @@ def combinations(dimensions):
 
 
 def tableRows(tree, table):
-    """The distinct rows of the literal a Python file assigns to the dotted name, or None."""
+    """The distinct rows of a table, or None when there is none: the literal a Python file assigns to
+    the dotted name, or, for a test in another language, the array in a *.test.json file."""
     path, _, dotted = table.partition("::")
+    if path.endswith(JSON_TABLE):
+        return None if dotted else jsonRows(Path(tree, path))
     try:
         scope = ast.parse(Path(tree, path).read_text(errors="surrogateescape"))
     except (OSError, SyntaxError, ValueError):
@@ -366,6 +376,14 @@ def tableRows(tree, table):
         if scope is None:
             return None
     return next((distinctElements(node.value) for node in scope.body if name in assignedNames(node)), None)
+
+
+def jsonRows(file):
+    try:
+        rows = tableArray(file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return None
+    return None if rows is None else len({json.dumps(row, sort_keys=True) for row in rows})
 
 
 def distinctElements(value):
@@ -396,7 +414,8 @@ def unproven(test, verdict, reverted):
 
 def restore(tree):
     git(tree, "checkout", "--quiet", "--force", "HEAD", "--", ".")
-    git(tree, "clean", "--quiet", "--force", "-d", "-x")
+    # Twice forced: a test may leave a git repository of its own, which one --force keeps.
+    git(tree, "clean", "--quiet", "--force", "--force", "-d", "-x")
 
 
 def runClean(tree, test):
@@ -533,6 +552,21 @@ def treeOf(root, commit):
     return git(root, "rev-parse", f"{commit}^{{tree}}").strip()
 
 
+def isListed(root, cfg):
+    """Whether this Mac turns the check on for root's repo: its main checkout, which a worktree
+    shares, is one of the config's provenanceCheckouts."""
+    listed = cfg[LISTED]
+    if not (isinstance(listed, list) and all(isinstance(path, str) for path in listed)):
+        raise ProvenanceError(f"{LISTED} in the machine config is a list of main checkout paths")
+    main = startLib.mainCheckoutOf(root)
+    return any(isSameFolder(os.path.expanduser(path), main) for path in listed)
+
+
+def isSameFolder(path, folder):
+    """Whether path is that folder, however its letters are cased or its links run."""
+    return os.path.exists(path) and os.path.samefile(path, folder)
+
+
 def includesCode(root, baseRef):
     """Whether the change includes a Python or JavaScript file."""
     head = snapshot(root)
@@ -566,8 +600,13 @@ def main(argv=None):
     parser.add_argument("--base", help="the ref the change is against; origin's default branch by default")
     parser.add_argument("--manifest", type=Path, help="the manifest; .tmp/<KEY>/provenance.md by default")
     parser.add_argument("--if-code", action="store_true", help="check only a change with a Python or JavaScript file")
+    parser.add_argument("--if-listed", action="store_true", help=f"check only a repo the config's {LISTED} lists")
     args = parser.parse_args(argv)
     root = git(os.getcwd(), "rev-parse", "--show-toplevel").strip()
+    if args.if_listed and not isListed(root, config_mod.load()):
+        print(f"provenance-check: not checked; the machine config's {LISTED} doesn't list "
+              f"{startLib.mainCheckoutOf(root)}")
+        return 0
     base = args.base or defaultBase(root)
     if args.if_code and not includesCode(root, base):
         print("provenance-check: not checked; the change has no Python or JavaScript file")

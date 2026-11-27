@@ -464,7 +464,7 @@ per changed function, with its class and its proof:
 | --- | --- | --- |
 | `merge-resolved` | `git show --remerge-diff <merge>`: what the resolver wrote beyond git's merge | none |
 | `moved` or `ported` | `git diff -M -C --find-copies-harder`, and the author naming the source | for each concept the function handles (a key from a filename, a fence, front matter): the existing implementation it reuses; or a test that feeds both the same inputs, the existing one's edge cases included, and asserts that they agree; or, when there is none, the search that found none |
-| `rule` | the author | its input dimensions, and a table test with a row for every combination; for an exemption, every input path that reaches it, with a test on each side of it per path |
+| `rule` | the author | its input dimensions, and a table test with a row for every combination, written in the Python test or, for another language, in a `*.test.json` array; for an exemption, every input path that reaches it, with a test on each side of it per path |
 | `parser` of an outside format | the author | the spec section, and a test for each case it defines |
 | `plain` | none of the other four | none |
 
@@ -479,7 +479,7 @@ Python file's class declarations, top-level names and module statements change a
 functions. A row names each thing it proves exactly (a file or class name doesn't cover what is
 inside it), and a revert touches nothing a row doesn't name. A row names one function. Anything
 else it names reverts with that function, and its tests must also fail with the function reverted
-alone.
+alone. One row names all the names a single statement binds.
 
 **`provenance-check` verifies the manifest.** It compares a snapshot of the worktree, uncommitted
 and untracked files included, with the merge base of `origin/main`, and reads every merge on the
@@ -492,16 +492,17 @@ reason, when:
 - a row lacks part of its class's proof, or a rule's table has fewer distinct rows than the product
   of its dimensions;
 - a row names a test that doesn't exist, or one that fails or can't run with the change in place;
-- a row's test still passes with the row's code reverted, or there is skipped, crashes or runs out
-  of time;
+- a row's test still passes with the row's code reverted, or there is skipped, is marked as an
+  expected failure, crashes or runs out of time;
 - a revert can't be applied;
 - the worktree changed while the check ran.
 
 A run prints each row's result as the row finishes and each refusal as it is found, so a run that
 passes prints one line per row. Tests, Markdown, comments, docstrings, Python imports,
 deleted code, and files no test can prove (lock files, ignore files, images, `.txt` files and
-`.vscode/`) need no row; in a file of another language that can hold multi-line text, a
-comment-like line counts as code. The check runs only the tests the rows name, Python `unittest` and
+`.vscode/`) need no row. In JavaScript a comment counts as none only when it fills whole lines, and
+in a file of another language that can hold multi-line text, every line and its trailing space count
+as code. The check runs only the tests the rows name, Python `unittest` and
 `node --test`, in a temporary worktree it restores after every test, and changes nothing in the
 issue's worktree. The review reads the manifest and judges what the check can't: whether each class
 is honest, and whether its dimensions, concepts, paths and cases are all there.
@@ -519,9 +520,10 @@ Ship runs `ship.check()` and refuses by name a missing PR body, a missing commit
 tree has changes, or a branch that isn't the issue's. On success it runs `pr <KEY>` visibly in an
 integrated terminal of the plan window.
 
-**`pr` checks provenance before it commits.** When it has something new for the PR (changes to
-commit, commits to push, or no PR yet) and the change includes a Python or JavaScript file, `pr`
-runs `provenance-check` (§7.1) and, unless it passes, stops with nothing committed or pushed.
+**`pr` checks provenance before it commits.** In a repo the machine config's `provenanceCheckouts`
+lists by its main checkout, when `pr` has something new for the PR (changes to commit, commits to
+push, or no PR yet) and the change includes a Python or JavaScript file, it runs
+`provenance-check` (§7.1) and, unless it passes, stops with nothing committed or pushed.
 `pr --no-provenance` goes on without the check and says that it skipped it.
 
 `pr` commits with `commit.txt`, pushes, and opens the PR or replaces its body. It then posts each reply to its thread and resolves the thread. For a Jira issue
