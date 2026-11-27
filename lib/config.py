@@ -90,8 +90,12 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #                  `gh pb` run; a value other than the two refuses `pr`. Default: "copilot".
 #   serverPort     The local page server's port on 127.0.0.1 (lib/server.py, `plan serve`).
 #                  Default: 8765.
+#   provenanceCheckouts
+#                  The main checkouts, as paths, whose changes `pr` proves with provenance-check
+#                  (its worktrees included). Default: [], so no repo is checked.
 def defaults():
     return {
+        "provenanceCheckouts": [],
         "jira": None,
         "jql": None,
         "checkouts": {"SK": [_REPO_ROOT]},

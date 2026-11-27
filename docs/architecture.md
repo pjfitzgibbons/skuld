@@ -66,6 +66,7 @@ GitHub's, and they are the one GitHub integration; GitHub Issues is not used.
 | Herdr workspace | With the `herdr` front end, the herdr workspace labelled `<KEY>`: a `claude`, an `edit` and a `git` tab in the issue's worktree (§7.1) |
 | Start | Moving an issue to "in progress" from `plan start`, which makes its branch and worktree and logs "Started" on the issue (§7.1) |
 | Round | One pass of review: the commit message, PR body and review replies in `<store>/reviews/<KEY>/` that `pr` sends (§7.2) |
+| Provenance manifest | The author's record of where each changed function came from and what proves it, `.tmp/<KEY>/provenance.md` in the issue's worktree, which `provenance-check` verifies (§7.1) |
 | Finish | The squash merge of the issue's PR, then Done, which notes the merge on the issue and closes a store ticket; the human closes a Jira issue (§7.3) |
 | Next up | The open issues in plan order: the store's issues by milestone and ordinal, merged with the Jira project's JQL results (§7.6) |
 | Blocker | An open issue the issue depends on: a key in the ticket's `blocked_by`, or a Jira "Blocks" link read inward (§4.2) |
@@ -189,8 +190,10 @@ The clients:
 
 - **`plan`** (`bin/plan`, `lib/cli.py`) shows Next up in an fzf picker, and runs `new`, `set`,
   `view`, Start, Open, Ship and Done ([GUIDE.md §3](../GUIDE.md#3-commands)).
-- **`pr`** commits, pushes, opens or updates the PR, posts review replies, and cleans up after a
-  merge.
+- **`pr`** checks the change's provenance, commits, pushes, opens or updates the PR, posts review
+  replies, and cleans up after a merge.
+- **`provenance-check`** (`bin/provenance-check`, `lib/provenance.py`) checks the provenance
+  manifest against the issue's change (§7.1).
 - **`issue-check`** runs the checker over the store or the files named (§7.7).
 - **`issue-create`** and **`issue-update`** write ticket files, the only commands that do (§7.7).
 - **`issue-watch`** is the watcher: it commits and pushes the store (§7.7).
@@ -489,6 +492,64 @@ the plan window forward; system `open` is not used. It is best-effort: if the se
 Open still prints `<KEY> ready.` and adds one line on stderr, `couldn't open <KEY> in the plan
 window: <error>; click it in the Issues view`.
 
+**Before review, the author proves each change by where it came from.** The last step before a
+review, the first and every later round, writes the provenance manifest,
+`.tmp/<KEY>/provenance.md` in the worktree, and runs `provenance-check`. The manifest has one row
+per changed function, with its class and its proof:
+
+| Class | Found by | Proof, besides a test that fails on revert |
+| --- | --- | --- |
+| `merge-resolved` | `git show --remerge-diff <merge>`: what the resolver wrote beyond git's merge | none |
+| `moved` or `ported` | `git diff -M -C --find-copies-harder`, and the author naming the source | for each concept the function handles (a key from a filename, a fence, front matter): the existing implementation it reuses; or a test that feeds both the same inputs, the existing one's edge cases included, and asserts that they agree; or, when there is none, the search that found none |
+| `rule` | the author | its input dimensions, and a table test with a row for every combination, written in the Python test or, for another language, in a `*.test.json` array; for an exemption, every input path that reaches it, with a test on each side of it per path |
+| `parser` of an outside format | the author | the spec section, and a test for each case it defines |
+| `plain` | none of the other four | none |
+
+Every row names a test that passes with the change in place and, with the row's code reverted, fails
+or no longer loads. Reverting puts the code back as the base has it, for a `merge-resolved` row as each of the merge's
+parents has it. Code that didn't exist there becomes a function that raises, a name or class that
+is `None`, or an empty file, and new module statements go, so the tests that name the code still
+load.
+
+A function is a Python function or method, and a file in any other language is one function. A
+Python file's class declarations, top-level names and module statements change apart from its
+functions. A row names each thing it proves exactly (a file or class name doesn't cover what is
+inside it), and a revert touches nothing a row doesn't name. A row names one function. Anything else
+it names reverts with that function, and its tests must also fail with the function reverted alone.
+One row names all the names a single statement binds. A Python file is one unit, as a file in any
+other language is, when two of its statements are on one line. Moving a top-level statement, an
+import included, changes the module's own statements, whose revert is the whole earlier file; only a
+docstring or other string, and an undecorated function without defaults whose name nothing else
+binds, move freely. Reordering a class's own statements changes the class. A row whose statements
+did nothing but move, a module's or a class's, may give `exempt:` and the reason no test can tell
+the move apart, in place of a test.
+
+**`provenance-check` verifies the manifest.** It compares a snapshot of the worktree, uncommitted
+and untracked files included, with the merge base of `origin/main`, and reads every merge on the
+branch against git's own merge of its parents. It refuses, naming the row, the `file:line` and the
+reason, when:
+
+- changed code has no row, or code a merge's resolver wrote has no `merge-resolved` row;
+- a row names two changed functions, or code it can't prove: unchanged, or for a `merge-resolved`
+  row, not the resolver's;
+- a row lacks part of its class's proof, or a rule's table has fewer distinct rows than the product
+  of its dimensions;
+- a row names a test that doesn't exist, or one that fails or can't run with the change in place;
+- a row's test still passes with the row's code reverted, or there is skipped, is marked as an
+  expected failure, crashes or runs out of time;
+- a revert can't be applied;
+- the worktree changed while the check ran.
+
+A run prints each row's result as the row finishes and each refusal as it is found, so a run that
+passes prints one line per row. Tests, Markdown, comments, docstrings, added or changed Python
+imports, deleted code, and files no test can prove (lock files, ignore files, images, `.txt` files
+and `.vscode/`) need no row. In JavaScript a comment counts as none only when it fills whole lines,
+and in a file of another language that can hold multi-line text, every line and its trailing space
+count as code. The check runs only the tests the rows name, Python `unittest` and `node --test`,
+each run in a temporary checkout and repository of its own, and changes nothing in the issue's
+worktree or its repository. The review reads the manifest and judges what the check can't: whether
+each class is honest, and whether its dimensions, concepts, paths and cases are all there.
+
 <a id="ship"></a>
 
 ### 7.2 Ship
@@ -500,8 +561,15 @@ are ticked in the ticket's own `## Done` section.
 
 Ship runs `ship.check()` and refuses by name a missing PR body, a missing commit message while the
 tree has changes, or a branch that isn't the issue's. On success it runs `pr <KEY>` visibly in an
-integrated terminal of the plan window. `pr` commits with `commit.txt`, pushes, and opens the PR or
-replaces its body. It then posts each reply to its thread and resolves the thread. For a Jira issue
+integrated terminal of the plan window.
+
+**`pr` checks provenance before it commits.** In a repo the machine config's `provenanceCheckouts`
+lists by its main checkout, when `pr` has something new for the PR (changes to commit, commits to
+push, or no PR yet) and the change includes a Python or JavaScript file, it runs
+`provenance-check` (§7.1) and, unless it passes, stops with nothing committed or pushed.
+`pr --no-provenance` goes on without the check and says that it skipped it.
+
+`pr` commits with `commit.txt`, pushes, and opens the PR or replaces its body. It then posts each reply to its thread and resolves the thread. For a Jira issue
 it applies the box changes in `issue.md` to the description, and refuses any other difference, so an
 edit made in Jira since is kept. Each file is deleted once sent, so a second `pr` sends nothing
 twice; the store's history keeps what was sent.

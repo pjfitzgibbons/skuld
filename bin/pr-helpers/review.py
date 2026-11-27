@@ -34,6 +34,8 @@ A review's files, in rounds/<n>/:
 `notes.md` is not in a round's folder: it is one file in the folder that holds rounds/ (.tmp/<KEY>/notes.md),
 which the author creates and edits whenever they like. request.md names its path, and the reviewer reads
 it at the start of every review, if it exists, so it binds the review as the ticket's Guardrails do.
+Beside it is `provenance.md`, the author's provenance manifest, which `provenance-check` verifies;
+request.md names its path too, and the reviewer judges whether each row's class is honest.
 
 review.json, and review.next.json in the same shape (the reviewer leaves out file, line, range and
 call, which `finish` adds):
@@ -786,6 +788,12 @@ def notes_path(rounds):
     return rounds.parent / AUTHOR_NOTES
 
 
+def provenance_path(rounds):
+    """The author's provenance manifest, beside the rounds folder, which provenance-check verifies and
+    the reviewer reads to judge whether each row's class is honest."""
+    return rounds.parent / PROVENANCE_MANIFEST
+
+
 def is_web_url(text):
     return text.startswith(("http://", "https://"))
 
@@ -820,6 +828,7 @@ def ok_lines(record):
 
 
 AUTHOR_NOTES = "notes.md"
+PROVENANCE_MANIFEST = "provenance.md"
 
 
 def rounds_folder(root, key):
@@ -1253,6 +1262,7 @@ def write_request(key, root, rounds, sources, restart, prompts, if_due=False, br
         "LENSES": briefs.lenses,
         "SCOPE_RULES": briefs.scope,
         "NOTES": notes_path(rounds),
+        "PROVENANCE": provenance_path(rounds),
     }
     text = render((prompts / choose_prompt(record)).read_text(), values)
     folder.mkdir(parents=True, exist_ok=True)

@@ -1592,6 +1592,12 @@ class ScopeInTheRequest(InRounds):
         (self.rounds.parent / "notes.md").write_text("Leaves lib/ alone, said the author.")
         self.assertNotIn("Leaves lib/ alone, said the author.", self.request_text())
 
+    def test_a_first_review_and_a_round_name_the_provenance_manifest_for_the_reviewer_to_judge(self):
+        line = f"The author's provenance manifest is `{self.rounds.parent / 'provenance.md'}`"
+        self.assertIn(line, self.request_text())
+        self.start_round_2()
+        self.assertIn(line, self.request_text())
+
     def test_a_reopened_request_still_names_the_notes_path_and_is_unchanged(self):
         before = ask(FakeSources()).read_text()
         (self.rounds.parent / "notes.md").write_text("Written after the request.")
